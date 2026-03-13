@@ -1,0 +1,255 @@
+import type { Candle, Timeframe } from "../types";
+
+const HYPERLIQUID_INFO_URL = "https://api.hyperliquid-testnet.xyz/info";
+const BACKEND_BASE_URL = "http://localhost:3000";
+const HYPERLIQUID_ACCOUNT =
+  (import.meta as any).env?.VITE_HYPERLIQUID_ACCOUNT ?? "0xREPLACE_WITH_TESTNET_ADDRESS";
+
+function intervalToMs(interval: Timeframe): number {
+  switch (interval) {
+    case "1m":
+      return 60_000;
+    case "5m":
+      return 5 * 60_000;
+    default:
+      return 60_000;
+  }
+}
+
+export async function fetchHistoricalCandles(
+  symbol: string,
+  interval: Timeframe,
+  maxCandles = 500
+): Promise<Candle[]> {
+  const now = Date.now();
+  const lookbackMs = maxCandles * intervalToMs(interval);
+  const startTime = now - lookbackMs;
+  const endTime = now;
+
+  try {
+    const response = await fetch(HYPERLIQUID_INFO_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "candleSnapshot",
+        req: {
+          coin: symbol,
+          interval,
+          startTime,
+          endTime
+        }
+      })
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const payload = await response.json();
+    const candlesArray: any[] = Array.isArray(payload) ? payload : payload?.candles ?? [];
+
+    const normalized: Candle[] = candlesArray
+      .map((c) => {
+        const timeMs = Number(c.t ?? c.openTime ?? c.timeMs);
+        const open = Number(c.o ?? c.open);
+        const high = Number(c.h ?? c.high);
+        const low = Number(c.l ?? c.low);
+        const close = Number(c.c ?? c.close);
+        const volume = Number(c.v ?? c.volume ?? 0);
+
+        if (!Number.isFinite(timeMs) || ![open, high, low, close].every(Number.isFinite)) {
+          return null;
+        }
+
+        return { timeMs, open, high, low, close, volume };
+      })
+      .filter((c): c is Candle => c !== null)
+      .sort((a, b) => a.timeMs - b.timeMs);
+
+    return normalized.slice(-maxCandles);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Fetch all available trading symbols from Hyperliquid.
+ * Uses the `meta` info endpoint and returns an array of symbol names (e.g. ["BTC", "ETH", ...]).
+ */
+export async function fetchAvailableSymbols(): Promise<string[]> {
+  try {
+    const response = await fetch(HYPERLIQUID_INFO_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "meta" })
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const payload: any = await response.json();
+    const universe: any[] = Array.isArray(payload?.universe) ? payload.universe : [];
+
+    const symbols = universe
+      .map((entry) => {
+        // Per Hyperliquid docs, entries typically have a `name` like "BTC", "ETH", etc.
+        const raw = entry?.name ?? entry?.coin ?? "";
+        return String(raw).trim().toUpperCase();
+      })
+      .filter((s) => s.length > 0);
+
+    // De-duplicate while preserving order
+    return Array.from(new Set(symbols));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Fetch all perpetual symbols from Hyperliquid meta info.
+ * Filters universe entries to only include perp markets.
+ */
+export async function fetchPerpSymbols(): Promise<string[]> {
+  try {
+    const response = await fetch(HYPERLIQUID_INFO_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "meta" })
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const payload: any = await response.json();
+    const universe: any[] = Array.isArray(payload?.universe) ? payload.universe : [];
+
+    const perps = universe
+      .filter((entry) => {
+        // Heuristic: Hyperliquid universe for perps typically contains leverage / margin fields.
+        // Exclude obviously non-perp entries if they have a spot/hip3 marker.
+        if (entry?.isDelisted) return false;
+        // Some integrations tag perp metas explicitly; keep those.
+        if (entry?.perp === true || entry?.isPerp === true) return true;
+        // Fallback: default to including; frontend will still only send uppercase coin names.
+        return true;
+      })
+      .map((entry) => String(entry?.name ?? entry?.coin ?? "").trim().toUpperCase())
+      .filter((s) => s.length > 0);
+
+    return Array.from(new Set(perps));
+  } catch {
+    return [];
+  }
+}
+
+export interface StreamsState {
+  symbols: string[];
+  primary: string;
+}
+
+export async function fetchActiveStreams(): Promise<StreamsState> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/streams`);
+    if (!res.ok) {
+      return { symbols: [], primary: "BTC" };
+    }
+    const data = (await res.json()) as Partial<StreamsState>;
+    return {
+      symbols: Array.isArray(data.symbols) ? data.symbols.map((s) => String(s).toUpperCase()) : [],
+      primary: data.primary ? String(data.primary).toUpperCase() : "BTC"
+    };
+  } catch {
+    return { symbols: [], primary: "BTC" };
+  }
+}
+
+export async function addStream(symbol: string): Promise<StreamsState | null> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/streams`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol })
+    });
+    if (!res.ok) {
+      return null;
+    }
+    const data = (await res.json()) as StreamsState;
+    return {
+      symbols: data.symbols.map((s) => String(s).toUpperCase()),
+      primary: String(data.primary).toUpperCase()
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function removeStream(symbol: string): Promise<StreamsState | null> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/streams/${encodeURIComponent(symbol)}`, {
+      method: "DELETE"
+    });
+    if (!res.ok) {
+      return null;
+    }
+    const data = (await res.json()) as StreamsState;
+    return {
+      symbols: data.symbols.map((s) => String(s).toUpperCase()),
+      primary: String(data.primary).toUpperCase()
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function setPrimarySymbol(symbol: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/change-symbol`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol })
+    });
+    if (!res.ok) {
+      return null;
+    }
+    const data = (await res.json()) as { symbol?: string };
+    return data.symbol ? String(data.symbol).toUpperCase() : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchAccountBalance(): Promise<number> {
+  if (!HYPERLIQUID_ACCOUNT || HYPERLIQUID_ACCOUNT.includes("REPLACE_WITH")) {
+    return 0;
+  }
+
+  try {
+    const response = await fetch(HYPERLIQUID_INFO_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "clearinghouseState",
+        user: HYPERLIQUID_ACCOUNT
+      })
+    });
+
+    if (!response.ok) {
+      return 0;
+    }
+
+    const payload = await response.json();
+    const parsedBalance = Number(
+      payload?.marginSummary?.accountValue ??
+        payload?.crossMarginSummary?.accountValue ??
+        payload?.withdrawable ??
+        0
+    );
+
+    return Number.isFinite(parsedBalance) && parsedBalance >= 0 ? parsedBalance : 0;
+  } catch {
+    return 0;
+  }
+}
+

@@ -1,0 +1,25 @@
+{
+  "name": "hyperliquid-ps5-dashboard",
+  "version": "1.0.0",
+  "description": "Split-brain Hyperliquid testnet dashboard with PS5 controller input.",
+  "main": "backend/server.js",
+  "scripts": {
+    "start": "node backend/server.js"
+  },
+  "keywords": [
+    "hyperliquid",
+    "trading",
+    "dashboard",
+    "socket.io",
+    "dualsense"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.22.1",
+    "node-hid": "^3.3.0",
+    "socket.io": "^4.8.3",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {}
+}
