@@ -9,13 +9,14 @@ const {
   hasAccountConfigured
 } = require("./account");
 const { connectHyperliquidWs, subscribeToSymbol, unsubscribeFromSymbol } = require("./priceStream");
-const { pollController } = require("./controller");
+const { setupKeyboardController } = require("./controller");
 
 const PORT = process.env.PORT || 3000;
 const HYPERLIQUID_WS_URL =
   process.env.HYPERLIQUID_WS_URL || "wss://api.hyperliquid.xyz/ws";
 const DEFAULT_SYMBOL = "BTC";
 const DEFAULT_STOP_LOSS_PRICE = 0;
+const STOP_LOSS_STEP = 5;
 
 const app = express();
 const server = http.createServer(app);
@@ -47,7 +48,7 @@ app.use(express.json());
 // Frontend (React/Vite/etc.) should live in a separate project
 // and connect over Socket.io using the same events used below.
 
-// Primary symbol is the one used for HUD/account/controller logic.
+// Primary symbol is the one used for HUD/account logic.
 let primarySymbol = DEFAULT_SYMBOL;
 // All symbols we maintain active Hyperliquid streams for.
 const activeSymbols = new Set([DEFAULT_SYMBOL]);
@@ -57,22 +58,7 @@ let lastPrice = 0;
 
 let seenFirstDataForSymbol = new Set();
 let balanceIntervalId = null;
-let controllerIntervalId = null;
-
-const controllerState = {
-  connected: false,
-  device: null,
-  notFoundLogged: false,
-  previous: {
-    cross: false,
-    triangle: false,
-    circle: false,
-    dpadUp: false,
-    dpadDown: false,
-    dpadLeft: false,
-    dpadRight: false
-  }
-};
+let cleanupKeyboardController = null;
 
 // REST API to update the primary symbol (ensures it is part of the active streams set).
 app.post("/api/change-symbol", (req, res) => {
@@ -186,6 +172,86 @@ function emitHudUpdate() {
   });
 }
 
+function emitControllerEvent(button) {
+  io.emit("controllerEvent", {
+    button,
+    action: "pressed",
+    ts: Date.now()
+  });
+}
+
+function cyclePrimarySymbol(direction) {
+  const symbols = Array.from(activeSymbols);
+  if (symbols.length <= 1) {
+    return;
+  }
+
+  const currentIndex = symbols.indexOf(primarySymbol);
+  if (currentIndex === -1) {
+    return;
+  }
+
+  const step = direction === "next" ? 1 : -1;
+  const nextIndex = (currentIndex + step + symbols.length) % symbols.length;
+  const nextSymbol = symbols[nextIndex];
+  if (!nextSymbol || nextSymbol === primarySymbol) {
+    return;
+  }
+
+  primarySymbol = nextSymbol;
+  seenFirstDataForSymbol.delete(primarySymbol);
+  console.log("Primary symbol moved via controller:", primarySymbol);
+  io.emit("symbolChanged", { symbol: primarySymbol });
+  emitStreamsUpdate();
+}
+
+function handleControllerAction(action) {
+  if (action === "cross") {
+    console.log("TRADE EXECUTED - 2% RISK");
+    emitControllerEvent("cross");
+    return;
+  }
+
+  if (action === "triangle") {
+    console.log("AZIZ METHOD - 50% CLOSE & BE");
+    emitControllerEvent("triangle");
+    return;
+  }
+
+  if (action === "circle") {
+    console.log("BAILOUT");
+    emitControllerEvent("circle");
+    return;
+  }
+
+  if (action === "primaryPrev") {
+    cyclePrimarySymbol("prev");
+    emitControllerEvent("primaryPrev");
+    return;
+  }
+
+  if (action === "primaryNext") {
+    cyclePrimarySymbol("next");
+    emitControllerEvent("primaryNext");
+    return;
+  }
+
+  if (action === "dpadUp" || action === "dpadRight") {
+    stopLossPrice += STOP_LOSS_STEP;
+    console.log("stopLossPrice updated:", stopLossPrice);
+    emitHudUpdate();
+    emitControllerEvent(action);
+    return;
+  }
+
+  if (action === "dpadDown" || action === "dpadLeft") {
+    stopLossPrice -= STOP_LOSS_STEP;
+    console.log("stopLossPrice updated:", stopLossPrice);
+    emitHudUpdate();
+    emitControllerEvent(action);
+  }
+}
+
 function normalizeSymbol(raw) {
   return String(raw || "")
     .trim()
@@ -283,15 +349,11 @@ server.listen(PORT, () => {
     );
   }
 
-  controllerIntervalId = setInterval(() => {
-    pollController({
-      io,
-      onStopLossDelta: (delta) => {
-        stopLossPrice += delta;
-        console.log("stopLossPrice updated:", stopLossPrice);
-        emitHudUpdate();
-      }
-    });
-  }, 120);
+  console.log("PS5 controller handling removed from backend; use Enjoyable mappings.");
+  cleanupKeyboardController = setupKeyboardController({
+    onAction: handleControllerAction,
+    onShutdownRequested: () => shutdown("SIGINT")
+  });
 });
+
 

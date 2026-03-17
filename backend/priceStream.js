@@ -185,7 +185,7 @@ function connectHyperliquidWs({
 
     const trades = parseTradeMessage(msg);
     if (trades) {
-      console.log("[priceStream] Emitting trades as ticks:", trades.length);
+      //console.log("[priceStream] Emitting trades as ticks:", trades.length);
       for (const trade of trades) {
         io.emit("tick", trade);
       }

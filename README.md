@@ -1,20 +1,20 @@
 # Hyperliquid PS5 Dashboard MVP
 
 Minimal split-brain day-trading dashboard MVP for Hyperliquid mainnet:
-- Node.js backend handles Hyperliquid market stream + account info + PS5 DualSense input.
-- React + Tailwind frontend renders a chart + HUD + PS5 button visualizer.
+- Node.js backend handles Hyperliquid market stream + account info.
+- React + Tailwind frontend renders a chart + HUD.
 
 ## Prerequisites
 
 - Node.js 18+ (for native `fetch` in backend).
 - npm.
-- Optional: PS5 DualSense controller connected via USB for button actions.
+- Optional: PS5 DualSense connected through Enjoyable mappings.
 
 ## Install
 
 ```bash
 npm init -y
-npm install express socket.io ws node-hid
+npm install express socket.io ws
 npm install --save-dev nodemon
 ```
 
@@ -62,14 +62,18 @@ Set these before running to ensure everything points at mainnet and uses your re
 Position size is computed as:
 - `(balance * 0.02) / livePrice`
 
-## PS5 Mappings
+## Controller Input
 
-- Cross -> logs: `TRADE EXECUTED - 2% RISK`
-- Triangle -> logs: `AZIZ METHOD - 50% CLOSE & BE`
-- Circle -> logs: `BAILOUT`
-- D-Pad -> adjusts `stopLossPrice` (and emits HUD updates)
+PS5 controller input is expected to come from Enjoyable key mappings. The backend no longer opens HID devices directly.
 
-Button events also flash on the on-screen PS5 visualizer.
+Default backend key actions:
+- `X` -> Cross (`TRADE EXECUTED - 2% RISK`)
+- `J` -> Triangle (`AZIZ METHOD - 50% CLOSE & BE`)
+- `K` -> Circle (`BAILOUT`)
+- `L2` / `Q` -> move primary symbol to previous active stream
+- `R2` / `E` -> move primary symbol to next active stream
+- `W` / `D` -> `stopLossPrice + 5`
+- `S` / `A` -> `stopLossPrice - 5`
 
 ## Milestone Logs (Intentional, low-noise)
 
@@ -83,20 +87,14 @@ Backend:
 - `Received first data for symbol: ...`
 - `Client connected: ...`
 - `changeSymbol from client: ...`
-- Trade action logs + `stopLossPrice updated: ...`
 
 Frontend:
 - `Socket.io connected`
 - `Initial state received`
 - `Symbol change requested`
 - `First candle received for active symbol`
-- `Controller event received`
 
 ## Troubleshooting
 
 - If balance stays `0.00`, verify `HYPERLIQUID_ACCOUNT` is set to a valid address.
 - If chart does not move, check server logs for WS connection/subscription milestones.
-- If controller actions do not fire:
-  - Confirm DualSense is connected via USB.
-  - Ensure `node-hid` installed successfully on your system.
-  - Check for `PS5 controller connected` in backend logs.
