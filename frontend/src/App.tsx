@@ -1,12 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Disclosure,
   DisclosureButton,
   DisclosurePanel,
-  Menu,
-  MenuButton,
-  MenuItem,
-  MenuItems,
 } from "@headlessui/react";
 import { Bars3Icon, BellIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { ChartPanel } from "./ChartPanel";
@@ -15,6 +11,7 @@ import { LiveMonitorPanel } from "./LiveMonitorPanel";
 import { ReportPanel } from "./ReportPanel";
 import { AssetsPanel } from "./AssetsPanel";
 import { addStream, setPrimarySymbol as setPrimarySymbolOnServer } from "./lib/api";
+import type { SessionInfo } from "./types";
 
 const user = {
   name: "Tom Cook",
@@ -41,12 +38,27 @@ function classNames(...classes: Array<string | boolean | null | undefined>) {
   return classes.filter(Boolean).join(" ");
 }
 
+function formatElapsed(ms: number): string {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const min = Math.floor(totalSec / 60)
+    .toString()
+    .padStart(2, "0");
+  const sec = (totalSec % 60).toString().padStart(2, "0");
+  return `${min}:${sec}`;
+}
+
 export function App() {
   const [selectedSymbol, setSelectedSymbol] = useState<string>("BTC");
   const [primarySymbol, setPrimarySymbol] = useState<string>("BTC");
   const [snapshotMode, setSnapshotMode] = useState<"preopen" | "live">("preopen");
   const [activeTab, setActiveTab] = useState<AppTab>("trade");
   const [subscribedAssets, setSubscribedAssets] = useState<string[]>([]);
+  const [sessionInfo, setSessionInfo] = useState<SessionInfo | null>(null);
+  const [historyPreloading, setHistoryPreloading] = useState(false);
+  const [clockNowMs, setClockNowMs] = useState<number>(() => Date.now());
+  const [restartSignal, setRestartSignal] = useState(0);
+
+  const sessionElapsedMs = sessionInfo ? clockNowMs - sessionInfo.startedAtMs : 0;
 
   const handleChangeTab = (tab: AppTab) => {
     setActiveTab(tab);
@@ -92,6 +104,19 @@ export function App() {
     void handleSelectAssetForChart(nextSymbol);
   };
 
+  const handleSessionInfoChange = (nextSessionInfo: SessionInfo) => {
+    setSessionInfo(nextSessionInfo);
+  };
+
+  const handleRestartSession = () => {
+    setRestartSignal((prev) => prev + 1);
+  };
+
+  useEffect(() => {
+    const id = setInterval(() => setClockNowMs(Date.now()), 1_000);
+    return () => clearInterval(id);
+  }, []);
+
   return (
     <div className="min-h-full">
       <Disclosure as="nav" className="border-b border-gray-200 bg-white">
@@ -125,43 +150,28 @@ export function App() {
                 </div>
             </div>
             <div className="hidden sm:ml-6 sm:flex sm:items-center">
+              {sessionInfo && (
+                <div className="mr-3 inline-flex items-center gap-2 rounded-full bg-gray-50 px-3 py-1 text-[11px] font-medium text-gray-700 ring-1 ring-inset ring-gray-200">
+                  <span
+                    className={`inline-flex h-2 w-2 rounded-full ${
+                      sessionInfo.status === "active" ? "bg-emerald-500" : "bg-rose-500"
+                    }`}
+                  />
+                  <span className="uppercase tracking-wide">{sessionInfo.status}</span>
+                  <span className="text-gray-400">|</span>
+                  <span>S:{sessionInfo.id.slice(-6)}</span>
+                  <span className="text-gray-400">|</span>
+                  <span>{formatElapsed(sessionElapsedMs)}</span>
+                </div>
+              )}
               <button
                 type="button"
-                className="relative rounded-full p-1 text-gray-400 hover:text-gray-500 focus:outline-2 focus:outline-offset-2 focus:outline-indigo-600"
+                onClick={handleRestartSession}
+                disabled={historyPreloading}
+                className="mr-2 rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-[11px] font-medium text-indigo-700 transition hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-70"
               >
-                <span className="absolute -inset-1.5" />
-                <span className="sr-only">View notifications</span>
-                <BellIcon aria-hidden="true" className="size-6" />
+                {historyPreloading ? "Reloading history..." : "Restart Session"}
               </button>
-
-              {/* Profile dropdown */}
-              <Menu as="div" className="relative ml-3">
-                <MenuButton className="relative flex max-w-xs items-center rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600">
-                  <span className="absolute -inset-1.5" />
-                  <span className="sr-only">Open user menu</span>
-                  <img
-                    alt=""
-                    src={user.imageUrl}
-                    className="size-8 rounded-full outline -outline-offset-1 outline-black/5"
-                  />
-                </MenuButton>
-
-                <MenuItems
-                  transition
-                  className="absolute right-0 z-10 mt-2 w-48 origin-top-right rounded-md bg-white py-1 shadow-lg outline outline-black/5 transition data-closed:scale-95 data-closed:transform data-closed:opacity-0 data-enter:duration-200 data-enter:ease-out data-leave:duration-75 data-leave:ease-in"
-                >
-                  {userNavigation.map((item) => (
-                    <MenuItem key={item.name}>
-                      <a
-                        href={item.href}
-                        className="block px-4 py-2 text-sm text-gray-700 data-focus:bg-gray-100 data-focus:outline-hidden"
-                      >
-                        {item.name}
-                      </a>
-                    </MenuItem>
-                  ))}
-                </MenuItems>
-              </Menu>
             </div>
             <div className="-mr-2 flex items-center sm:hidden">
               {/* Mobile menu button */}
@@ -292,51 +302,19 @@ export function App() {
                       </button>
                     </div>
                   </div>
-                  <ChartPanel key={primarySymbol} symbol={primarySymbol} />
+                  <ChartPanel
+                    symbol={primarySymbol}
+                    trackedSymbols={[...subscribedAssets, primarySymbol]}
+                    restartSignal={restartSignal}
+                    onSessionInfoChange={handleSessionInfoChange}
+                    onHistoryPreloadingChange={setHistoryPreloading}
+                  />
                 </section>
 
                 <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
                   <LiveMonitorPanel onSubscribeAsset={handleSubscribeAsset} />
                 </section>
 
-                <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-                  <h2 className="text-sm font-semibold text-gray-900">PS5 Button State</h2>
-                  <div className="mt-4 flex justify-between gap-6">
-                    <div className="grid grid-cols-3 grid-rows-3 place-items-center gap-1.5">
-                      <div />
-                      <div className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-gray-300 bg-white text-xs text-gray-900">
-                        U
-                      </div>
-                      <div />
-                      <div className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-gray-300 bg-white text-xs text-gray-900">
-                        L
-                      </div>
-                      <div />
-                      <div className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-gray-300 bg-white text-xs text-gray-900">
-                        R
-                      </div>
-                      <div />
-                      <div className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-gray-300 bg-white text-xs text-gray-900">
-                        D
-                      </div>
-                      <div />
-                    </div>
-                    <div className="grid grid-cols-2 gap-2 text-xs text-gray-900">
-                      <span className="inline-flex items-center justify-center rounded-full border border-gray-300 bg-white px-3 py-1">
-                        Triangle
-                      </span>
-                      <span className="inline-flex items-center justify-center rounded-full border border-gray-300 bg-white px-3 py-1">
-                        Circle
-                      </span>
-                      <span className="inline-flex items-center justify-center rounded-full border border-gray-300 bg-white px-3 py-1">
-                        Cross
-                      </span>
-                      <span className="inline-flex items-center justify-center rounded-full border border-gray-300 bg-white px-3 py-1">
-                        Square
-                      </span>
-                    </div>
-                  </div>
-                </section>
               </div>
             )}
 

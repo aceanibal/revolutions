@@ -1,9 +1,14 @@
+import { useEffect } from "react";
 import { useSocket } from "./useSocket";
 import { Chart } from "./Chart";
-import type { Timeframe } from "./types";
+import type { SessionInfo, Timeframe } from "./types";
 
 interface ChartPanelProps {
   symbol: string;
+  trackedSymbols?: string[];
+  restartSignal?: number;
+  onSessionInfoChange?: (sessionInfo: SessionInfo) => void;
+  onHistoryPreloadingChange?: (loading: boolean) => void;
 }
 
 /**
@@ -12,11 +17,35 @@ interface ChartPanelProps {
  * switching primary fully remounts and refreshes state. Enables multiple
  * chart instances in the future (one per symbol).
  */
-export function ChartPanel({ symbol }: ChartPanelProps) {
-  const { hud, candles, timeframe, setTimeframe, historyLoading, connected } = useSocket(symbol);
+export function ChartPanel({
+  symbol,
+  trackedSymbols = [],
+  restartSignal = 0,
+  onSessionInfoChange,
+  onHistoryPreloadingChange
+}: ChartPanelProps) {
+  const {
+    hud,
+    candles,
+    timeframe,
+    setTimeframe,
+    waitingForLiveData,
+    historyPreloading,
+    connected,
+    sessionInfo
+  } =
+    useSocket(symbol, trackedSymbols, restartSignal);
   const effectiveTimeframe = timeframe ?? "1m";
 
   const handleTimeframeClick = (tf: Timeframe) => setTimeframe(tf);
+
+  useEffect(() => {
+    onSessionInfoChange?.(sessionInfo);
+  }, [onSessionInfoChange, sessionInfo]);
+
+  useEffect(() => {
+    onHistoryPreloadingChange?.(historyPreloading);
+  }, [historyPreloading, onHistoryPreloadingChange]);
 
   return (
     <section
@@ -73,21 +102,13 @@ export function ChartPanel({ symbol }: ChartPanelProps) {
         </div>
 
         <div className="relative h-72 w-full bg-white sm:h-80 md:h-96">
-          {historyLoading && (
-            <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-white/70 backdrop-blur-sm">
-              <div className="h-6 w-6 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
-              <span className="text-xs font-medium text-gray-600">
-                Loading history…
-              </span>
-            </div>
-          )}
-          {!historyLoading && candles.length === 0 && (
+          {waitingForLiveData && !historyPreloading && (
             <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-white/80">
               <span className="text-xs font-medium text-gray-700">
-                No historical candles available for this asset on Hyperliquid.
+                Waiting for live stream candles for this session.
               </span>
               <span className="text-[11px] text-gray-500">
-                Try another supported perp from the RVOL list or streams panel.
+                Candles populate as `tick` and `priceUpdate` events arrive.
               </span>
             </div>
           )}

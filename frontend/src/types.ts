@@ -25,3 +25,16 @@ export interface Tick {
   ts: number;
 }
 
+export type SessionStatus = "active" | "broken";
+export type SessionBreakReason = "disconnect" | "connect_error" | "inactivity" | null;
+
+export interface SessionInfo {
+  id: string;
+  status: SessionStatus;
+  startedAtMs: number;
+  lastEventAtMs: number | null;
+  assetCount: number;
+  candleCount: number;
+  breakReason: SessionBreakReason;
+}
+

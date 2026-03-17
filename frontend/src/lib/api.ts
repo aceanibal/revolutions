@@ -21,11 +21,11 @@ function intervalToMs(interval: Timeframe): number {
 export async function fetchHistoricalCandles(
   symbol: string,
   interval: Timeframe,
-  maxCandles = 500
+  maxCandles: number | null = null
 ): Promise<Candle[]> {
   // Per Hyperliquid docs, candleSnapshot requires a startTime in ms.
-  // Using 0 requests the full available history up to the latest candles;
-  // we trim client-side to at most `maxCandles`.
+  // Using 0 requests the full available history up to the latest candles.
+  // By default we keep all candles and only trim when maxCandles is provided.
   try {
     const response = await fetch(HYPERLIQUID_INFO_URL, {
       method: "POST",
@@ -65,7 +65,11 @@ export async function fetchHistoricalCandles(
       .filter((c): c is Candle => c !== null)
       .sort((a, b) => a.timeMs - b.timeMs);
 
-    return normalized.slice(-maxCandles);
+    if (typeof maxCandles === "number" && Number.isFinite(maxCandles) && maxCandles > 0) {
+      return normalized.slice(-maxCandles);
+    }
+
+    return normalized;
   } catch {
     return [];
   }

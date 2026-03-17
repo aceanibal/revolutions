@@ -1,8 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { io, Socket } from "socket.io-client";
-import type { Candle, HudState, Tick, Timeframe } from "./types";
+import type {
+  Candle,
+  HudState,
+  SessionBreakReason,
+  SessionInfo,
+  SessionStatus,
+  Tick,
+  Timeframe
+} from "./types";
 import { fetchAccountBalance, fetchHistoricalCandles } from "./lib/api";
-import { buildDisplayCandles } from "./lib/display";
 
 function floorToInterval(tsMs: number, intervalMs: number): number {
   return Math.floor(tsMs / intervalMs) * intervalMs;
@@ -58,7 +65,98 @@ function computePositionSize(balance: number, price: number, riskPercent: number
   return (balance * (riskPercent / 100)) / price;
 }
 
-export function useSocket(selectedSymbol: string) {
+function mergeCandles(base: Candle[], overlay: Candle[]): Candle[] {
+  if (!base.length) return [...overlay].sort((a, b) => a.timeMs - b.timeMs);
+  if (!overlay.length) return [...base].sort((a, b) => a.timeMs - b.timeMs);
+
+  const merged = [...base, ...overlay].sort((a, b) => a.timeMs - b.timeMs);
+  const result: Candle[] = [];
+  for (const candle of merged) {
+    const last = result[result.length - 1];
+    if (last && last.timeMs === candle.timeMs) {
+      // Keep the latter entry so live-updated buckets win over snapshot buckets.
+      result[result.length - 1] = candle;
+    } else {
+      result.push(candle);
+    }
+  }
+  return result;
+}
+
+const INACTIVITY_TIMEOUT_MS = 30_000;
+const HISTORY_PRELOAD_CONCURRENCY = 2;
+
+type TimeframeCandleStore = Record<Timeframe, Candle[]>;
+type SessionStore = Record<string, TimeframeCandleStore>;
+
+type SessionRuntime = {
+  id: string;
+  startedAtMs: number;
+  lastEventAtMs: number | null;
+  status: SessionStatus;
+  breakReason: SessionBreakReason;
+};
+
+const candlesBySessionId: Record<string, SessionStore> = {};
+let activeSession: SessionRuntime = createSession("active", null);
+
+function createSession(status: SessionStatus, breakReason: SessionBreakReason): SessionRuntime {
+  const now = Date.now();
+  return {
+    id: `${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    startedAtMs: now,
+    lastEventAtMs: null,
+    status,
+    breakReason
+  };
+}
+
+function getSessionStore(sessionId: string): SessionStore {
+  if (!candlesBySessionId[sessionId]) {
+    candlesBySessionId[sessionId] = {};
+  }
+  return candlesBySessionId[sessionId];
+}
+
+function getOrCreateSymbolStore(sessionId: string, symbol: string): TimeframeCandleStore {
+  const upperSymbol = symbol.toUpperCase();
+  const sessionStore = getSessionStore(sessionId);
+  if (!sessionStore[upperSymbol]) {
+    sessionStore[upperSymbol] = { "1m": [], "5m": [] };
+  }
+  return sessionStore[upperSymbol];
+}
+
+function buildSessionInfo(): SessionInfo {
+  const sessionStore = getSessionStore(activeSession.id);
+  const assetSymbols = Object.keys(sessionStore).filter((symbol) => {
+    const timeframeStore = sessionStore[symbol];
+    return timeframeStore["1m"].length > 0 || timeframeStore["5m"].length > 0;
+  });
+  const candleCount = assetSymbols.reduce((acc, symbol) => {
+    const timeframeStore = sessionStore[symbol];
+    return acc + timeframeStore["1m"].length + timeframeStore["5m"].length;
+  }, 0);
+
+  return {
+    id: activeSession.id,
+    status: activeSession.status,
+    startedAtMs: activeSession.startedAtMs,
+    lastEventAtMs: activeSession.lastEventAtMs,
+    assetCount: assetSymbols.length,
+    candleCount,
+    breakReason: activeSession.breakReason
+  };
+}
+
+export function useSocket(
+  selectedSymbol: string,
+  trackedSymbols: string[] = [],
+  restartSignal = 0
+) {
+  const selectedSymbolRef = useRef(selectedSymbol.toUpperCase());
+  const historyLoadStateRef = useRef<Record<string, "loading" | "loaded">>({});
+  const lastRestartSignalRef = useRef(restartSignal);
   const [hud, setHud] = useState<HudState>({
     symbol: "BTC",
     price: 0,
@@ -70,11 +168,141 @@ export function useSocket(selectedSymbol: string) {
 
   const [candles1m, setCandles1m] = useState<Candle[]>([]);
   const [candles5m, setCandles5m] = useState<Candle[]>([]);
-  const [history1m, setHistory1m] = useState<Candle[]>([]);
-  const [history5m, setHistory5m] = useState<Candle[]>([]);
   const [timeframe, setTimeframe] = useState<Timeframe | null>("1m");
-  const [historyLoading, setHistoryLoading] = useState(true);
   const [connected, setConnected] = useState(false);
+  const [sessionInfo, setSessionInfo] = useState<SessionInfo>(() => buildSessionInfo());
+  const [historyPreloading, setHistoryPreloading] = useState(false);
+  const trackedSymbolsKey = useMemo(() => {
+    const symbols = new Set<string>();
+    for (const symbol of [selectedSymbol, ...trackedSymbols]) {
+      const upper = String(symbol ?? "").trim().toUpperCase();
+      if (upper) symbols.add(upper);
+    }
+    return Array.from(symbols).sort().join("|");
+  }, [selectedSymbol, trackedSymbols]);
+
+  const syncSelectedSymbolFromSession = (symbol: string) => {
+    const symbolStore = getOrCreateSymbolStore(activeSession.id, symbol);
+    setCandles1m([...symbolStore["1m"]]);
+    setCandles5m([...symbolStore["5m"]]);
+    setSessionInfo(buildSessionInfo());
+  };
+
+  const startNewBrokenSession = (reason: SessionBreakReason) => {
+    activeSession = createSession("broken", reason);
+    setCandles1m([]);
+    setCandles5m([]);
+    setSessionInfo(buildSessionInfo());
+  };
+
+  const restartSession = () => {
+    activeSession = createSession("active", null);
+    setCandles1m([]);
+    setCandles5m([]);
+    setSessionInfo(buildSessionInfo());
+  };
+
+  const markSessionActiveFromEvent = (eventTs: number) => {
+    if (activeSession.status !== "active") {
+      activeSession.status = "active";
+      activeSession.breakReason = null;
+      activeSession.startedAtMs = Date.now();
+    }
+    activeSession.lastEventAtMs = eventTs;
+  };
+
+  const appendTickToSessionStore = (tick: Tick) => {
+    const symbolStore = getOrCreateSymbolStore(activeSession.id, tick.symbol);
+    symbolStore["1m"] = upsertLiveCandle(symbolStore["1m"], tick, 60_000);
+    symbolStore["5m"] = upsertLiveCandle(symbolStore["5m"], tick, 5 * 60_000);
+
+    if (tick.symbol === selectedSymbolRef.current) {
+      setCandles1m([...symbolStore["1m"]]);
+      setCandles5m([...symbolStore["5m"]]);
+    }
+
+    setSessionInfo(buildSessionInfo());
+  };
+
+  useEffect(() => {
+    const upper = selectedSymbol.toUpperCase();
+    selectedSymbolRef.current = upper;
+    syncSelectedSymbolFromSession(upper);
+  }, [selectedSymbol]);
+
+  useEffect(() => {
+    const symbols = trackedSymbolsKey.length > 0 ? trackedSymbolsKey.split("|") : [];
+    const sessionId = activeSession.id;
+    let cancelled = false;
+    const queue: Array<{ symbol: string; timeframe: Timeframe; key: string }> = [];
+
+    const queuePreloadForSymbol = (symbol: string) => {
+      const upper = symbol.toUpperCase();
+      const timeframes: Timeframe[] = ["1m", "5m"];
+
+      for (const timeframe of timeframes) {
+        const key = `${sessionId}:${upper}:${timeframe}`;
+        const status = historyLoadStateRef.current[key];
+        if (status === "loading" || status === "loaded") continue;
+        historyLoadStateRef.current[key] = "loading";
+        queue.push({ symbol: upper, timeframe, key });
+      }
+    };
+
+    for (const symbol of symbols) {
+      queuePreloadForSymbol(symbol);
+    }
+
+    if (queue.length === 0) {
+      setHistoryPreloading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setHistoryPreloading(true);
+    const workerCount = Math.max(1, Math.min(HISTORY_PRELOAD_CONCURRENCY, queue.length));
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (!cancelled && activeSession.id === sessionId) {
+        const next = queue.shift();
+        if (!next) break;
+
+        try {
+          const history = await fetchHistoricalCandles(next.symbol, next.timeframe).catch(() => []);
+          if (cancelled) return;
+          if (activeSession.id !== sessionId) return;
+
+          const symbolStore = getOrCreateSymbolStore(sessionId, next.symbol);
+          symbolStore[next.timeframe] = mergeCandles(history, symbolStore[next.timeframe]);
+          historyLoadStateRef.current[next.key] = "loaded";
+
+          if (next.symbol === selectedSymbolRef.current) {
+            syncSelectedSymbolFromSession(next.symbol);
+          } else {
+            setSessionInfo(buildSessionInfo());
+          }
+        } catch {
+          delete historyLoadStateRef.current[next.key];
+        }
+      }
+    });
+
+    void Promise.allSettled(workers).then(() => {
+      if (cancelled) return;
+      if (activeSession.id !== sessionId) return;
+      setHistoryPreloading(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [trackedSymbolsKey, sessionInfo.id]);
+
+  useEffect(() => {
+    if (restartSignal === lastRestartSignalRef.current) return;
+    lastRestartSignalRef.current = restartSignal;
+    restartSession();
+  }, [restartSignal]);
 
   useEffect(() => {
     const socket: Socket = io("/", { path: "/socket.io" });
@@ -85,10 +313,12 @@ export function useSocket(selectedSymbol: string) {
 
     socket.on("disconnect", () => {
       setConnected(false);
+      startNewBrokenSession("disconnect");
     });
 
     socket.on("connect_error", () => {
       setConnected(false);
+      startNewBrokenSession("connect_error");
     });
 
     socket.on("initialState", (payload: any) => {
@@ -111,11 +341,8 @@ export function useSocket(selectedSymbol: string) {
           price: 0
         };
       });
-      setCandles1m([]);
-      setCandles5m([]);
-      setHistory1m([]);
-      setHistory5m([]);
-      setHistoryLoading(true);
+      selectedSymbolRef.current = String(symbol || "").toUpperCase();
+      syncSelectedSymbolFromSession(selectedSymbolRef.current);
     });
 
     socket.on("priceUpdate", (payload: any) => {
@@ -123,19 +350,11 @@ export function useSocket(selectedSymbol: string) {
       const price = Number(payload.price ?? 0);
       const ts = Number(payload.ts ?? Date.now());
 
-      if (symbol !== selectedSymbol) return;
-
-      console.log("[frontend] priceUpdate", { symbol, price, ts });
-
-      setHud((prev) => ({
-        ...prev,
-        price
-      }));
-
       if (!Number.isFinite(price) || !Number.isFinite(ts)) {
         return;
       }
 
+      markSessionActiveFromEvent(ts);
       const pseudoTick: Tick = {
         symbol,
         price,
@@ -143,8 +362,14 @@ export function useSocket(selectedSymbol: string) {
         ts
       };
 
-      setCandles1m((prev) => upsertLiveCandle(prev, pseudoTick, 60_000));
-      setCandles5m((prev) => upsertLiveCandle(prev, pseudoTick, 5 * 60_000));
+      appendTickToSessionStore(pseudoTick);
+
+      if (symbol === selectedSymbolRef.current) {
+        setHud((prev) => ({
+          ...prev,
+          price
+        }));
+      }
     });
 
     socket.on("hudUpdate", (payload: any) => {
@@ -170,15 +395,12 @@ export function useSocket(selectedSymbol: string) {
         ts: Number(tickPayload.ts ?? Date.now())
       };
 
-      if (tick.symbol !== selectedSymbol) return;
       if (!Number.isFinite(tick.ts) || !Number.isFinite(tick.price)) {
         return;
       }
 
-      console.log("[frontend] tick", tick);
-
-      setCandles1m((prev) => upsertLiveCandle(prev, tick, 60_000));
-      setCandles5m((prev) => upsertLiveCandle(prev, tick, 5 * 60_000));
+      markSessionActiveFromEvent(tick.ts);
+      appendTickToSessionStore(tick);
     });
 
     return () => {
@@ -187,38 +409,19 @@ export function useSocket(selectedSymbol: string) {
     };
   }, []);
 
-  // Fetch and poll history for this chart's symbol only. Runs on mount and when symbol or timeframe changes.
   useEffect(() => {
-    if (!selectedSymbol || !timeframe) return;
-
-    let cancelled = false;
-    setHistoryLoading(true);
-    const intervalMs = timeframe === "1m" ? 60_000 : 5 * 60_000;
-
-    const poll = async () => {
-      const history = await fetchHistoricalCandles(selectedSymbol, timeframe).catch(() => []);
-      if (cancelled) return;
-
-      if (timeframe === "1m") {
-        setHistory1m(history);
-        setCandles1m([]);
-      } else if (timeframe === "5m") {
-        setHistory5m(history);
-        setCandles5m([]);
-      }
-      setHistoryLoading(false);
-    };
-
-    // Initial fetch for this chart load
-    void poll();
-    // Poll once per candle interval to keep volume in sync
-    const id = setInterval(poll, intervalMs);
+    const id = setInterval(() => {
+      const last = activeSession.lastEventAtMs;
+      if (!last) return;
+      if (activeSession.status !== "active") return;
+      if (Date.now() - last < INACTIVITY_TIMEOUT_MS) return;
+      startNewBrokenSession("inactivity");
+    }, 1_000);
 
     return () => {
-      cancelled = true;
       clearInterval(id);
     };
-  }, [selectedSymbol, timeframe]);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -241,18 +444,22 @@ export function useSocket(selectedSymbol: string) {
   }, []);
 
   const selectedCandles = useMemo(() => {
-    if (timeframe === "5m") return buildDisplayCandles(history5m, candles5m);
-    if (timeframe === "1m") return buildDisplayCandles(history1m, candles1m);
+    if (timeframe === "5m") return candles5m;
+    if (timeframe === "1m") return candles1m;
     return [];
-  }, [timeframe, history1m, history5m, candles1m, candles5m]);
+  }, [timeframe, candles1m, candles5m]);
+
+  const waitingForLiveData = selectedCandles.length === 0;
 
   return {
     hud,
     candles: selectedCandles,
     timeframe,
     setTimeframe,
-    historyLoading,
-    connected
+    waitingForLiveData,
+    historyPreloading,
+    connected,
+    sessionInfo
   };
 }
 
