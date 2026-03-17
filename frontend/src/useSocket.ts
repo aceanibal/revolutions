@@ -74,9 +74,22 @@ export function useSocket(selectedSymbol: string) {
   const [history5m, setHistory5m] = useState<Candle[]>([]);
   const [timeframe, setTimeframe] = useState<Timeframe | null>("1m");
   const [historyLoading, setHistoryLoading] = useState(true);
+  const [connected, setConnected] = useState(false);
 
   useEffect(() => {
     const socket: Socket = io("/", { path: "/socket.io" });
+
+    socket.on("connect", () => {
+      setConnected(true);
+    });
+
+    socket.on("disconnect", () => {
+      setConnected(false);
+    });
+
+    socket.on("connect_error", () => {
+      setConnected(false);
+    });
 
     socket.on("initialState", (payload: any) => {
       setHud((prev) => ({
@@ -169,6 +182,7 @@ export function useSocket(selectedSymbol: string) {
     });
 
     return () => {
+      setConnected(false);
       socket.disconnect();
     };
   }, []);
@@ -237,7 +251,8 @@ export function useSocket(selectedSymbol: string) {
     candles: selectedCandles,
     timeframe,
     setTimeframe,
-    historyLoading
+    historyLoading,
+    connected
   };
 }
 

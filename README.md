@@ -1,8 +1,8 @@
 # Hyperliquid PS5 Dashboard MVP
 
-Minimal split-brain day-trading dashboard MVP for Hyperliquid Testnet:
+Minimal split-brain day-trading dashboard MVP for Hyperliquid mainnet:
 - Node.js backend handles Hyperliquid market stream + account info + PS5 DualSense input.
-- Vanilla HTML/CSS/JS frontend renders a chart + HUD + PS5 button visualizer.
+- React + Tailwind frontend renders a chart + HUD + PS5 button visualizer.
 
 ## Prerequisites
 
@@ -35,18 +35,19 @@ Open:
 
 ## Configure Account Balance Source
 
-In `server.js`, replace:
+Backend uses environment variables to talk to Hyperliquid mainnet:
 
-```js
-const HYPERLIQUID_ACCOUNT = "0xREPLACE_WITH_TESTNET_ADDRESS";
-```
+-- `HYPERLIQUID_INFO_URL` (default: `https://api.hyperliquid.xyz/info`)
+-- `HYPERLIQUID_WS_URL` (default: `wss://api.hyperliquid.xyz/ws`)
+- `HYPERLIQUID_ACCOUNT` – your Hyperliquid mainnet wallet address
 
-with your actual Hyperliquid testnet wallet address.
+Frontend uses:
 
-The backend fetches account info from:
-- `https://api.hyperliquid-testnet.xyz/info`
+- `VITE_HYPERLIQUID_INFO_URL` (default: `https://api.hyperliquid.xyz/info`)
+- `VITE_BACKEND_BASE_URL` (default: `http://localhost:3000`)
+- `VITE_HYPERLIQUID_ACCOUNT` – same address as backend
 
-and uses live account value for position sizing.
+Set these before running to ensure everything points at mainnet and uses your real account for balance / risk sizing.
 
 ## Usage
 

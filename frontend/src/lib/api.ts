@@ -1,9 +1,11 @@
 import type { Candle, Timeframe } from "../types";
 
-const HYPERLIQUID_INFO_URL = "https://api.hyperliquid-testnet.xyz/info";
-const BACKEND_BASE_URL = "http://localhost:3000";
+const HYPERLIQUID_INFO_URL =
+  (import.meta as any).env?.VITE_HYPERLIQUID_INFO_URL ?? "https://api.hyperliquid.xyz/info";
+const BACKEND_BASE_URL =
+  (import.meta as any).env?.VITE_BACKEND_BASE_URL ?? "http://localhost:3000";
 const HYPERLIQUID_ACCOUNT =
-  (import.meta as any).env?.VITE_HYPERLIQUID_ACCOUNT ?? "0xREPLACE_WITH_TESTNET_ADDRESS";
+  (import.meta as any).env?.VITE_HYPERLIQUID_ACCOUNT ?? "0xREPLACE_WITH_MAINNET_ADDRESS";
 
 function intervalToMs(interval: Timeframe): number {
   switch (interval) {
@@ -21,11 +23,9 @@ export async function fetchHistoricalCandles(
   interval: Timeframe,
   maxCandles = 500
 ): Promise<Candle[]> {
-  const now = Date.now();
-  const lookbackMs = maxCandles * intervalToMs(interval);
-  const startTime = now - lookbackMs;
-  const endTime = now;
-
+  // Per Hyperliquid docs, candleSnapshot requires a startTime in ms.
+  // Using 0 requests the full available history up to the latest candles;
+  // we trim client-side to at most `maxCandles`.
   try {
     const response = await fetch(HYPERLIQUID_INFO_URL, {
       method: "POST",
@@ -35,8 +35,7 @@ export async function fetchHistoricalCandles(
         req: {
           coin: symbol,
           interval,
-          startTime,
-          endTime
+          startTime: 0
         }
       })
     });

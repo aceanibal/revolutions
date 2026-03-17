@@ -19,11 +19,47 @@ export function Chart({ candles }: ChartProps) {
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth || 800,
       height: containerRef.current.clientHeight || 400,
-      layout: { background: { color: "#0b1220" }, textColor: "#e5e7eb" },
-      timeScale: { timeVisible: true, secondsVisible: false }
+      layout: {
+        background: { color: "#ffffff" },
+        textColor: "#0f172a"
+      },
+      grid: {
+        vertLines: { color: "#e2e8f0" },
+        horzLines: { color: "#e2e8f0" }
+      },
+      rightPriceScale: {
+        borderColor: "#cbd5f5"
+      },
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: false,
+        borderColor: "#cbd5f5"
+      },
+      crosshair: {
+        mode: 0,
+        vertLine: {
+          color: "#0f172a",
+          style: 1,
+          width: 1,
+          labelBackgroundColor: "#0f172a"
+        },
+        horzLine: {
+          color: "#0f172a",
+          style: 1,
+          width: 1,
+          labelBackgroundColor: "#0f172a"
+        }
+      }
     });
 
-    const series = chart.addCandlestickSeries();
+    const series = chart.addCandlestickSeries({
+      upColor: "#16a34a",
+      downColor: "#dc2626",
+      wickUpColor: "#16a34a",
+      wickDownColor: "#dc2626",
+      borderUpColor: "#16a34a",
+      borderDownColor: "#dc2626"
+    });
 
     chartRef.current = chart;
     seriesRef.current = series;
@@ -61,7 +97,17 @@ export function Chart({ candles }: ChartProps) {
         high: c.high,
         low: c.low,
         close: c.close
-      }));
+      }))
+      .sort((a, b) => a.time - b.time)
+      .reduce<CandlestickData[]>((acc, point) => {
+        const last = acc[acc.length - 1];
+        if (last && last.time === point.time) {
+          acc[acc.length - 1] = point;
+        } else {
+          acc.push(point);
+        }
+        return acc;
+      }, []);
 
     seriesRef.current.setData(data);
   }, [candles]);

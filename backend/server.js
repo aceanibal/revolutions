@@ -12,7 +12,8 @@ const { connectHyperliquidWs, subscribeToSymbol, unsubscribeFromSymbol } = requi
 const { pollController } = require("./controller");
 
 const PORT = process.env.PORT || 3000;
-const HYPERLIQUID_WS_URL = "wss://api.hyperliquid-testnet.xyz/ws";
+const HYPERLIQUID_WS_URL =
+  process.env.HYPERLIQUID_WS_URL || "wss://api.hyperliquid.xyz/ws";
 const DEFAULT_SYMBOL = "BTC";
 const DEFAULT_STOP_LOSS_PRICE = 0;
 

@@ -1,5 +1,6 @@
-const HYPERLIQUID_INFO_URL = "https://api.hyperliquid-testnet.xyz/info";
-const HYPERLIQUID_ACCOUNT = "0xREPLACE_WITH_TESTNET_ADDRESS";
+const HYPERLIQUID_INFO_URL =
+  process.env.HYPERLIQUID_INFO_URL || "https://api.hyperliquid.xyz/info";
+const HYPERLIQUID_ACCOUNT = process.env.HYPERLIQUID_ACCOUNT || "0xREPLACE_WITH_MAINNET_ADDRESS";
 const RISK_PERCENT = 2;
 const BALANCE_REFRESH_MS = 20_000;
 
