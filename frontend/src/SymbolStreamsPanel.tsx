@@ -13,6 +13,7 @@ interface SymbolStreamsPanelProps {
   onSelectedChange: (symbol: string) => void;
   onPrimaryChange?: (primary: string) => void;
   onStreamsChange?: (symbols: string[], primary: string) => void;
+  compact?: boolean;
 }
 
 let sharedSocket: Socket | null = null;
@@ -28,7 +29,8 @@ export function SymbolStreamsPanel({
   selectedSymbol,
   onSelectedChange,
   onPrimaryChange,
-  onStreamsChange
+  onStreamsChange,
+  compact = false
 }: SymbolStreamsPanelProps) {
   const [streams, setStreams] = useState<StreamsState>({ symbols: [], primary: selectedSymbol });
 
@@ -96,42 +98,48 @@ export function SymbolStreamsPanel({
     }
   };
 
-  const handleMakePrimary = async (symbol: string) => {
+  const handleSelectSymbol = async (symbol: string) => {
+    onSelectedChange(symbol);
+    if (symbol === streams.primary) return;
     const updated = await setPrimarySymbol(symbol);
     if (updated) {
-      onPrimaryChange?.(updated);
-      onSelectedChange(updated);
+      const nextPrimary = updated.toUpperCase();
+      setStreams((prev) => ({ ...prev, primary: nextPrimary }));
+      onPrimaryChange?.(nextPrimary);
+      onStreamsChange?.(streams.symbols, nextPrimary);
+      onSelectedChange(nextPrimary);
     }
   };
 
-  const handleSelectSymbol = (symbol: string) => {
-    onSelectedChange(symbol);
-  };
-
   return (
-    <section className="flex h-full flex-col rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
-      <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-4">
-        <div>
-          <h2 className="text-sm font-semibold leading-6 text-slate-900">
-            Symbols &amp; Streams
-          </h2>
-          <p className="mt-1 text-xs text-slate-500">
-            Manage which perps your backend streams and choose the chart primary.
-          </p>
+    <section
+      className={
+        compact
+          ? "flex h-full flex-col"
+          : "flex h-full flex-col rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6"
+      }
+    >
+      {!compact && (
+        <div className="flex items-start justify-between gap-4 border-b border-slate-100 pb-4">
+          <div>
+            <h2 className="text-sm font-semibold leading-6 text-slate-900">
+              Symbols &amp; Streams
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Manage which perps your backend streams and choose the chart primary.
+            </p>
+          </div>
+          <div className="inline-flex items-center gap-1 rounded-full bg-slate-50 px-3 py-1 text-xs font-medium text-slate-700 ring-1 ring-inset ring-slate-200">
+            <span className="text-slate-500">Primary</span>
+            <span className="tabular-nums text-slate-900">
+              {streams.primary || selectedSymbol}
+            </span>
+          </div>
         </div>
-        <div className="inline-flex items-center gap-1 rounded-full bg-slate-50 px-3 py-1 text-xs font-medium text-slate-700 ring-1 ring-inset ring-slate-200">
-          <span className="text-slate-500">Primary</span>
-          <span className="tabular-nums text-slate-900">
-            {streams.primary || selectedSymbol}
-          </span>
-        </div>
-      </div>
+      )}
 
-      <div className="mt-4">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-          Streaming symbols
-        </h3>
-        <div className="mt-2 flex flex-wrap gap-2">
+      <div className={compact ? "" : "mt-4"}>
+        <div className={compact ? "flex flex-wrap gap-1.5" : "mt-2 flex flex-wrap gap-2"}>
           {streams.symbols.length === 0 ? (
             <span className="text-xs text-slate-500">No active streams</span>
           ) : (
@@ -146,25 +154,15 @@ export function SymbolStreamsPanel({
                       ? "border-slate-900 bg-slate-900 text-slate-50 shadow-sm"
                       : "border-slate-200 bg-slate-50 text-slate-800 hover:border-slate-300 hover:bg-slate-100"
                   } ${isSelected && !isPrimary ? "ring-1 ring-slate-900/20" : ""}`}
-                  onClick={() => handleSelectSymbol(s)}
+                  onClick={() => {
+                    void handleSelectSymbol(s);
+                  }}
                 >
                   <span className="tabular-nums">{s}</span>
                   {isPrimary && (
                     <span className="rounded-full bg-slate-50/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-100">
                       Primary
                     </span>
-                  )}
-                  {!isPrimary && (
-                    <button
-                      type="button"
-                      className="rounded-full bg-slate-900 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-50 shadow-sm ring-1 ring-slate-900/10 hover:bg-slate-800"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleMakePrimary(s);
-                      }}
-                    >
-                      Make primary
-                    </button>
                   )}
                   {streams.symbols.length > 1 && (
                     <button
