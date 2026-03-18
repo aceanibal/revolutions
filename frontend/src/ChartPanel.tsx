@@ -6,6 +6,7 @@ import type { SessionInfo, Timeframe } from "./types";
 interface ChartPanelProps {
   symbol: string;
   trackedSymbols?: string[];
+  vwapEnabled?: boolean;
   vwapPeriod?: number;
   emaEnabled?: boolean;
   emaPeriod?: number;
@@ -23,6 +24,7 @@ interface ChartPanelProps {
 export function ChartPanel({
   symbol,
   trackedSymbols = [],
+  vwapEnabled = true,
   vwapPeriod = 20,
   emaEnabled = true,
   emaPeriod = 9,
@@ -138,6 +140,7 @@ export function ChartPanel({
         <Chart
           candles={candles}
           gaps={gaps}
+          vwapEnabled={vwapEnabled}
           vwapPeriod={vwapPeriod}
           emaEnabled={emaEnabled}
           emaPeriod={emaPeriod}

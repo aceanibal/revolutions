@@ -3,17 +3,18 @@ import {
   createChart,
   IChartApi,
   ISeriesApi,
-  CandlestickData,
   HistogramData,
-  LineData,
   Time,
   TickMarkType
 } from "lightweight-charts";
 import type { Candle, GapRange } from "./types";
+import { normalizeCandles } from "./chart/logic/candles";
+import { calculateEmaData, calculateVwapData } from "./chart/logic/indicators";
 
 interface ChartProps {
   candles: Candle[];
   gaps?: GapRange[];
+  vwapEnabled?: boolean;
   vwapPeriod?: number;
   emaEnabled?: boolean;
   emaPeriod?: number;
@@ -36,6 +37,7 @@ function toEpochSeconds(time: Time): number | null {
 export function Chart({
   candles,
   gaps = [],
+  vwapEnabled = true,
   vwapPeriod = 20,
   emaEnabled = true,
   emaPeriod = 9,
@@ -190,45 +192,7 @@ export function Chart({
   useEffect(() => {
     if (!seriesRef.current) return;
 
-    const normalizedCandles = candles
-      .filter(
-        (c) =>
-          Number.isFinite(c.timeMs) &&
-          [c.open, c.high, c.low, c.close].every(Number.isFinite)
-      )
-      .map((c) => ({
-        time: Math.floor(c.timeMs / 1000),
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-        volume: Number.isFinite(c.volume) && c.volume >= 0 ? c.volume : 0
-      }))
-      .sort((a, b) => a.time - b.time);
-
-    const sourceByTime = new Map<number, Candle["source"]>();
-    for (const candle of candles) {
-      sourceByTime.set(Math.floor(candle.timeMs / 1000), candle.source);
-    }
-
-    const data = normalizedCandles.reduce<
-      Array<
-        CandlestickData & {
-          volume: number;
-          source?: Candle["source"];
-        }
-      >
-    >((acc, point) => {
-        const last = acc[acc.length - 1];
-        const source = sourceByTime.get(point.time);
-        const withSource = { ...point, source };
-        if (last && last.time === point.time) {
-          acc[acc.length - 1] = withSource;
-        } else {
-          acc.push(withSource);
-        }
-        return acc;
-      }, []);
+    const data = normalizeCandles(candles);
 
     seriesRef.current.setData(
       data.map(({ time, open, high, low, close, source }) => {
@@ -236,7 +200,7 @@ export function Chart({
         const sourceKey = source === "history" || source === "mixed" ? source : "live";
         const color = isUp ? palette[sourceKey].up : palette[sourceKey].down;
         return {
-          time,
+          time: time as Time,
           open,
           high,
           low,
@@ -251,53 +215,24 @@ export function Chart({
       data.map(
         ({ time, volume }) =>
           ({
-            time,
+            time: time as Time,
             value: volume
           }) satisfies HistogramData
       )
     );
 
-    const period = Math.max(1, Math.floor(vwapPeriod));
-    const pvWindow: number[] = [];
-    const volumeWindow: number[] = [];
-    let rollingPV = 0;
-    let rollingVolume = 0;
-    const vwapData: LineData[] = [];
-    for (const point of data) {
-      const typicalPrice = (point.high + point.low + point.close) / 3;
-      const volume = Number.isFinite(point.volume) ? point.volume : 0;
-      const pv = typicalPrice * volume;
-      pvWindow.push(pv);
-      volumeWindow.push(volume);
-      rollingPV += pv;
-      rollingVolume += volume;
-      if (pvWindow.length > period) {
-        rollingPV -= pvWindow.shift() ?? 0;
-        rollingVolume -= volumeWindow.shift() ?? 0;
-      }
-      vwapData.push({
-        time: point.time,
-        value: rollingVolume > 0 ? rollingPV / rollingVolume : typicalPrice
-      });
-    }
-    vwapSeriesRef.current?.setData(vwapData);
-
-    if (!emaEnabled) {
-      emaSeriesRef.current?.setData([]);
+    if (vwapEnabled) {
+      const vwapData = calculateVwapData(data, vwapPeriod);
+      vwapSeriesRef.current?.setData(vwapData);
     } else {
-      const period = Math.max(1, Math.floor(emaPeriod));
-      const multiplier = 2 / (period + 1);
-      const emaData: LineData[] = [];
-      let emaValue: number | null = null;
-      for (const point of data) {
-        if (emaValue == null) {
-          emaValue = point.close;
-        } else {
-          emaValue = (point.close - emaValue) * multiplier + emaValue;
-        }
-        emaData.push({ time: point.time, value: emaValue });
-      }
+      vwapSeriesRef.current?.setData([]);
+    }
+
+    if (emaEnabled) {
+      const emaData = calculateEmaData(data, emaPeriod);
       emaSeriesRef.current?.setData(emaData);
+    } else {
+      emaSeriesRef.current?.setData([]);
     }
 
     const markers = gaps.map((gap) => ({
@@ -308,7 +243,7 @@ export function Chart({
       text: `Gap (${gap.missingBuckets})`
     }));
     (seriesRef.current as any)?.setMarkers?.(markers);
-  }, [candles, gaps, vwapPeriod, emaEnabled, emaPeriod]);
+  }, [candles, gaps, vwapEnabled, vwapPeriod, emaEnabled, emaPeriod]);
 
   return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 }
