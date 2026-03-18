@@ -12,3 +12,5 @@ frontend/.parcel-cache
 Y
 .env
 .env.*
+data/
+backend/data/
