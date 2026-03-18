@@ -40,6 +40,11 @@ Backend uses environment variables to talk to Hyperliquid mainnet:
 -- `HYPERLIQUID_INFO_URL` (default: `https://api.hyperliquid.xyz/info`)
 -- `HYPERLIQUID_WS_URL` (default: `wss://api.hyperliquid.xyz/ws`)
 - `HYPERLIQUID_ACCOUNT` – your Hyperliquid mainnet wallet address
+- `REDIS_URL` – Redis connection string for hot session storage (required for persistence)
+- `SQLITE_PATH` – SQLite file path for durable session archive (default `backend/data/sessions.sqlite`)
+- `SESSION_TIMEZONE` – Market window timezone (default `America/New_York`)
+- `SESSION_MARKET_START` – Trading session start `HH:mm` (default `08:00`)
+- `SESSION_MARKET_END` – Trading session end `HH:mm` (default `17:00`)
 
 Frontend uses:
 
@@ -48,6 +53,15 @@ Frontend uses:
 - `VITE_HYPERLIQUID_ACCOUNT` – same address as backend
 
 Set these before running to ensure everything points at mainnet and uses your real account for balance / risk sizing.
+
+## Persistent Session Model
+
+- The backend is the source of truth for trading sessions.
+- Sessions are market-window trading days (auto start/end from `SESSION_*` env vars).
+- Raw ticks are stored and 1m/5m candles are derived server-side.
+- On asset subscribe/change, backend preloads 1m + 5m historical candles into the active session store.
+- Frontend reloads hydrate from backend session APIs (`/api/session/current`, `/api/sessions`).
+- Candle provenance is tracked (`live`, `history`, `mixed`) and gap ranges are returned for study workflows.
 
 ## Usage
 

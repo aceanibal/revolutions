@@ -9,7 +9,7 @@ interface ChartPanelProps {
   vwapPeriod?: number;
   emaEnabled?: boolean;
   emaPeriod?: number;
-  restartSignal?: number;
+  selectedSessionId?: string | null;
   onSessionInfoChange?: (sessionInfo: SessionInfo) => void;
   onHistoryPreloadingChange?: (loading: boolean) => void;
 }
@@ -26,7 +26,7 @@ export function ChartPanel({
   vwapPeriod = 20,
   emaEnabled = true,
   emaPeriod = 9,
-  restartSignal = 0,
+  selectedSessionId = null,
   onSessionInfoChange,
   onHistoryPreloadingChange
 }: ChartPanelProps) {
@@ -39,9 +39,10 @@ export function ChartPanel({
     waitingForLiveData,
     historyPreloading,
     connected,
-    sessionInfo
+    sessionInfo,
+    gaps
   } =
-    useSocket(symbol, trackedSymbols, restartSignal);
+    useSocket(symbol, trackedSymbols, selectedSessionId);
   const effectiveTimeframe = timeframe ?? "1m";
   const latestTimeSec = useMemo(() => {
     if (candles.length === 0) return null;
@@ -94,6 +95,26 @@ export function ChartPanel({
         >
           5m
         </button>
+        <span className="ml-1 inline-flex items-center gap-2 text-[10px] text-slate-500">
+          <span className="inline-flex items-center gap-1">
+            <span className="inline-block h-2 w-2 rounded-full bg-green-600" />
+            <span className="inline-block h-2 w-2 rounded-full bg-red-600" />
+            Live
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="inline-block h-2 w-2 rounded-full bg-green-800" />
+            <span className="inline-block h-2 w-2 rounded-full bg-red-800" />
+            History
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="inline-block h-2 w-2 rounded-full bg-green-700" />
+            <span className="inline-block h-2 w-2 rounded-full bg-red-700" />
+            Mixed
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="inline-block h-2 w-2 rounded-full bg-orange-700" /> Gaps
+          </span>
+        </span>
       </div>
       <div className="absolute bottom-2 right-2 z-20 rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-medium text-slate-700 ring-1 ring-inset ring-slate-200 backdrop-blur">
         {displayTime}
@@ -116,6 +137,7 @@ export function ChartPanel({
         )}
         <Chart
           candles={candles}
+          gaps={gaps}
           vwapPeriod={vwapPeriod}
           emaEnabled={emaEnabled}
           emaPeriod={emaPeriod}

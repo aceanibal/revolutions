@@ -10,11 +10,14 @@ const {
 } = require("./account");
 const { connectHyperliquidWs, subscribeToSymbol, unsubscribeFromSymbol } = require("./priceStream");
 const { setupKeyboardController } = require("./controller");
+const { SessionStore } = require("./sessionStore");
+const { SessionArchive } = require("./sessionArchive");
+const { detectGapRanges, intervalForTimeframe } = require("./sessionMath");
 
 const PORT = process.env.PORT || 3000;
 const HYPERLIQUID_WS_URL =
   process.env.HYPERLIQUID_WS_URL || "wss://api.hyperliquid.xyz/ws";
-const DEFAULT_SYMBOL = "BTC";
+const DEFAULT_SYMBOL = "";
 const DEFAULT_STOP_LOSS_PRICE = 0;
 const STOP_LOSS_STEP = 5;
 
@@ -51,7 +54,7 @@ app.use(express.json());
 // Primary symbol is the one used for HUD/account logic.
 let primarySymbol = DEFAULT_SYMBOL;
 // All symbols we maintain active Hyperliquid streams for.
-const activeSymbols = new Set([DEFAULT_SYMBOL]);
+const activeSymbols = new Set();
 let stopLossPrice = DEFAULT_STOP_LOSS_PRICE;
 let balance = 0;
 let lastPrice = 0;
@@ -59,9 +62,75 @@ let lastPrice = 0;
 let seenFirstDataForSymbol = new Set();
 let balanceIntervalId = null;
 let cleanupKeyboardController = null;
+let sessionRolloverIntervalId = null;
+
+const sessionStore = new SessionStore();
+const sessionArchive = new SessionArchive({ sessionStore });
+
+async function preloadSymbolHistory(symbol) {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized) return;
+  console.log(`[server] preloadSymbolHistory start symbol=${normalized}`);
+  try {
+    const result = await sessionStore.preloadHistoricalForSymbol(normalized);
+    if (result?.sessionInfo) {
+      io.emit("session:update", result.sessionInfo);
+    }
+    if (!result?.sessionId) {
+      console.log(
+        `[server] preloadSymbolHistory skipped symbol=${normalized} reason=${
+          result?.reason || "no-active-persisted-session"
+        }`
+      );
+    }
+    console.log(
+      `[server] preloadSymbolHistory done symbol=${normalized} session=${result?.sessionId || "n/a"}`
+    );
+  } catch (error) {
+    console.log("History preload warning:", error?.message || error);
+  }
+}
+
+async function buildDirectHistorySnapshot(symbol) {
+  const upper = normalizeSymbol(symbol);
+  if (!upper) return null;
+
+  const [candles1mRaw, candles5mRaw] = await Promise.all([
+    sessionStore.fetchHistoricalCandles(upper, "1m"),
+    sessionStore.fetchHistoricalCandles(upper, "5m")
+  ]);
+
+  const candles1m = candles1mRaw.map((c) => ({ ...c, source: "history", isGapFill: false }));
+  const candles5m = candles5mRaw.map((c) => ({ ...c, source: "history", isGapFill: false }));
+
+  const startedAtMs =
+    (candles1m.length > 0 ? candles1m[0].timeMs : candles5m.length > 0 ? candles5m[0].timeMs : Date.now()) ||
+    Date.now();
+
+  return {
+    sessionInfo: {
+      id: `direct-history-${upper}`,
+      status: "active",
+      startedAtMs,
+      lastEventAtMs: null,
+      assetCount: 1,
+      candleCount: candles1m.length + candles5m.length,
+      breakReason: null
+    },
+    symbol: upper,
+    candlesByTimeframe: {
+      "1m": candles1m,
+      "5m": candles5m
+    },
+    gapsByTimeframe: {
+      "1m": detectGapRanges(candles1m, intervalForTimeframe("1m")),
+      "5m": detectGapRanges(candles5m, intervalForTimeframe("5m"))
+    }
+  };
+}
 
 // REST API to update the primary symbol (ensures it is part of the active streams set).
-app.post("/api/change-symbol", (req, res) => {
+app.post("/api/change-symbol", async (req, res) => {
   const nextSymbol = normalizeSymbol(req.body?.symbol);
   if (!nextSymbol || nextSymbol === primarySymbol) {
     return res.status(400).json({ ok: false, message: "Invalid or unchanged symbol" });
@@ -85,6 +154,7 @@ app.post("/api/change-symbol", (req, res) => {
     primary: primarySymbol
   });
 
+  await preloadSymbolHistory(nextSymbol);
   res.json({ ok: true, symbol: primarySymbol });
 });
 
@@ -109,7 +179,7 @@ app.get("/api/streams", (req, res) => {
   });
 });
 
-app.post("/api/streams", (req, res) => {
+app.post("/api/streams", async (req, res) => {
   const symbol = normalizeSymbol(req.body?.symbol);
   if (!symbol) {
     return res.status(400).json({ ok: false, message: "Missing symbol" });
@@ -119,6 +189,8 @@ app.post("/api/streams", (req, res) => {
     activeSymbols.add(symbol);
     subscribeToSymbol(symbol);
   }
+
+  await preloadSymbolHistory(symbol);
 
   // Do not auto-change primary here; frontend will call /api/change-symbol when needed.
   emitStreamsUpdate();
@@ -164,12 +236,83 @@ app.delete("/api/streams/:symbol", (req, res) => {
   });
 });
 
+app.get("/api/session/current", async (req, res) => {
+  const symbol = normalizeSymbol(req.query?.symbol || primarySymbol);
+  const timeframeRaw = String(req.query?.timeframe || "all").toLowerCase();
+  const timeframe = timeframeRaw === "1m" || timeframeRaw === "5m" ? timeframeRaw : "all";
+
+  try {
+    const snapshot = await sessionStore.getCurrentSessionSnapshot(symbol, timeframe);
+    if (!snapshot) {
+      const directSnapshot = await buildDirectHistorySnapshot(symbol);
+      if (!directSnapshot) {
+        return res.status(404).json({ ok: false, message: "No active session found" });
+      }
+      console.log(`[server] /api/session/current using direct history fallback symbol=${symbol}`);
+      return res.json({ ok: true, ...directSnapshot });
+    }
+    res.json({ ok: true, ...snapshot });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error.message || "Failed to load current session" });
+  }
+});
+
+app.get("/api/sessions", async (req, res) => {
+  const date = String(req.query?.date || "today").toLowerCase();
+  if (date !== "today") {
+    return res.status(400).json({ ok: false, message: "Only date=today is currently supported" });
+  }
+
+  try {
+    const sessions = await sessionStore.listTodaySessions();
+    res.json({ ok: true, sessions });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error.message || "Failed to list sessions" });
+  }
+});
+
+app.get("/api/sessions/:id", async (req, res) => {
+  const symbol = normalizeSymbol(req.query?.symbol || primarySymbol);
+  const timeframeRaw = String(req.query?.timeframe || "all").toLowerCase();
+  const timeframe = timeframeRaw === "1m" || timeframeRaw === "5m" ? timeframeRaw : "all";
+  const sessionId = String(req.params?.id || "").trim();
+  if (!sessionId) {
+    return res.status(400).json({ ok: false, message: "Missing session id" });
+  }
+
+  try {
+    const snapshot = await sessionStore.getSessionSnapshot(sessionId, symbol, timeframe);
+    if (!snapshot) {
+      return res.status(404).json({ ok: false, message: "Session not found" });
+    }
+    res.json({ ok: true, ...snapshot });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error.message || "Failed to load session" });
+  }
+});
+
+app.get("/api/persistence/status", (req, res) => {
+  try {
+    res.json({ ok: true, ...sessionStore.getPersistenceStatus() });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error.message || "Failed to read persistence status" });
+  }
+});
+
 function emitHudUpdate() {
   accountEmitHudUpdate(io, {
     stopLossPrice,
     balance,
     lastPrice
   });
+}
+
+async function emitSessionUpdate() {
+  const sessionId = await sessionStore.getCurrentSessionId();
+  if (!sessionId) return;
+  const sessionInfo = await sessionStore.getSessionInfo(sessionId);
+  if (!sessionInfo) return;
+  io.emit("session:update", sessionInfo);
 }
 
 function emitControllerEvent(button) {
@@ -258,6 +401,37 @@ function normalizeSymbol(raw) {
     .toUpperCase();
 }
 
+let shuttingDown = false;
+
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`Shutting down due to ${signal}...`);
+
+  if (balanceIntervalId) {
+    clearInterval(balanceIntervalId);
+  }
+  if (sessionRolloverIntervalId) {
+    clearInterval(sessionRolloverIntervalId);
+  }
+  if (typeof cleanupKeyboardController === "function") {
+    cleanupKeyboardController();
+  }
+
+  try {
+    const sessionId = await sessionStore.getCurrentSessionId();
+    if (sessionId) {
+      await sessionArchive.archiveSession(sessionId, signal || "shutdown");
+    }
+    await sessionStore.shutdown();
+  } catch (error) {
+    console.log("Session shutdown warning:", error?.message || error);
+  }
+
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 2000);
+}
+
 io.on("connection", (socket) => {
   console.log("Client connected:", socket.id);
 
@@ -271,8 +445,9 @@ io.on("connection", (socket) => {
 
   // Send initial streams state to the new client.
   emitStreamsUpdate(socket);
+  void emitSessionUpdate();
 
-  socket.on("symbol:subscribe", (payload) => {
+  socket.on("symbol:subscribe", async (payload) => {
     const symbol = normalizeSymbol(payload?.symbol || primarySymbol);
     if (!symbol) {
       return;
@@ -283,6 +458,8 @@ io.on("connection", (socket) => {
       subscribeToSymbol(symbol);
     }
 
+    await preloadSymbolHistory(symbol);
+
     if (symbol !== primarySymbol) {
       primarySymbol = symbol;
       seenFirstDataForSymbol.delete(primarySymbol);
@@ -291,7 +468,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("changeSymbol", (payload) => {
+  socket.on("changeSymbol", async (payload) => {
     const nextSymbol = normalizeSymbol(payload?.symbol);
     if (!nextSymbol || nextSymbol === primarySymbol) {
       return;
@@ -303,6 +480,8 @@ io.on("connection", (socket) => {
       subscribeToSymbol(nextSymbol);
     }
 
+    await preloadSymbolHistory(nextSymbol);
+
     primarySymbol = nextSymbol;
     seenFirstDataForSymbol.delete(primarySymbol);
     io.emit("symbolChanged", { symbol: primarySymbol });
@@ -312,8 +491,16 @@ io.on("connection", (socket) => {
 
 console.log(`Server starting on port ${PORT}`);
 
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log("Express + Socket.io ready");
+  try {
+    await sessionStore.init();
+    await sessionStore.ensureActiveSession(Date.now());
+    await emitSessionUpdate();
+  } catch (error) {
+    console.log("Session store initialization warning:", error?.message || error);
+  }
+
   connectHyperliquidWs({
     io,
     wsUrl: HYPERLIQUID_WS_URL,
@@ -325,6 +512,40 @@ server.listen(PORT, () => {
         lastPrice = price;
         emitHudUpdate();
       }
+      void sessionStore
+        .ingestTick(
+          {
+            symbol,
+            price,
+            size: 0,
+            ts: Date.now()
+          },
+          "live"
+        )
+        .then((result) => {
+          if (result?.sessionInfo) {
+            io.emit("session:update", result.sessionInfo);
+          }
+        })
+        .catch(() => {});
+    },
+    onTick: (trade) => {
+      void sessionStore
+        .ingestTick(
+          {
+            symbol: trade.symbol,
+            price: trade.price,
+            size: trade.size,
+            ts: trade.ts
+          },
+          "live"
+        )
+        .then((result) => {
+          if (result?.sessionInfo) {
+            io.emit("session:update", result.sessionInfo);
+          }
+        })
+        .catch(() => {});
     }
   });
 
@@ -354,6 +575,21 @@ server.listen(PORT, () => {
     onAction: handleControllerAction,
     onShutdownRequested: () => shutdown("SIGINT")
   });
+
+  sessionRolloverIntervalId = setInterval(() => {
+    void sessionStore
+      .maybeRollSession(Date.now())
+      .then(() => emitSessionUpdate())
+      .catch(() => {});
+  }, 30_000);
+});
+
+process.on("SIGINT", () => {
+  void shutdown("SIGINT");
+});
+
+process.on("SIGTERM", () => {
+  void shutdown("SIGTERM");
 });
 
 

@@ -9,10 +9,11 @@ import {
   Time,
   TickMarkType
 } from "lightweight-charts";
-import type { Candle } from "./types";
+import type { Candle, GapRange } from "./types";
 
 interface ChartProps {
   candles: Candle[];
+  gaps?: GapRange[];
   vwapPeriod?: number;
   emaEnabled?: boolean;
   emaPeriod?: number;
@@ -34,11 +35,19 @@ function toEpochSeconds(time: Time): number | null {
 
 export function Chart({
   candles,
+  gaps = [],
   vwapPeriod = 20,
   emaEnabled = true,
   emaPeriod = 9,
   onCrosshairTimeChange
 }: ChartProps) {
+  const palette = {
+    live: { up: "#16a34a", down: "#dc2626" },
+    history: { up: "#166534", down: "#991b1b" },
+    mixed: { up: "#15803d", down: "#b91c1c" },
+    gaps: "#c2410c"
+  } as const;
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -197,24 +206,46 @@ export function Chart({
       }))
       .sort((a, b) => a.time - b.time);
 
+    const sourceByTime = new Map<number, Candle["source"]>();
+    for (const candle of candles) {
+      sourceByTime.set(Math.floor(candle.timeMs / 1000), candle.source);
+    }
+
     const data = normalizedCandles.reduce<
       Array<
         CandlestickData & {
           volume: number;
+          source?: Candle["source"];
         }
       >
     >((acc, point) => {
         const last = acc[acc.length - 1];
+        const source = sourceByTime.get(point.time);
+        const withSource = { ...point, source };
         if (last && last.time === point.time) {
-          acc[acc.length - 1] = point;
+          acc[acc.length - 1] = withSource;
         } else {
-          acc.push(point);
+          acc.push(withSource);
         }
         return acc;
       }, []);
 
     seriesRef.current.setData(
-      data.map(({ time, open, high, low, close }) => ({ time, open, high, low, close }))
+      data.map(({ time, open, high, low, close, source }) => {
+        const isUp = close >= open;
+        const sourceKey = source === "history" || source === "mixed" ? source : "live";
+        const color = isUp ? palette[sourceKey].up : palette[sourceKey].down;
+        return {
+          time,
+          open,
+          high,
+          low,
+          close,
+          color,
+          wickColor: color,
+          borderColor: color
+        };
+      })
     );
     volumeSeriesRef.current?.setData(
       data.map(
@@ -268,7 +299,16 @@ export function Chart({
       }
       emaSeriesRef.current?.setData(emaData);
     }
-  }, [candles, vwapPeriod, emaEnabled, emaPeriod]);
+
+    const markers = gaps.map((gap) => ({
+      time: Math.floor(gap.fromTimeMs / 1000),
+      position: "aboveBar" as const,
+      color: palette.gaps,
+      shape: "circle" as const,
+      text: `Gap (${gap.missingBuckets})`
+    }));
+    (seriesRef.current as any)?.setMarkers?.(markers);
+  }, [candles, gaps, vwapPeriod, emaEnabled, emaPeriod]);
 
   return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 }

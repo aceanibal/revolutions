@@ -16,6 +16,8 @@ export interface Candle {
   low: number;
   close: number;
   volume: number;
+  source?: "live" | "history" | "mixed";
+  isGapFill?: boolean;
 }
 
 export interface Tick {
@@ -25,16 +27,35 @@ export interface Tick {
   ts: number;
 }
 
-export type SessionStatus = "active" | "broken";
+export type SessionStatus = "active" | "broken" | "closed";
 export type SessionBreakReason = "disconnect" | "connect_error" | "inactivity" | null;
 
 export interface SessionInfo {
   id: string;
   status: SessionStatus;
   startedAtMs: number;
+  endedAtMs?: number | null;
   lastEventAtMs: number | null;
   assetCount: number;
   candleCount: number;
   breakReason: SessionBreakReason;
+  marketWindowStartMs?: number;
+  marketWindowEndMs?: number;
+}
+
+export interface GapRange {
+  fromTimeMs: number;
+  toTimeMs: number;
+  missingBuckets: number;
+}
+
+export interface PersistenceStatus {
+  redisOnline: boolean;
+  redisUrl?: string;
+  sqliteOnline: boolean;
+  sqlitePath?: string;
+  lastSqlSaveAtMs: number | null;
+  lastSqlSavedSessionId: string | null;
+  mode: "persisted" | "fallback";
 }
 

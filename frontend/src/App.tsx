@@ -4,8 +4,12 @@ import { SymbolStreamsPanel } from "./SymbolStreamsPanel";
 import { LiveMonitorPanel } from "./LiveMonitorPanel";
 import { ReportPanel } from "./ReportPanel";
 import { AssetsPanel } from "./AssetsPanel";
-import { addStream, setPrimarySymbol as setPrimarySymbolOnServer } from "./lib/api";
-import type { SessionInfo } from "./types";
+import {
+  addStream,
+  fetchPersistenceStatus,
+  setPrimarySymbol as setPrimarySymbolOnServer
+} from "./lib/api";
+import type { PersistenceStatus, SessionInfo } from "./types";
 
 type AppTab = "trade" | "report" | "assets";
 
@@ -29,8 +33,8 @@ function formatElapsed(ms: number): string {
 }
 
 export function App() {
-  const [selectedSymbol, setSelectedSymbol] = useState<string>("BTC");
-  const [primarySymbol, setPrimarySymbol] = useState<string>("BTC");
+  const [selectedSymbol, setSelectedSymbol] = useState<string>("");
+  const [primarySymbol, setPrimarySymbol] = useState<string>("");
   const [vwapPeriod, setVwapPeriod] = useState<number>(20);
   const [emaEnabled, setEmaEnabled] = useState<boolean>(true);
   const [emaPeriod, setEmaPeriod] = useState<number>(9);
@@ -38,9 +42,9 @@ export function App() {
   const [activeTab, setActiveTab] = useState<AppTab>("trade");
   const [subscribedAssets, setSubscribedAssets] = useState<string[]>([]);
   const [sessionInfo, setSessionInfo] = useState<SessionInfo | null>(null);
+  const [persistenceStatus, setPersistenceStatus] = useState<PersistenceStatus | null>(null);
   const [historyPreloading, setHistoryPreloading] = useState(false);
   const [clockNowMs, setClockNowMs] = useState<number>(() => Date.now());
-  const [restartSignal, setRestartSignal] = useState(0);
 
   const sessionElapsedMs = sessionInfo ? clockNowMs - sessionInfo.startedAtMs : 0;
 
@@ -92,13 +96,28 @@ export function App() {
     setSessionInfo(nextSessionInfo);
   };
 
-  const handleRestartSession = () => {
-    setRestartSignal((prev) => prev + 1);
-  };
-
   useEffect(() => {
     const id = setInterval(() => setClockNowMs(Date.now()), 1_000);
     return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadPersistenceStatus = async () => {
+      const status = await fetchPersistenceStatus();
+      if (cancelled) return;
+      setPersistenceStatus(status);
+    };
+
+    void loadPersistenceStatus();
+    const id = setInterval(() => {
+      void loadPersistenceStatus();
+    }, 10_000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, []);
 
   return (
@@ -123,7 +142,7 @@ export function App() {
             ))}
           </div>
           <div className="inline-flex items-center gap-2 rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-sm font-semibold tracking-tight text-indigo-900">
-            <span>{primarySymbol}</span>
+            <span>{primarySymbol || "0"}</span>
             <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-700">
               Primary
             </span>
@@ -198,14 +217,37 @@ export function App() {
                 <span>{formatElapsed(sessionElapsedMs)}</span>
               </div>
             )}
-            <button
-              type="button"
-              onClick={handleRestartSession}
-              disabled={historyPreloading}
-              className="rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 font-medium text-indigo-700 transition hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-70"
-            >
-              {historyPreloading ? "Reloading..." : "Restart"}
-            </button>
+            {persistenceStatus && (
+              <div
+                className={`inline-flex items-center gap-2 rounded-full px-2.5 py-1 font-medium ring-1 ring-inset ${
+                  persistenceStatus.redisOnline
+                    ? "bg-emerald-50 text-emerald-800 ring-emerald-200"
+                    : "bg-amber-50 text-amber-800 ring-amber-200"
+                }`}
+                title={
+                  persistenceStatus.lastSqlSavedSessionId
+                    ? `Last SQL session: ${persistenceStatus.lastSqlSavedSessionId}`
+                    : "No SQL save yet"
+                }
+              >
+                <span
+                  className={`inline-flex h-2 w-2 rounded-full ${
+                    persistenceStatus.redisOnline ? "bg-emerald-500" : "bg-amber-500"
+                  }`}
+                />
+                <span>
+                  Redis {persistenceStatus.redisOnline ? "Online" : "Offline"} ·{" "}
+                  {persistenceStatus.lastSqlSaveAtMs
+                    ? `SQL saved ${new Date(persistenceStatus.lastSqlSaveAtMs).toLocaleTimeString()}`
+                    : "SQL never saved"}
+                </span>
+              </div>
+            )}
+            {historyPreloading && (
+              <span className="rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 font-medium text-indigo-700">
+                Reloading...
+              </span>
+            )}
           </div>
         </div>
       </header>
@@ -224,11 +266,10 @@ export function App() {
               <div className="min-h-0">
                 <ChartPanel
                   symbol={primarySymbol}
-                  trackedSymbols={[...subscribedAssets, primarySymbol]}
+                  trackedSymbols={[...subscribedAssets, primarySymbol].filter(Boolean)}
                   vwapPeriod={vwapPeriod}
                   emaEnabled={emaEnabled}
                   emaPeriod={emaPeriod}
-                  restartSignal={restartSignal}
                   onSessionInfoChange={handleSessionInfoChange}
                   onHistoryPreloadingChange={setHistoryPreloading}
                 />

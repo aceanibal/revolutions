@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import type { StreamsState } from "./lib/api";
 import {
-  fetchPerpSymbols,
   fetchActiveStreams,
   removeStream,
   setPrimarySymbol
@@ -38,15 +37,12 @@ export function SymbolStreamsPanel({
     let cancelled = false;
 
     (async () => {
-      const [perps, initialStreams] = await Promise.all([
-        fetchPerpSymbols(),
-        fetchActiveStreams()
-      ]);
+      const initialStreams = await fetchActiveStreams();
       if (cancelled) return;
 
       const normalizedInitial: StreamsState = {
         symbols: initialStreams.symbols.map((s) => String(s).toUpperCase()),
-        primary: String(initialStreams.primary || "BTC").toUpperCase()
+        primary: String(initialStreams.primary || "").toUpperCase()
       };
 
       setStreams(normalizedInitial);
@@ -59,7 +55,7 @@ export function SymbolStreamsPanel({
         selectedSymbol ||
         initialStreams.primary ||
         initialStreams.symbols[0] ||
-        (perps.length > 0 ? perps[0] : "BTC");
+        "";
       onSelectedChange(canonicalSelected);
     })();
 

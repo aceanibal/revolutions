@@ -10,3 +10,5 @@ frontend/.turbo
 frontend/.parcel-cache
 
 Y
+.env
+.env.*

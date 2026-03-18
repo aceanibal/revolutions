@@ -1,4 +1,4 @@
-import type { Candle, Timeframe } from "../types";
+import type { Candle, GapRange, PersistenceStatus, SessionInfo, Timeframe } from "../types";
 
 const HYPERLIQUID_INFO_URL =
   (import.meta as any).env?.VITE_HYPERLIQUID_INFO_URL ?? "https://api.hyperliquid.xyz/info";
@@ -152,19 +152,26 @@ export interface StreamsState {
   primary: string;
 }
 
+export interface SessionSnapshot {
+  sessionInfo: SessionInfo;
+  symbol: string;
+  candlesByTimeframe: Record<Timeframe, Candle[]>;
+  gapsByTimeframe: Record<Timeframe, GapRange[]>;
+}
+
 export async function fetchActiveStreams(): Promise<StreamsState> {
   try {
     const res = await fetch(`${BACKEND_BASE_URL}/api/streams`);
     if (!res.ok) {
-      return { symbols: [], primary: "BTC" };
+      return { symbols: [], primary: "" };
     }
     const data = (await res.json()) as Partial<StreamsState>;
     return {
       symbols: Array.isArray(data.symbols) ? data.symbols.map((s) => String(s).toUpperCase()) : [],
-      primary: data.primary ? String(data.primary).toUpperCase() : "BTC"
+      primary: data.primary ? String(data.primary).toUpperCase() : ""
     };
   } catch {
-    return { symbols: [], primary: "BTC" };
+    return { symbols: [], primary: "" };
   }
 }
 
@@ -253,6 +260,122 @@ export async function fetchAccountBalance(): Promise<number> {
     return Number.isFinite(parsedBalance) && parsedBalance >= 0 ? parsedBalance : 0;
   } catch {
     return 0;
+  }
+}
+
+export async function fetchCurrentSessionSnapshot(symbol: string): Promise<SessionSnapshot | null> {
+  try {
+    const res = await fetch(
+      `${BACKEND_BASE_URL}/api/session/current?symbol=${encodeURIComponent(symbol)}&timeframe=all`
+    );
+    if (!res.ok) {
+      return null;
+    }
+    const payload: any = await res.json();
+    if (!payload?.ok) return null;
+    const one = Array.isArray(payload?.candlesByTimeframe?.["1m"])
+      ? payload.candlesByTimeframe["1m"]
+      : [];
+    const five = Array.isArray(payload?.candlesByTimeframe?.["5m"])
+      ? payload.candlesByTimeframe["5m"]
+      : [];
+
+    return {
+      sessionInfo: payload.sessionInfo as SessionInfo,
+      symbol: String(payload.symbol || symbol).toUpperCase(),
+      candlesByTimeframe: {
+        "1m": one as Candle[],
+        "5m": five as Candle[]
+      },
+      gapsByTimeframe: {
+        "1m": Array.isArray(payload?.gapsByTimeframe?.["1m"]) ? payload.gapsByTimeframe["1m"] : [],
+        "5m": Array.isArray(payload?.gapsByTimeframe?.["5m"]) ? payload.gapsByTimeframe["5m"] : []
+      }
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchSessionSnapshotById(
+  sessionId: string,
+  symbol: string
+): Promise<SessionSnapshot | null> {
+  try {
+    const res = await fetch(
+      `${BACKEND_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}?symbol=${encodeURIComponent(
+        symbol
+      )}&timeframe=all`
+    );
+    if (!res.ok) {
+      return null;
+    }
+    const payload: any = await res.json();
+    if (!payload?.ok) return null;
+
+    return {
+      sessionInfo: payload.sessionInfo as SessionInfo,
+      symbol: String(payload.symbol || symbol).toUpperCase(),
+      candlesByTimeframe: {
+        "1m": Array.isArray(payload?.candlesByTimeframe?.["1m"])
+          ? payload.candlesByTimeframe["1m"]
+          : [],
+        "5m": Array.isArray(payload?.candlesByTimeframe?.["5m"])
+          ? payload.candlesByTimeframe["5m"]
+          : []
+      },
+      gapsByTimeframe: {
+        "1m": Array.isArray(payload?.gapsByTimeframe?.["1m"]) ? payload.gapsByTimeframe["1m"] : [],
+        "5m": Array.isArray(payload?.gapsByTimeframe?.["5m"]) ? payload.gapsByTimeframe["5m"] : []
+      }
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchTodaySessions(): Promise<SessionInfo[]> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/sessions?date=today`);
+    if (!res.ok) {
+      return [];
+    }
+    const payload: any = await res.json();
+    if (!payload?.ok || !Array.isArray(payload.sessions)) {
+      return [];
+    }
+    return payload.sessions as SessionInfo[];
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchPersistenceStatus(): Promise<PersistenceStatus | null> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/persistence/status`);
+    if (!res.ok) {
+      return null;
+    }
+    const payload: any = await res.json();
+    if (!payload?.ok) {
+      return null;
+    }
+    return {
+      redisOnline: Boolean(payload.redisOnline),
+      redisUrl: payload.redisUrl ? String(payload.redisUrl) : undefined,
+      sqliteOnline: Boolean(payload.sqliteOnline),
+      sqlitePath: payload.sqlitePath ? String(payload.sqlitePath) : undefined,
+      lastSqlSaveAtMs:
+        payload.lastSqlSaveAtMs !== null && payload.lastSqlSaveAtMs !== undefined
+          ? Number(payload.lastSqlSaveAtMs)
+          : null,
+      lastSqlSavedSessionId: payload.lastSqlSavedSessionId
+        ? String(payload.lastSqlSavedSessionId)
+        : null,
+      mode: payload.mode === "persisted" ? "persisted" : "fallback"
+    };
+  } catch {
+    return null;
   }
 }
 
