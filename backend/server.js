@@ -11,7 +11,6 @@ const {
 const { connectHyperliquidWs, subscribeToSymbol, unsubscribeFromSymbol } = require("./priceStream");
 const { setupKeyboardController } = require("./controller");
 const { SessionStore } = require("./sessionStore");
-const { SessionArchive } = require("./sessionArchive");
 const { detectGapRanges, intervalForTimeframe } = require("./sessionMath");
 
 const PORT = process.env.PORT || 3000;
@@ -20,6 +19,9 @@ const HYPERLIQUID_WS_URL =
 const DEFAULT_SYMBOL = "";
 const DEFAULT_STOP_LOSS_PRICE = 0;
 const STOP_LOSS_STEP = 5;
+const ARCHIVE_ON_SHUTDOWN = String(process.env.SESSION_ARCHIVE_ON_SHUTDOWN || "")
+  .trim()
+  .toLowerCase() === "true";
 
 const app = express();
 const server = http.createServer(app);
@@ -65,14 +67,14 @@ let cleanupKeyboardController = null;
 let sessionRolloverIntervalId = null;
 
 const sessionStore = new SessionStore();
-const sessionArchive = new SessionArchive({ sessionStore });
 
-async function preloadSymbolHistory(symbol) {
+async function preloadSymbolHistory(symbol, options = {}) {
+  const force = Boolean(options.force);
   const normalized = normalizeSymbol(symbol);
   if (!normalized) return;
-  console.log(`[server] preloadSymbolHistory start symbol=${normalized}`);
+  console.log(`[server] preloadSymbolHistory start symbol=${normalized} force=${force}`);
   try {
-    const result = await sessionStore.preloadHistoricalForSymbol(normalized);
+    const result = await sessionStore.preloadHistoricalForSymbol(normalized, { force });
     if (result?.sessionInfo) {
       io.emit("session:update", result.sessionInfo);
     }
@@ -127,6 +129,28 @@ async function buildDirectHistorySnapshot(symbol) {
       "5m": detectGapRanges(candles5m, intervalForTimeframe("5m"))
     }
   };
+}
+
+async function hydrateStartupStreams() {
+  try {
+    const restored = await sessionStore.getStartupSymbols();
+    const symbols = Array.isArray(restored?.symbols) ? restored.symbols : [];
+    for (const symbol of symbols) {
+      if (symbol) activeSymbols.add(symbol);
+    }
+    if (!primarySymbol && symbols.length > 0) {
+      primarySymbol = symbols[0];
+    }
+    if (symbols.length > 0) {
+      console.log(
+        `[server] Restored startup streams source=${restored.source} session=${restored.sessionId || "n/a"} symbols=${symbols.join(",")}`
+      );
+    } else {
+      console.log("[server] No startup streams restored from prior sessions");
+    }
+  } catch (error) {
+    console.log("Startup stream restore warning:", error?.message || error);
+  }
 }
 
 // REST API to update the primary symbol (ensures it is part of the active streams set).
@@ -254,6 +278,38 @@ app.get("/api/session/current", async (req, res) => {
     res.json({ ok: true, ...snapshot });
   } catch (error) {
     res.status(500).json({ ok: false, message: error.message || "Failed to load current session" });
+  }
+});
+
+app.get("/api/session/active-id", async (req, res) => {
+  try {
+    const sessionId = await sessionStore.getCurrentSessionId();
+    res.json({ ok: true, sessionId: sessionId || null });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error.message || "Failed to read active session id" });
+  }
+});
+
+app.post("/api/session/save", async (req, res) => {
+  try {
+    const requestedSessionId = String(req.body?.sessionId || "").trim();
+    const sessionId = requestedSessionId || (await sessionStore.getCurrentSessionId());
+    if (!sessionId) {
+      return res.status(404).json({ ok: false, message: "No active session found to save" });
+    }
+    const payload = await sessionStore.saveSessionCheckpoint(sessionId, Date.now(), "manual_save");
+    if (!payload) {
+      return res.status(404).json({ ok: false, message: "Session not found or unavailable for save" });
+    }
+    const sessionInfo = await sessionStore.getSessionInfo(sessionId);
+    return res.json({
+      ok: true,
+      sessionId,
+      sessionInfo,
+      persistence: sessionStore.getPersistenceStatus()
+    });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error.message || "Failed to save session" });
   }
 });
 
@@ -419,9 +475,15 @@ async function shutdown(signal) {
   }
 
   try {
-    const sessionId = await sessionStore.getCurrentSessionId();
-    if (sessionId) {
-      await sessionArchive.archiveSession(sessionId, signal || "shutdown");
+    if (ARCHIVE_ON_SHUTDOWN) {
+      const sessionId = await sessionStore.getCurrentSessionId();
+      if (sessionId) {
+        await sessionStore.closeAndArchiveSession(sessionId, Date.now(), signal || "shutdown");
+      }
+    } else {
+      console.log(
+        "[server] Leaving active session open on shutdown; it will roll by market window/day."
+      );
     }
     await sessionStore.shutdown();
   } catch (error) {
@@ -491,98 +553,113 @@ io.on("connection", (socket) => {
 
 console.log(`Server starting on port ${PORT}`);
 
-server.listen(PORT, async () => {
-  console.log("Express + Socket.io ready");
+async function bootstrapServer() {
   try {
     await sessionStore.init();
     await sessionStore.ensureActiveSession(Date.now());
-    await emitSessionUpdate();
+    await hydrateStartupStreams();
   } catch (error) {
     console.log("Session store initialization warning:", error?.message || error);
   }
 
-  connectHyperliquidWs({
-    io,
-    wsUrl: HYPERLIQUID_WS_URL,
-    getActiveSymbols: () => Array.from(activeSymbols),
-    seenFirstDataForSymbol,
-    onPriceUpdate: ({ symbol, price }) => {
-      // Only HUD/position sizing are tied to the primary symbol.
-      if (symbol === primarySymbol) {
-        lastPrice = price;
-        emitHudUpdate();
-      }
-      void sessionStore
-        .ingestTick(
-          {
-            symbol,
-            price,
-            size: 0,
-            ts: Date.now()
-          },
-          "live"
-        )
-        .then((result) => {
-          if (result?.sessionInfo) {
-            io.emit("session:update", result.sessionInfo);
-          }
-        })
-        .catch(() => {});
-    },
-    onTick: (trade) => {
-      void sessionStore
-        .ingestTick(
-          {
-            symbol: trade.symbol,
-            price: trade.price,
-            size: trade.size,
-            ts: trade.ts
-          },
-          "live"
-        )
-        .then((result) => {
-          if (result?.sessionInfo) {
-            io.emit("session:update", result.sessionInfo);
-          }
-        })
-        .catch(() => {});
-    }
-  });
+  server.listen(PORT, async () => {
+    console.log("Express + Socket.io ready");
+    await emitSessionUpdate();
 
-  if (hasAccountConfigured()) {
-    const doFetchBalance = () =>
-      fetchAccountBalance({
-        onBalance: (parsedBalance) => {
-          balance = parsedBalance;
-          console.log("Fetched account info:", { balance });
+    connectHyperliquidWs({
+      io,
+      wsUrl: HYPERLIQUID_WS_URL,
+      getActiveSymbols: () => Array.from(activeSymbols),
+      seenFirstDataForSymbol,
+      onPriceUpdate: ({ symbol, price }) => {
+        // Only HUD/position sizing are tied to the primary symbol.
+        if (symbol === primarySymbol) {
+          lastPrice = price;
           emitHudUpdate();
-        },
-        onError: (error) => {
-          console.log("Failed to fetch account info:", error.message);
         }
-      });
+        void sessionStore
+          .ingestTick(
+            {
+              symbol,
+              price,
+              size: 0,
+              ts: Date.now()
+            },
+            "live"
+          )
+          .then((result) => {
+            if (result?.sessionInfo) {
+              io.emit("session:update", result.sessionInfo);
+            }
+          })
+          .catch(() => {});
+      },
+      onTick: (trade) => {
+        void sessionStore
+          .ingestTick(
+            {
+              symbol: trade.symbol,
+              price: trade.price,
+              size: trade.size,
+              ts: trade.ts
+            },
+            "live"
+          )
+          .then((result) => {
+            if (result?.sessionInfo) {
+              io.emit("session:update", result.sessionInfo);
+            }
+          })
+          .catch(() => {});
+      },
+      onConnected: (symbols) => {
+        // Reconnects after temporary internet loss should refresh history and patch
+        // missing bars into the existing day session instead of creating a new one.
+        for (const symbol of symbols || []) {
+          void preloadSymbolHistory(symbol, { force: true });
+        }
+      }
+    });
 
-    doFetchBalance();
-    balanceIntervalId = setInterval(doFetchBalance, getBalanceRefreshMs());
-  } else {
+    if (hasAccountConfigured()) {
+      const doFetchBalance = () =>
+        fetchAccountBalance({
+          onBalance: (parsedBalance) => {
+            balance = parsedBalance;
+            console.log("Fetched account info:", { balance });
+            emitHudUpdate();
+          },
+          onError: (error) => {
+            console.log("Failed to fetch account info:", error.message);
+          }
+        });
+
+      doFetchBalance();
+      balanceIntervalId = setInterval(doFetchBalance, getBalanceRefreshMs());
+    } else {
+      console.log(
+        "Account balance polling disabled: set HYPERLIQUID_ACCOUNT in backend/account.js"
+      );
+    }
+
     console.log(
-      "Account balance polling disabled: set HYPERLIQUID_ACCOUNT in backend/account.js"
+      "PS5 controller handling removed from backend; use Enjoyable F-key mappings (F1-F9)."
     );
-  }
+    cleanupKeyboardController = setupKeyboardController({
+      onAction: handleControllerAction,
+      onShutdownRequested: () => shutdown("SIGINT")
+    });
 
-  console.log("PS5 controller handling removed from backend; use Enjoyable mappings.");
-  cleanupKeyboardController = setupKeyboardController({
-    onAction: handleControllerAction,
-    onShutdownRequested: () => shutdown("SIGINT")
+    sessionRolloverIntervalId = setInterval(() => {
+      void sessionStore
+        .maybeRollSession(Date.now())
+        .then(() => emitSessionUpdate())
+        .catch(() => {});
+    }, 30_000);
   });
+}
 
-  sessionRolloverIntervalId = setInterval(() => {
-    void sessionStore
-      .maybeRollSession(Date.now())
-      .then(() => emitSessionUpdate())
-      .catch(() => {});
-  }, 30_000);
-});
+void bootstrapServer();
 
 process.on("SIGINT", () => {
   void shutdown("SIGINT");

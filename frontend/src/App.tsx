@@ -7,6 +7,7 @@ import { AssetsPanel } from "./AssetsPanel";
 import {
   addStream,
   fetchPersistenceStatus,
+  saveCurrentSession,
   setPrimarySymbol as setPrimarySymbolOnServer
 } from "./lib/api";
 import type { PersistenceStatus, SessionInfo } from "./types";
@@ -45,8 +46,11 @@ export function App() {
   const [persistenceStatus, setPersistenceStatus] = useState<PersistenceStatus | null>(null);
   const [historyPreloading, setHistoryPreloading] = useState(false);
   const [clockNowMs, setClockNowMs] = useState<number>(() => Date.now());
+  const [savingSession, setSavingSession] = useState(false);
+  const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
 
   const sessionElapsedMs = sessionInfo ? clockNowMs - sessionInfo.startedAtMs : 0;
+  const sessionStatusLabel = sessionInfo?.status === "closed" ? "saved" : sessionInfo?.status || "";
 
   const handleChangeTab = (tab: AppTab) => {
     setActiveTab(tab);
@@ -94,6 +98,21 @@ export function App() {
 
   const handleSessionInfoChange = (nextSessionInfo: SessionInfo) => {
     setSessionInfo(nextSessionInfo);
+  };
+
+  const handleSaveSession = async () => {
+    if (savingSession) return;
+    setSavingSession(true);
+    setSaveFeedback(null);
+    const status = await saveCurrentSession();
+    if (status) {
+      setPersistenceStatus(status);
+      setSaveFeedback("Session saved");
+    } else {
+      setSaveFeedback("Save failed");
+    }
+    setSavingSession(false);
+    setTimeout(() => setSaveFeedback(null), 3000);
   };
 
   useEffect(() => {
@@ -210,10 +229,10 @@ export function App() {
               <div className="inline-flex items-center gap-2 rounded-full bg-white px-2.5 py-1 font-medium text-slate-700 ring-1 ring-inset ring-slate-200">
                 <span
                   className={`inline-flex h-2 w-2 rounded-full ${
-                    sessionInfo.status === "active" ? "bg-emerald-500" : "bg-rose-500"
+                    sessionInfo.status === "active" ? "bg-emerald-500" : "bg-amber-500"
                   }`}
                 />
-                <span className="uppercase tracking-wide">{sessionInfo.status}</span>
+                <span className="uppercase tracking-wide">{sessionStatusLabel}</span>
                 <span>{formatElapsed(sessionElapsedMs)}</span>
               </div>
             )}
@@ -246,6 +265,19 @@ export function App() {
             {historyPreloading && (
               <span className="rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 font-medium text-indigo-700">
                 Reloading...
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => void handleSaveSession()}
+              disabled={savingSession}
+              className="rounded-full border border-slate-300 bg-white px-3 py-1 font-medium text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {savingSession ? "Saving..." : "Save Session"}
+            </button>
+            {saveFeedback && (
+              <span className="rounded-full border border-slate-200 bg-slate-100 px-3 py-1 font-medium text-slate-700">
+                {saveFeedback}
               </span>
             )}
           </div>

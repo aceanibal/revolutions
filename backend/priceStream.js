@@ -146,7 +146,8 @@ function connectHyperliquidWs({
   getActiveSymbols,
   seenFirstDataForSymbol,
   onPriceUpdate,
-  onTick
+  onTick,
+  onConnected
 }) {
   console.log("[priceStream] Opening Hyperliquid WS:", wsUrl);
   hyperliquidWs = new WebSocket(wsUrl);
@@ -156,6 +157,9 @@ function connectHyperliquidWs({
     const symbols = typeof getActiveSymbols === "function" ? getActiveSymbols() : [];
     for (const symbol of symbols || []) {
       subscribeToSymbol(symbol);
+    }
+    if (typeof onConnected === "function") {
+      onConnected(symbols);
     }
   });
 
@@ -211,7 +215,8 @@ function connectHyperliquidWs({
           getActiveSymbols,
           seenFirstDataForSymbol,
           onPriceUpdate,
-          onTick
+          onTick,
+          onConnected
         }),
       2000
     );

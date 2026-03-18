@@ -318,17 +318,20 @@ class SessionStore {
     };
   }
 
-  async preloadHistoricalForSymbol(symbol) {
+  async preloadHistoricalForSymbol(symbol, options = {}) {
     const upper = normalizeSymbol(symbol);
     if (!upper) return null;
     if (!this.redis) {
       return { sessionId: null, sessionInfo: null, reason: "redis_unavailable" };
     }
+    const force = Boolean(options.force);
 
     const sessionId = await this.ensureActiveSession(Date.now());
     if (!sessionId) return null;
 
-    console.log(`[sessionStore] History preload start symbol=${upper} session=${sessionId}`);
+    console.log(
+      `[sessionStore] History preload start symbol=${upper} session=${sessionId} force=${force}`
+    );
 
     const multi = this.redis.multi();
     multi.sadd(this.sessionSymbolsKey(sessionId), upper);
@@ -340,7 +343,9 @@ class SessionStore {
       "5m": 0
     };
     for (const timeframe of TIMEFRAMES) {
-      loadedCounts[timeframe] = await this.preloadHistoricalTimeframe(sessionId, upper, timeframe);
+      loadedCounts[timeframe] = await this.preloadHistoricalTimeframe(sessionId, upper, timeframe, {
+        force
+      });
     }
 
     const sessionInfo = await this.getSessionInfo(sessionId);
@@ -350,10 +355,11 @@ class SessionStore {
     return { sessionId, sessionInfo };
   }
 
-  async preloadHistoricalTimeframe(sessionId, symbol, timeframe) {
+  async preloadHistoricalTimeframe(sessionId, symbol, timeframe, options = {}) {
+    const force = Boolean(options.force);
     const loadedKey = this.historyLoadedKey(sessionId, symbol, timeframe);
     const alreadyLoaded = await this.redis.get(loadedKey);
-    if (alreadyLoaded === "1") {
+    if (alreadyLoaded === "1" && !force) {
       console.log(
         `[sessionStore] History preload skip symbol=${symbol} timeframe=${timeframe} session=${sessionId} (already loaded)`
       );
@@ -458,6 +464,54 @@ class SessionStore {
     return this.redis.get(`session:active:${windowId}`);
   }
 
+  async getStartupSymbols() {
+    const normalizeUnique = (values) =>
+      Array.from(new Set((values || []).map(normalizeSymbol).filter(Boolean)));
+
+    const currentSessionId = await this.getCurrentSessionId();
+    if (currentSessionId && this.redis) {
+      const redisSymbols = normalizeUnique(await this.redis.smembers(this.sessionSymbolsKey(currentSessionId)));
+      if (redisSymbols.length > 0) {
+        return { symbols: redisSymbols, source: "redis", sessionId: currentSessionId };
+      }
+    }
+
+    if (!this.sqlite) {
+      return { symbols: [], source: "none", sessionId: null };
+    }
+
+    const latestRow = this.sqlite
+      .prepare(
+        "SELECT id FROM sessions ORDER BY COALESCE(last_saved_at_ms, ended_at_ms, started_at_ms) DESC LIMIT 1"
+      )
+      .get();
+    const latestSessionId = latestRow?.id ? String(latestRow.id) : null;
+    if (!latestSessionId) {
+      return { symbols: [], source: "none", sessionId: null };
+    }
+
+    const rows = this.sqlite
+      .prepare(
+        `
+          SELECT symbol, MIN(ts_ms) AS first_seen_ms
+          FROM (
+            SELECT symbol, bucket_start_ms AS ts_ms FROM session_candles WHERE session_id = ?
+            UNION ALL
+            SELECT symbol, ts_ms FROM session_ticks WHERE session_id = ?
+          )
+          GROUP BY symbol
+          ORDER BY first_seen_ms ASC
+        `
+      )
+      .all(latestSessionId, latestSessionId);
+    const sqlSymbols = normalizeUnique(rows.map((row) => row.symbol));
+    if (sqlSymbols.length > 0) {
+      return { symbols: sqlSymbols, source: "sql", sessionId: latestSessionId };
+    }
+
+    return { symbols: [], source: "none", sessionId: latestSessionId };
+  }
+
   async getCurrentSessionSnapshot(symbol, timeframe = "1m") {
     if (!this.redis) return null;
     const sessionId = await this.getCurrentSessionId();
@@ -531,19 +585,42 @@ class SessionStore {
     return result.sort((a, b) => a.startedAtMs - b.startedAtMs);
   }
 
+  async saveSessionCheckpoint(sessionId, savedAtMs = Date.now(), reason = "manual_save") {
+    return this.persistSessionToSql(sessionId, {
+      markClosed: false,
+      savedAtMs,
+      reason
+    });
+  }
+
   async closeAndArchiveSession(sessionId, endedAtMs = Date.now(), breakReason = null) {
     if (!this.redis || !sessionId) return;
+    return this.persistSessionToSql(sessionId, {
+      markClosed: true,
+      savedAtMs: endedAtMs,
+      reason: breakReason
+    });
+  }
+
+  async persistSessionToSql(sessionId, options = {}) {
+    if (!this.redis || !sessionId) return null;
+    const markClosed = Boolean(options.markClosed);
+    const savedAtMs = Number(options.savedAtMs || Date.now());
+    const reason = options.reason || null;
     const metaKey = this.sessionMetaKey(sessionId);
     const meta = await this.redis.hgetall(metaKey);
-    if (!meta || !meta.id) return;
+    if (!meta || !meta.id) return null;
 
-    await this.redis.hset(metaKey, {
-      status: "closed",
-      endedAtMs: String(endedAtMs),
-      breakReason: breakReason || ""
-    });
+    if (markClosed) {
+      await this.redis.hset(metaKey, {
+        status: "closed",
+        endedAtMs: String(savedAtMs),
+        breakReason: reason || ""
+      });
+    }
 
-    if (!this.sqlite) return;
+    if (!this.sqlite) return null;
+    const effectiveMeta = markClosed ? await this.redis.hgetall(metaKey) : meta;
     const symbols = await this.redis.smembers(this.sessionSymbolsKey(sessionId));
     let candleCount = 0;
     let tickCount = 0;
@@ -555,7 +632,7 @@ class SessionStore {
       "INSERT OR IGNORE INTO session_candles (session_id, symbol, timeframe, bucket_start_ms, open, high, low, close, volume, source, is_gap_fill) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
     const upsertSession = this.sqlite.prepare(
-      "INSERT INTO sessions (id, market_window_start, market_window_end, started_at_ms, ended_at_ms, status, break_reason, asset_count, tick_count, candle_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET ended_at_ms=excluded.ended_at_ms, status=excluded.status, break_reason=excluded.break_reason, asset_count=excluded.asset_count, tick_count=excluded.tick_count, candle_count=excluded.candle_count"
+      "INSERT INTO sessions (id, market_window_start, market_window_end, started_at_ms, ended_at_ms, status, break_reason, asset_count, tick_count, candle_count, last_saved_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET ended_at_ms=excluded.ended_at_ms, status=excluded.status, break_reason=excluded.break_reason, asset_count=excluded.asset_count, tick_count=excluded.tick_count, candle_count=excluded.candle_count, last_saved_at_ms=excluded.last_saved_at_ms"
     );
 
     const tickRows = [];
@@ -602,15 +679,16 @@ class SessionStore {
 
     const sessionPayload = {
       id: sessionId,
-      marketWindowStartMs: Number(meta.marketWindowStartMs || 0),
-      marketWindowEndMs: Number(meta.marketWindowEndMs || 0),
-      startedAtMs: Number(meta.startedAtMs || Date.now()),
-      endedAtMs,
-      status: "closed",
-      breakReason: breakReason || null,
+      marketWindowStartMs: Number(effectiveMeta.marketWindowStartMs || 0),
+      marketWindowEndMs: Number(effectiveMeta.marketWindowEndMs || 0),
+      startedAtMs: Number(effectiveMeta.startedAtMs || Date.now()),
+      endedAtMs: effectiveMeta.endedAtMs ? Number(effectiveMeta.endedAtMs) : null,
+      status: markClosed ? "closed" : String(effectiveMeta.status || "active"),
+      breakReason: markClosed ? reason : effectiveMeta.breakReason || null,
       assetCount: symbols.length,
       tickCount,
-      candleCount
+      candleCount,
+      lastSavedAtMs: savedAtMs
     };
 
     this.sqlite.exec("BEGIN");
@@ -643,14 +721,16 @@ class SessionStore {
         sessionPayload.breakReason,
         sessionPayload.assetCount,
         sessionPayload.tickCount,
-        sessionPayload.candleCount
+        sessionPayload.candleCount,
+        sessionPayload.lastSavedAtMs
       );
       this.sqlite.exec("COMMIT");
-      this.lastSqlSaveAtMs = endedAtMs;
+      this.lastSqlSaveAtMs = sessionPayload.lastSavedAtMs;
       this.lastSqlSavedSessionId = sessionPayload.id;
       console.log(
-        `[sessionStore] SQL archive saved session=${sessionPayload.id} endedAtMs=${endedAtMs}`
+        `[sessionStore] SQL checkpoint saved session=${sessionPayload.id} savedAtMs=${sessionPayload.lastSavedAtMs} status=${sessionPayload.status}`
       );
+      return sessionPayload;
     } catch (error) {
       this.sqlite.exec("ROLLBACK");
       throw error;
@@ -662,11 +742,11 @@ class SessionStore {
     try {
       const row = this.sqlite
         .prepare(
-          "SELECT id, ended_at_ms FROM sessions WHERE ended_at_ms IS NOT NULL ORDER BY ended_at_ms DESC LIMIT 1"
+          "SELECT id, COALESCE(last_saved_at_ms, ended_at_ms, started_at_ms) AS saved_ms FROM sessions ORDER BY saved_ms DESC LIMIT 1"
         )
         .get();
-      if (row && Number.isFinite(Number(row.ended_at_ms))) {
-        this.lastSqlSaveAtMs = Number(row.ended_at_ms);
+      if (row && Number.isFinite(Number(row.saved_ms))) {
+        this.lastSqlSaveAtMs = Number(row.saved_ms);
         this.lastSqlSavedSessionId = String(row.id || "");
       }
     } catch {
@@ -701,7 +781,8 @@ class SessionStore {
         break_reason TEXT,
         asset_count INTEGER NOT NULL DEFAULT 0,
         tick_count INTEGER NOT NULL DEFAULT 0,
-        candle_count INTEGER NOT NULL DEFAULT 0
+        candle_count INTEGER NOT NULL DEFAULT 0,
+        last_saved_at_ms INTEGER
       );
 
       CREATE TABLE IF NOT EXISTS session_ticks (
@@ -733,6 +814,9 @@ class SessionStore {
       CREATE INDEX IF NOT EXISTS idx_session_ticks_lookup ON session_ticks (session_id, symbol, ts_ms);
       CREATE INDEX IF NOT EXISTS idx_session_candles_lookup ON session_candles (session_id, symbol, timeframe, bucket_start_ms);
     `);
+    try {
+      this.sqlite.exec("ALTER TABLE sessions ADD COLUMN last_saved_at_ms INTEGER;");
+    } catch {}
   }
 }
 

@@ -3,55 +3,55 @@
   "entries" : {
     "1356:3302:1~Hat 0 Right" : {
       "type" : "key press",
-      "key" : 2
+      "key" : 101
     },
     "1356:3302:1~Hat 0 Left" : {
       "type" : "key press",
-      "key" : 0
+      "key" : 100
     },
     "1356:3302:1~Button 6" : {
       "type" : "key press",
-      "key" : 12
+      "key" : 118
     },
     "1356:3302:1~Hat Switch 1~Left" : {
       "type" : "key press",
-      "key" : 12
+      "key" : 118
     },
     "1356:3302:1~Button 7" : {
       "type" : "key press",
-      "key" : 14
+      "key" : 96
     },
     "1356:3302:1~Hat 0 Up" : {
       "type" : "key press",
-      "key" : 13
+      "key" : 97
     },
     "1356:3302:1~Button 4" : {
       "type" : "key press",
-      "key" : 40
+      "key" : 99
     },
     "1356:3302:1~Hat Switch 1~Right" : {
       "type" : "key press",
-      "key" : 14
+      "key" : 96
     },
     "1356:3302:1~Button 1" : {
       "type" : "key press",
-      "key" : 38
+      "key" : 120
     },
     "1356:3302:1~Hat Switch 1~Up" : {
       "type" : "key press",
-      "key" : 13
+      "key" : 97
     },
     "1356:3302:1~Hat Switch 1~Down" : {
       "type" : "key press",
-      "key" : 1
+      "key" : 98
     },
     "1356:3302:1~Hat 0 Down" : {
       "type" : "key press",
-      "key" : 1
+      "key" : 98
     },
     "1356:3302:1~Button 2" : {
       "type" : "key press",
-      "key" : 7
+      "key" : 122
     }
   }
 }

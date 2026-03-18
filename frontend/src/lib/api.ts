@@ -297,6 +297,20 @@ export async function fetchCurrentSessionSnapshot(symbol: string): Promise<Sessi
   }
 }
 
+export async function fetchActiveSessionId(): Promise<string | null> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/session/active-id`);
+    if (!res.ok) {
+      return null;
+    }
+    const payload: any = await res.json();
+    if (!payload?.ok) return null;
+    return payload.sessionId ? String(payload.sessionId) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchSessionSnapshotById(
   sessionId: string,
   symbol: string
@@ -328,6 +342,43 @@ export async function fetchSessionSnapshotById(
         "1m": Array.isArray(payload?.gapsByTimeframe?.["1m"]) ? payload.gapsByTimeframe["1m"] : [],
         "5m": Array.isArray(payload?.gapsByTimeframe?.["5m"]) ? payload.gapsByTimeframe["5m"] : []
       }
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function saveCurrentSession(): Promise<PersistenceStatus | null> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/session/save`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    if (!res.ok) {
+      return null;
+    }
+    const payload: any = await res.json();
+    if (!payload?.ok) {
+      return null;
+    }
+    const status = payload?.persistence;
+    if (!status) {
+      return fetchPersistenceStatus();
+    }
+    return {
+      redisOnline: Boolean(status.redisOnline),
+      redisUrl: status.redisUrl ? String(status.redisUrl) : undefined,
+      sqliteOnline: Boolean(status.sqliteOnline),
+      sqlitePath: status.sqlitePath ? String(status.sqlitePath) : undefined,
+      lastSqlSaveAtMs:
+        status.lastSqlSaveAtMs !== null && status.lastSqlSaveAtMs !== undefined
+          ? Number(status.lastSqlSaveAtMs)
+          : null,
+      lastSqlSavedSessionId: status.lastSqlSavedSessionId
+        ? String(status.lastSqlSavedSessionId)
+        : null,
+      mode: status.mode === "persisted" ? "persisted" : "fallback"
     };
   } catch {
     return null;

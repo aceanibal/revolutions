@@ -3,7 +3,9 @@ import { io, Socket } from "socket.io-client";
 import type { Candle, GapRange, HudState, SessionInfo, Tick, Timeframe } from "./types";
 import {
   fetchAccountBalance,
+  fetchActiveSessionId,
   fetchCurrentSessionSnapshot,
+  fetchPersistenceStatus,
   fetchSessionSnapshotById
 } from "./lib/api";
 
@@ -83,7 +85,9 @@ export function useSocket(
   selectedSessionId: string | null = null
 ) {
   const selectedSymbolRef = useRef(selectedSymbol.toUpperCase());
-  const liveMode = !selectedSessionId;
+  const [autoSelectedSessionId, setAutoSelectedSessionId] = useState<string | null>(null);
+  const effectiveSelectedSessionId = selectedSessionId || autoSelectedSessionId;
+  const liveMode = !effectiveSelectedSessionId;
   const [hud, setHud] = useState<HudState>({
     symbol: "",
     price: 0,
@@ -115,11 +119,39 @@ export function useSocket(
 
   useEffect(() => {
     let cancelled = false;
+    if (selectedSessionId) {
+      setAutoSelectedSessionId(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const syncSessionSource = async () => {
+      const activeSessionId = await fetchActiveSessionId();
+      if (cancelled) return;
+      if (activeSessionId) {
+        setAutoSelectedSessionId(null);
+        return;
+      }
+
+      const status = await fetchPersistenceStatus();
+      if (cancelled) return;
+      setAutoSelectedSessionId(status?.lastSqlSavedSessionId || null);
+    };
+
+    void syncSessionSource();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSessionId]);
+
+  useEffect(() => {
+    let cancelled = false;
     setHistoryPreloading(true);
 
     const load = async () => {
-      const snapshot = selectedSessionId
-        ? await fetchSessionSnapshotById(selectedSessionId, selectedSymbolRef.current)
+      const snapshot = effectiveSelectedSessionId
+        ? await fetchSessionSnapshotById(effectiveSelectedSessionId, selectedSymbolRef.current)
         : await fetchCurrentSessionSnapshot(selectedSymbolRef.current);
       if (cancelled) return;
 
@@ -128,7 +160,7 @@ export function useSocket(
           candles.map((c) => ({
             ...c,
             source:
-              selectedSessionId && (!c.source || c.source === "live")
+              effectiveSelectedSessionId && (!c.source || c.source === "live")
                 ? ("history" as const)
                 : c.source
           }));
@@ -151,7 +183,7 @@ export function useSocket(
     return () => {
       cancelled = true;
     };
-  }, [trackedSymbolsKey, selectedSessionId]);
+  }, [trackedSymbolsKey, effectiveSelectedSessionId]);
 
   useEffect(() => {
     const socket: Socket = io("/", { path: "/socket.io" });
@@ -178,6 +210,7 @@ export function useSocket(
     });
 
     socket.on("session:update", (payload: SessionInfo) => {
+      if (!liveMode) return;
       if (!payload) return;
       setSessionInfo(payload);
     });
@@ -265,7 +298,7 @@ export function useSocket(
     gaps: selectedGaps,
     timeframe,
     setTimeframe,
-    waitingForLiveData: selectedCandles.length === 0,
+    waitingForLiveData: liveMode && selectedCandles.length === 0,
     historyPreloading,
     connected,
     sessionInfo

@@ -22,23 +22,25 @@ function extractKeyCandidates(event) {
 
 function mapGlobalKeyNameToAction(candidates) {
   const keys = candidates.map(normalizeKeyName);
+  const includesAny = (...values) =>
+    values.some((value) => keys.includes(normalizeKeyName(value)));
 
-  if (keys.includes("X") || keys.includes("KEY X")) return "cross";
-  if (keys.includes("J") || keys.includes("KEY J")) return "triangle";
-  if (keys.includes("K") || keys.includes("KEY K")) return "circle";
-  if (keys.includes("Q") || keys.includes("KEY Q")) return "primaryPrev";
-  if (keys.includes("E") || keys.includes("KEY E")) return "primaryNext";
+  if (includesAny("F1", "KEY F1")) return "cross";
+  if (includesAny("F2", "KEY F2")) return "triangle";
+  if (includesAny("F3", "KEY F3")) return "circle";
+  if (includesAny("F4", "KEY F4")) return "primaryPrev";
+  if (includesAny("F5", "KEY F5")) return "primaryNext";
 
-  if (keys.includes("W") || keys.includes("KEY W")) {
+  if (includesAny("F6", "KEY F6")) {
     return "dpadUp";
   }
-  if (keys.includes("S") || keys.includes("KEY S")) {
+  if (includesAny("F7", "KEY F7")) {
     return "dpadDown";
   }
-  if (keys.includes("A") || keys.includes("KEY A")) {
+  if (includesAny("F8", "KEY F8")) {
     return "dpadLeft";
   }
-  if (keys.includes("D") || keys.includes("KEY D")) {
+  if (includesAny("F9", "KEY F9")) {
     return "dpadRight";
   }
 
@@ -83,7 +85,7 @@ function setupKeyboardController({ onAction, onShutdownRequested }) {
     process.exit(1);
   });
 
-  console.log("Global keyboard listener active: X=cross J=triangle K=circle WASD=D-pad");
+  console.log("Global keyboard listener active: F1=cross F2=triangle F3=circle F4/F5=primary F6-F9=D-pad");
 
   return () => {
     keyboard.removeListener(listener);
