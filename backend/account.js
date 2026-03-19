@@ -48,6 +48,7 @@ const HYPERLIQUID_ACCOUNT_TEST =
 
 const BALANCE_REFRESH_MS = 20_000;
 
+
 console.log("[account] Live wallet:", HYPERLIQUID_ACCOUNT_LIVE ? `${HYPERLIQUID_ACCOUNT_LIVE.slice(0, 8)}...` : "(not configured)");
 console.log("[account] Test wallet:", HYPERLIQUID_ACCOUNT_TEST ? `${HYPERLIQUID_ACCOUNT_TEST.slice(0, 8)}...` : "(not configured)");
 

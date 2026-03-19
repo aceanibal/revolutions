@@ -45,18 +45,18 @@ export function ChartPanel({
     gaps,
     stopLossProjections,
     accountMode,
-    activePosition,
+    isLong,
+    tradeResult,
     setStopLossPrice: setStopLossPriceOnSocket
   } = useSocket(symbol, trackedSymbols, selectedSessionId);
   const [riskPercentage, setRiskPercentage] = useState(2);
   const [stopLossPrice, setStopLossPrice] = useState(0);
-  const [isLong, setIsLong] = useState(true);
+  const [visibleTradeResult, setVisibleTradeResult] = useState<typeof tradeResult>(null);
   const [makerFeeRate, setMakerFeeRate] = useState(0.0001);
   const [takerFeeRate, setTakerFeeRate] = useState(0.00035);
   const maxExchangeLeverage = 50;
 
-  const hasActiveTrade = activePosition !== null;
-  const entryPrice = hasActiveTrade ? activePosition.entryPx : hud.price;
+  const entryPrice = hud.price;
 
   const effectiveTimeframe = timeframe ?? "1m";
   const latestTimeSec = useMemo(() => {
@@ -118,6 +118,13 @@ export function ChartPanel({
   }, [slPrice]);
 
   useEffect(() => {
+    if (!tradeResult) return;
+    setVisibleTradeResult(tradeResult);
+    const timeoutId = window.setTimeout(() => setVisibleTradeResult(null), 3000);
+    return () => window.clearTimeout(timeoutId);
+  }, [tradeResult]);
+
+  useEffect(() => {
     let cancelled = false;
     (async () => {
       const [fees, settings] = await Promise.all([fetchAccountFees(accountMode), fetchAccountSettings()]);
@@ -150,8 +157,6 @@ export function ChartPanel({
       accountBalance={hud.balance}
       riskPercentage={riskPercentage}
       entryPrice={entryPrice}
-      livePrice={hud.price}
-      hasActiveTrade={hasActiveTrade}
       stopLossPrice={stopLossPrice}
       isLong={isLong}
       makerFeeRate={makerFeeRate}
@@ -161,7 +166,6 @@ export function ChartPanel({
       accountMode={accountMode}
       onModeToggle={handleModeToggle}
       onRiskPercentageChange={setRiskPercentage}
-      onIsLongChange={setIsLong}
     />
   );
 
@@ -206,6 +210,25 @@ export function ChartPanel({
           <div className="absolute bottom-2 right-2 z-20 rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-medium text-slate-700 ring-1 ring-inset ring-slate-200 backdrop-blur">
             {displayTime}
           </div>
+          {visibleTradeResult && (
+            <div
+              className={`absolute right-2 top-10 z-20 rounded-lg px-3 py-2 text-[11px] font-medium shadow-sm ring-1 ring-inset ${
+                visibleTradeResult.ok
+                  ? "bg-emerald-50 text-emerald-900 ring-emerald-200"
+                  : "bg-rose-50 text-rose-900 ring-rose-200"
+              }`}
+            >
+              <div className="font-semibold uppercase tracking-wide">
+                {visibleTradeResult.action}
+                {visibleTradeResult.symbol ? ` · ${visibleTradeResult.symbol}` : ""}
+              </div>
+              <div>
+                {visibleTradeResult.ok
+                  ? visibleTradeResult.details || "Trade action completed"
+                  : visibleTradeResult.error || "Trade action failed"}
+              </div>
+            </div>
+          )}
           {waitingForLiveData && !historyPreloading && (
             <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-white/70">
               <span className="text-xs font-medium text-gray-700">Waiting for live candles...</span>
@@ -223,7 +246,7 @@ export function ChartPanel({
             vwapPeriod={vwapPeriod}
             emaEnabled={emaEnabled}
             emaPeriod={emaPeriod}
-            entryPrice={hasActiveTrade ? entryPrice : 0}
+            entryPrice={0}
             stopLossPrice={stopLossPrice}
             breakEvenPrice={metrics.breakEvenPrice}
             isLong={isLong}

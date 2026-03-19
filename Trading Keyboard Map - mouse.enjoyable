@@ -1,0 +1,113 @@
+{
+  "name" : "Trading Keyboard Map",
+  "entries" : {
+    "1356:3302:1~Axis 1~Low" : {
+      "type" : "mouse move",
+      "axis" : 0,
+      "speed" : 5
+    },
+    "1356:3302:1~Hat Switch 1~Left" : {
+      "type" : "key press",
+      "key" : 118
+    },
+    "1356:3302:1~Axis 3~High" : {
+      "speed" : 15,
+      "type" : "mouse scroll",
+      "smooth" : true,
+      "direction" : 2
+    },
+    "1356:3302:1~Button 1" : {
+      "type" : "key press",
+      "key" : 120
+    },
+    "1356:3302:1~Axis 1~High" : {
+      "type" : "mouse move",
+      "axis" : 1,
+      "speed" : 4
+    },
+    "1356:3302:1~Button 2" : {
+      "type" : "key press",
+      "key" : 122
+    },
+    "1356:3302:1~Button 3" : {
+      "type" : "key press",
+      "key" : 101
+    },
+    "1356:3302:1~Button 4" : {
+      "type" : "key press",
+      "key" : 99
+    },
+    "1356:3302:1~Button 5" : {
+      "type" : "key press",
+      "key" : 18
+    },
+    "1356:3302:1~Hat Switch 1~Right" : {
+      "type" : "key press",
+      "key" : 96
+    },
+    "1356:3302:1~Button 6" : {
+      "type" : "key press",
+      "key" : 19
+    },
+    "1356:3302:1~Button 7" : {
+      "type" : "key press",
+      "key" : 96
+    },
+    "1356:3302:1~Axis 4~Low" : {
+      "speed" : 15,
+      "type" : "mouse scroll",
+      "smooth" : true,
+      "direction" : -1
+    },
+    "1356:3302:1~Axis 2~Low" : {
+      "type" : "mouse move",
+      "axis" : 2,
+      "speed" : 5
+    },
+    "1356:3302:1~Hat 0 Left" : {
+      "type" : "key press",
+      "key" : 118
+    },
+    "1356:3302:1~Hat 0 Up" : {
+      "type" : "key press",
+      "key" : 97
+    },
+    "1356:3302:1~Button 10" : {
+      "type" : "key press",
+      "key" : 20
+    },
+    "1356:3302:1~Hat 0 Down" : {
+      "type" : "key press",
+      "key" : 100
+    },
+    "1356:3302:1~Hat Switch 1~Up" : {
+      "type" : "key press",
+      "key" : 97
+    },
+    "1356:3302:1~Hat Switch 1~Down" : {
+      "type" : "key press",
+      "key" : 100
+    },
+    "1356:3302:1~Hat 0 Right" : {
+      "type" : "key press",
+      "key" : 96
+    },
+    "1356:3302:1~Axis 4~High" : {
+      "speed" : 15,
+      "type" : "mouse scroll",
+      "smooth" : true,
+      "direction" : 1
+    },
+    "1356:3302:1~Axis 2~High" : {
+      "type" : "mouse move",
+      "axis" : 3,
+      "speed" : 5
+    },
+    "1356:3302:1~Axis 3~Low" : {
+      "speed" : 15,
+      "type" : "mouse scroll",
+      "smooth" : true,
+      "direction" : -2
+    }
+  }
+}

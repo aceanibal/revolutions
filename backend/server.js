@@ -28,6 +28,13 @@ const { connectHyperliquidWs, subscribeToSymbol, unsubscribeFromSymbol } = requi
 const { setupKeyboardController } = require("./controller");
 const { SessionStore } = require("./sessionStore");
 const { detectGapRanges, intervalForTimeframe, upsertCandle } = require("./sessionMath");
+const {
+  executeTrade,
+  placeStopLoss,
+  closePosition,
+  cancelOrderById,
+  cancelAllOrders
+} = require("./exchange");
 
 const PORT = process.env.PORT || 3000;
 const HYPERLIQUID_WS_URL =
@@ -75,6 +82,8 @@ const activeSymbols = new Set();
 const stopLossBySymbol = new Map(); // symbol -> price
 let accountMode = "test";
 const activePositionBySymbol = new Map();
+const isLongBySymbol = new Map(); // symbol -> true(long), false(short)
+const activeStopLossOrderBySymbol = new Map(); // symbol -> { asset, oid }
 let balance = 0;
 let lastPrice = 0;
 
@@ -228,6 +237,32 @@ function getStopLossPrice(symbol) {
   return Number.isFinite(v) && v > 0 ? v : 0;
 }
 
+function getDirectionForSymbol(symbol) {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized) return true;
+  const existing = isLongBySymbol.get(normalized);
+  if (typeof existing === "boolean") return existing;
+  isLongBySymbol.set(normalized, true);
+  return true;
+}
+
+function setDirectionForSymbol(symbol, isLong) {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized) return;
+  isLongBySymbol.set(normalized, Boolean(isLong));
+}
+
+function emitDirectionUpdate(target, symbol = primarySymbol) {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized) return;
+  const payload = { symbol: normalized, isLong: getDirectionForSymbol(normalized) };
+  if (target && typeof target.emit === "function") {
+    target.emit("direction:update", payload);
+  } else {
+    io.emit("direction:update", payload);
+  }
+}
+
 let seenFirstDataForSymbol = new Set();
 let balanceIntervalId = null;
 let cleanupKeyboardController = null;
@@ -307,6 +342,7 @@ async function hydrateStartupStreams() {
     }
     if (!primarySymbol && symbols.length > 0) {
       primarySymbol = symbols[0];
+      getDirectionForSymbol(primarySymbol);
     }
     if (symbols.length > 0) {
       console.log(
@@ -337,6 +373,7 @@ app.post("/api/change-symbol", async (req, res) => {
 
   primarySymbol = nextSymbol;
   seenFirstDataForSymbol.delete(primarySymbol);
+  getDirectionForSymbol(primarySymbol);
 
   // Notify all clients about the new primary and updated streams.
   io.emit("symbolChanged", { symbol: primarySymbol });
@@ -344,6 +381,7 @@ app.post("/api/change-symbol", async (req, res) => {
     symbols: Array.from(activeSymbols),
     primary: primarySymbol
   });
+  emitDirectionUpdate();
 
   await preloadSymbolHistory(nextSymbol);
   res.json({ ok: true, symbol: primarySymbol });
@@ -414,7 +452,9 @@ app.delete("/api/streams/:symbol", (req, res) => {
     if (first) {
       primarySymbol = first;
       seenFirstDataForSymbol.delete(primarySymbol);
+      getDirectionForSymbol(primarySymbol);
       io.emit("symbolChanged", { symbol: primarySymbol });
+      emitDirectionUpdate();
     }
   }
 
@@ -662,7 +702,7 @@ app.patch("/api/account/mode", (req, res) => {
   accountMode = next;
   console.log("[server] Account mode changed to:", accountMode);
   io.emit("mode:update", { mode: accountMode });
-  void doFetchBalanceAndPosition();
+  void doFetchBalance();
   void refreshFeeAndMetaCache();
   res.json({ ok: true, mode: accountMode });
 });
@@ -731,32 +771,29 @@ async function refreshActivePosition() {
     for (const symbol of activeSymbols) {
       const pos = positions.find((p) => p.coin === symbol) || null;
       activePositionBySymbol.set(symbol, pos);
+      const inferred = inferDirectionFromPosition(pos);
+      if (typeof inferred === "boolean") {
+        setDirectionForSymbol(symbol, inferred);
+      }
     }
-    emitActivePosition();
   } catch (err) {
     console.log("[server] refreshActivePosition error:", err?.message || err);
   }
 }
 
-function emitActivePosition() {
-  const pos = activePositionBySymbol.get(primarySymbol) || null;
-  io.emit("activePosition:update", { symbol: primarySymbol, position: pos });
-}
-
-async function doFetchBalanceAndPosition() {
+async function doFetchBalance() {
   if (!isAccountConfiguredForMode(accountMode)) return;
   fetchAccountBalance({
     mode: accountMode,
     onBalance: (parsedBalance) => {
       balance = parsedBalance;
-      console.log("Fetched account info:", { balance, mode: accountMode });
+      console.log("Fetched balance:", { balance, mode: accountMode });
       emitHudUpdate();
     },
     onError: (error) => {
-      console.log("Failed to fetch account info:", error.message);
+      console.log("Failed to fetch balance:", error.message);
     }
   });
-  await refreshActivePosition();
 }
 
 async function emitSessionUpdate() {
@@ -773,6 +810,57 @@ function emitControllerEvent(button) {
     action: "pressed",
     ts: Date.now()
   });
+}
+
+function emitTradeResult(payload) {
+  io.emit("trade:result", {
+    ts: Date.now(),
+    ...payload
+  });
+}
+
+function getActivePosition(symbol) {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized) return null;
+  return activePositionBySymbol.get(normalized) || null;
+}
+
+function inferDirectionFromPosition(position) {
+  const size = Number(position?.szi ?? 0);
+  if (!Number.isFinite(size) || size === 0) return null;
+  return size > 0;
+}
+
+async function maybeRearmStopLossForPosition(symbol, position) {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized) return null;
+
+  const posSize = Math.abs(Number(position?.szi ?? 0));
+  if (!Number.isFinite(posSize) || posSize <= 0) return null;
+  const isLong = inferDirectionFromPosition(position);
+  if (isLong === null) return null;
+  const stopLossPrice = getStopLossPrice(normalized);
+  if (!Number.isFinite(stopLossPrice) || stopLossPrice <= 0) return null;
+
+  await cancelAllOrders({ symbol: normalized, mode: accountMode });
+  const stopResult = await placeStopLoss({
+    symbol: normalized,
+    isLong,
+    size: posSize,
+    triggerPrice: stopLossPrice,
+    mode: accountMode
+  });
+  if (
+    Number.isFinite(stopResult?.asset) &&
+    Number.isFinite(stopResult?.oid) &&
+    Number(stopResult.oid) > 0
+  ) {
+    activeStopLossOrderBySymbol.set(normalized, {
+      asset: Number(stopResult.asset),
+      oid: Number(stopResult.oid)
+    });
+  }
+  return stopResult;
 }
 
 function cyclePrimarySymbol(direction) {
@@ -798,66 +886,367 @@ function cyclePrimarySymbol(direction) {
   console.log("Primary symbol moved via controller:", primarySymbol);
   io.emit("symbolChanged", { symbol: primarySymbol });
   emitStreamsUpdate();
+  emitDirectionUpdate();
 }
 
-function handleControllerAction(action) {
-  if (action === "cross") {
-    console.log("TRADE EXECUTED - 2% RISK");
-    emitControllerEvent("cross");
+async function executeCrossTrade() {
+  const symbol = normalizeSymbol(primarySymbol);
+  if (!symbol) {
+    emitTradeResult({ ok: false, action: "cross", symbol: "", error: "No primary symbol selected" });
+    return;
+  }
+  if (getActivePosition(symbol)) {
+    emitTradeResult({ ok: false, action: "cross", symbol, error: "An active trade already exists" });
     return;
   }
 
-  if (action === "triangle") {
-    console.log("AZIZ METHOD - 50% CLOSE & BE");
-    emitControllerEvent("triangle");
+  const stopLossPrice = getStopLossPrice(symbol);
+  if (!Number.isFinite(stopLossPrice) || stopLossPrice <= 0) {
+    emitTradeResult({ ok: false, action: "cross", symbol, error: "Set stop loss first (F9 or drag)" });
+    return;
+  }
+  if (!Number.isFinite(lastPrice) || lastPrice <= 0) {
+    emitTradeResult({ ok: false, action: "cross", symbol, error: "Live price is unavailable" });
+    return;
+  }
+  if (!Number.isFinite(balance) || balance <= 0) {
+    emitTradeResult({ ok: false, action: "cross", symbol, error: "Balance is unavailable" });
     return;
   }
 
-  if (action === "circle") {
-    console.log("BAILOUT");
-    emitControllerEvent("circle");
+  const isLong = getDirectionForSymbol(symbol);
+  const stopLossDistancePct = isLong
+    ? ((lastPrice - stopLossPrice) / lastPrice) * 100
+    : ((stopLossPrice - lastPrice) / lastPrice) * 100;
+  if (!Number.isFinite(stopLossDistancePct) || stopLossDistancePct <= 0) {
+    emitTradeResult({
+      ok: false,
+      action: "cross",
+      symbol,
+      error: isLong
+        ? "For LONG, stop loss must be below current price"
+        : "For SHORT, stop loss must be above current price"
+    });
     return;
   }
 
-  if (action === "primaryPrev") {
-    cyclePrimarySymbol("prev");
-    emitControllerEvent("primaryPrev");
+  const settings = getSettings();
+  const preview = computeLeveragePreview({
+    stopLossDistancePct,
+    riskBudgetPct: Number(settings?.riskPercent ?? 2),
+    makerFeePct: cachedFeeRates.makerFeePct,
+    takerFeePct: cachedFeeRates.takerFeePct,
+    slippageBps: Number(settings?.slippageBps ?? 10),
+    exchangeMaxLeverage: cachedExchangeMaxLeverage,
+    accountBalance: balance,
+    entryPrice: lastPrice
+  });
+  if (!Number.isFinite(preview.positionSizeUnits) || preview.positionSizeUnits <= 0) {
+    emitTradeResult({ ok: false, action: "cross", symbol, error: "Calculated position size is invalid" });
     return;
   }
 
-  if (action === "primaryNext") {
-    cyclePrimarySymbol("next");
-    emitControllerEvent("primaryNext");
+  const tradeResult = await executeTrade({
+    symbol,
+    isLong,
+    positionSize: preview.positionSizeUnits,
+    leverage: preview.cappedLeverage,
+    price: lastPrice,
+    mode: accountMode
+  });
+
+  const stopResult = await placeStopLoss({
+    symbol,
+    isLong,
+    size: tradeResult.size,
+    triggerPrice: stopLossPrice,
+    mode: accountMode
+  });
+  if (
+    Number.isFinite(stopResult?.asset) &&
+    Number.isFinite(stopResult?.oid) &&
+    Number(stopResult.oid) > 0
+  ) {
+    activeStopLossOrderBySymbol.set(symbol, {
+      asset: Number(stopResult.asset),
+      oid: Number(stopResult.oid)
+    });
+  }
+
+  await refreshActivePosition();
+  emitHudUpdate();
+  emitTradeResult({
+    ok: true,
+    action: "cross",
+    symbol,
+    side: isLong ? "long" : "short",
+    size: tradeResult.size,
+    avgPx: tradeResult.avgPx,
+    details: "Trade opened and stop loss placed"
+  });
+}
+
+async function executeAzizMethod() {
+  const symbol = normalizeSymbol(primarySymbol);
+  const position = getActivePosition(symbol);
+  if (!symbol || !position) {
+    emitTradeResult({ ok: false, action: "triangle", symbol: symbol || "", error: "No active trade to scale out" });
+    return;
+  }
+  const isLong = inferDirectionFromPosition(position);
+  const positionSize = Math.abs(Number(position.szi ?? 0));
+  if (isLong === null || !Number.isFinite(positionSize) || positionSize <= 0) {
+    emitTradeResult({ ok: false, action: "triangle", symbol, error: "Active position size is invalid" });
+    return;
+  }
+  if (!Number.isFinite(lastPrice) || lastPrice <= 0) {
+    emitTradeResult({ ok: false, action: "triangle", symbol, error: "Live price is unavailable" });
     return;
   }
 
-  if (action === "stopLossSnap") {
-    if (primarySymbol && lastPrice > 0) {
-      stopLossBySymbol.set(primarySymbol, lastPrice);
-      console.log("stopLoss snapped to price:", lastPrice, "for", primarySymbol);
-      emitHudUpdate();
-      emitControllerEvent("stopLossSnap");
+  const settings = getSettings();
+  const closeResult = await closePosition({
+    symbol,
+    isLong,
+    size: positionSize * 0.5,
+    price: lastPrice,
+    mode: accountMode
+  });
+
+  await refreshActivePosition();
+  const updated = getActivePosition(symbol);
+  if (updated && Number.isFinite(updated.entryPx) && Number(updated.entryPx) > 0) {
+    setDirectionForSymbol(symbol, Number(updated.szi) > 0);
+    stopLossBySymbol.set(symbol, Number(updated.entryPx));
+    await maybeRearmStopLossForPosition(symbol, updated);
+  } else {
+    activeStopLossOrderBySymbol.delete(symbol);
+  }
+
+  emitHudUpdate();
+  emitTradeResult({
+    ok: true,
+    action: "triangle",
+    symbol,
+    side: isLong ? "long" : "short",
+    size: closeResult.size,
+    avgPx: closeResult.avgPx,
+    details: "Closed 50% and moved stop loss to break-even"
+  });
+}
+
+async function executeBailout() {
+  const symbol = normalizeSymbol(primarySymbol);
+  const position = getActivePosition(symbol);
+  if (!symbol || !position) {
+    emitTradeResult({ ok: false, action: "circle", symbol: symbol || "", error: "No active trade to close" });
+    return;
+  }
+  const isLong = inferDirectionFromPosition(position);
+  const positionSize = Math.abs(Number(position.szi ?? 0));
+  if (isLong === null || !Number.isFinite(positionSize) || positionSize <= 0) {
+    emitTradeResult({ ok: false, action: "circle", symbol, error: "Active position size is invalid" });
+    return;
+  }
+  if (!Number.isFinite(lastPrice) || lastPrice <= 0) {
+    emitTradeResult({ ok: false, action: "circle", symbol, error: "Live price is unavailable" });
+    return;
+  }
+
+  const settings = getSettings();
+  const closeResult = await closePosition({
+    symbol,
+    isLong,
+    size: positionSize,
+    price: lastPrice,
+    mode: accountMode
+  });
+  await cancelAllOrders({ symbol, mode: accountMode });
+  activeStopLossOrderBySymbol.delete(symbol);
+
+  await refreshActivePosition();
+  emitHudUpdate();
+  emitTradeResult({
+    ok: true,
+    action: "circle",
+    symbol,
+    side: isLong ? "long" : "short",
+    size: closeResult.size,
+    avgPx: closeResult.avgPx,
+    details: "Position closed"
+  });
+}
+
+async function executeStopLossUpdate() {
+  const symbol = normalizeSymbol(primarySymbol);
+  const position = getActivePosition(symbol);
+  if (!symbol || !position) {
+    emitTradeResult({
+      ok: false,
+      action: "updateStopLoss",
+      symbol: symbol || "",
+      error: "No active trade to update stop loss"
+    });
+    return;
+  }
+  const isLong = inferDirectionFromPosition(position);
+  const positionSize = Math.abs(Number(position.szi ?? 0));
+  const stopLossPrice = getStopLossPrice(symbol);
+  if (isLong === null || !Number.isFinite(positionSize) || positionSize <= 0) {
+    emitTradeResult({ ok: false, action: "updateStopLoss", symbol, error: "Active position size is invalid" });
+    return;
+  }
+  if (!Number.isFinite(stopLossPrice) || stopLossPrice <= 0) {
+    emitTradeResult({ ok: false, action: "updateStopLoss", symbol, error: "Stop loss is not set" });
+    return;
+  }
+
+  const tracked = activeStopLossOrderBySymbol.get(symbol);
+  if (tracked?.asset != null && tracked?.oid != null) {
+    try {
+      await cancelOrderById({
+        asset: Number(tracked.asset),
+        oid: Number(tracked.oid),
+        mode: accountMode
+      });
+    } catch {
+      await cancelAllOrders({ symbol, mode: accountMode });
     }
-    return;
+  } else {
+    await cancelAllOrders({ symbol, mode: accountMode });
   }
 
-  if (action === "dpadUp") {
-    const step = getAtrStopLossStep();
-    const current = getStopLossPrice(primarySymbol);
-    const next = current + step;
-    stopLossBySymbol.set(primarySymbol, next);
-    emitHudUpdate();
-    emitControllerEvent(action);
-    return;
+  const stopResult = await placeStopLoss({
+    symbol,
+    isLong,
+    size: positionSize,
+    triggerPrice: stopLossPrice,
+    mode: accountMode
+  });
+  console.log("[server] stop-loss update placed", {
+    mode: accountMode,
+    symbol,
+    requestedTrigger: stopLossPrice,
+    positionSize,
+    exchangeAsset: Number(stopResult?.asset ?? 0),
+    exchangeOid: Number(stopResult?.oid ?? 0),
+    exchangeStatus: String(stopResult?.status ?? "unknown")
+  });
+  if (
+    Number.isFinite(stopResult?.asset) &&
+    Number.isFinite(stopResult?.oid) &&
+    Number(stopResult.oid) > 0
+  ) {
+    activeStopLossOrderBySymbol.set(symbol, {
+      asset: Number(stopResult.asset),
+      oid: Number(stopResult.oid)
+    });
+  } else {
+    activeStopLossOrderBySymbol.delete(symbol);
   }
 
-  if (action === "dpadDown") {
-    const step = getAtrStopLossStep();
-    const current = getStopLossPrice(primarySymbol);
-    const next = Math.max(0, current - step);
-    stopLossBySymbol.set(primarySymbol, next);
-    emitHudUpdate();
-    emitControllerEvent(action);
+  emitTradeResult({
+    ok: true,
+    action: "updateStopLoss",
+    symbol,
+    side: isLong ? "long" : "short",
+    size: positionSize,
+    avgPx: null,
+    details: "Stop loss updated on exchange"
+  });
+}
+
+function toggleDirectionFromController() {
+  const symbol = normalizeSymbol(primarySymbol);
+  if (!symbol) return;
+  const nextDirection = !getDirectionForSymbol(symbol);
+  setDirectionForSymbol(symbol, nextDirection);
+  console.log(`[server] Direction toggled ${symbol}: ${nextDirection ? "LONG" : "SHORT"}`);
+  emitDirectionUpdate();
+}
+
+async function handleControllerAction(action) {
+  try {
+    if (action === "cross") {
+      emitControllerEvent("cross");
+      await executeCrossTrade();
+      return;
+    }
+
+    if (action === "triangle") {
+      emitControllerEvent("triangle");
+      await executeAzizMethod();
+      return;
+    }
+
+    if (action === "circle") {
+      emitControllerEvent("circle");
+      await executeBailout();
+      return;
+    }
+
+    if (action === "toggleDirection") {
+      emitControllerEvent("toggleDirection");
+      toggleDirectionFromController();
+      return;
+    }
+
+    if (action === "updateStopLoss") {
+      emitControllerEvent("updateStopLoss");
+      await executeStopLossUpdate();
+      return;
+    }
+
+    if (action === "primaryPrev") {
+      cyclePrimarySymbol("prev");
+      emitControllerEvent("primaryPrev");
+      return;
+    }
+
+    if (action === "primaryNext") {
+      cyclePrimarySymbol("next");
+      emitControllerEvent("primaryNext");
+      return;
+    }
+
+    if (action === "stopLossSnap") {
+      if (primarySymbol && lastPrice > 0) {
+        stopLossBySymbol.set(primarySymbol, lastPrice);
+        console.log("stopLoss snapped to price:", lastPrice, "for", primarySymbol);
+        emitHudUpdate();
+        emitControllerEvent("stopLossSnap");
+      }
+      return;
+    }
+
+    if (action === "dpadUp") {
+      const step = getAtrStopLossStep();
+      const current = getStopLossPrice(primarySymbol);
+      const next = current + step;
+      stopLossBySymbol.set(primarySymbol, next);
+      emitHudUpdate();
+      emitControllerEvent(action);
+      return;
+    }
+
+    if (action === "dpadDown") {
+      const step = getAtrStopLossStep();
+      const current = getStopLossPrice(primarySymbol);
+      const next = Math.max(0, current - step);
+      stopLossBySymbol.set(primarySymbol, next);
+      emitHudUpdate();
+      emitControllerEvent(action);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const symbol = normalizeSymbol(primarySymbol);
+    console.log("[server] controller action error:", action, message);
+    emitTradeResult({
+      ok: false,
+      action,
+      symbol,
+      error: message
+    });
   }
 }
 
@@ -916,12 +1305,13 @@ io.on("connection", (socket) => {
     stopLossPrice: getStopLossPrice(primarySymbol),
     settings,
     mode: accountMode,
-    activePosition: activePositionBySymbol.get(primarySymbol) || null
+    isLong: getDirectionForSymbol(primarySymbol)
   });
 
   emitStreamsUpdate(socket);
   void emitSessionUpdate();
   emitStopLossProjections();
+  emitDirectionUpdate(socket);
 
   socket.on("symbol:subscribe", async (payload) => {
     const symbol = normalizeSymbol(payload?.symbol || primarySymbol);
@@ -939,8 +1329,10 @@ io.on("connection", (socket) => {
     if (symbol !== primarySymbol) {
       primarySymbol = symbol;
       seenFirstDataForSymbol.delete(primarySymbol);
+      getDirectionForSymbol(primarySymbol);
       io.emit("symbolChanged", { symbol: primarySymbol });
       emitStreamsUpdate();
+      emitDirectionUpdate();
     }
   });
 
@@ -970,8 +1362,10 @@ io.on("connection", (socket) => {
 
     primarySymbol = nextSymbol;
     seenFirstDataForSymbol.delete(primarySymbol);
+    getDirectionForSymbol(primarySymbol);
     io.emit("symbolChanged", { symbol: primarySymbol });
     emitStreamsUpdate();
+    emitDirectionUpdate();
   });
 });
 
@@ -1057,8 +1451,8 @@ async function bootstrapServer() {
     });
 
     if (isAccountConfiguredForMode(accountMode)) {
-      void doFetchBalanceAndPosition();
-      balanceIntervalId = setInterval(() => void doFetchBalanceAndPosition(), getBalanceRefreshMs());
+      void doFetchBalance();
+      balanceIntervalId = setInterval(() => void doFetchBalance(), getBalanceRefreshMs());
     } else {
       console.log(
         `[server] Account balance polling disabled for ${accountMode} mode: no wallet configured`
@@ -1069,7 +1463,7 @@ async function bootstrapServer() {
     setInterval(() => void refreshFeeAndMetaCache(), 60_000);
 
     console.log(
-      "Keyboard shortcuts active: F1=cross F2=triangle F3=circle F4/F5=primary F6/F8=stopLoss"
+      "Keyboard shortcuts active: 3=direction F1=cross F2=triangle F3=circle F4/F5=primary F6/F8=stopLoss F9=snap F10=updateSL"
     );
     cleanupKeyboardController = setupKeyboardController({
       onAction: handleControllerAction,

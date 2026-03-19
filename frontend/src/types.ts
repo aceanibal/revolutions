@@ -157,3 +157,15 @@ export interface AccountSettings {
   stopLossStep: number;
 }
 
+export interface TradeResult {
+  ok: boolean;
+  action: string;
+  symbol: string;
+  side?: "long" | "short";
+  size?: number;
+  avgPx?: number | null;
+  error?: string;
+  details?: string;
+  ts: number;
+}
+

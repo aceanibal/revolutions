@@ -35,9 +35,11 @@ function mapGlobalKeyNameToAction(candidates) {
   if (includesAny("F3", "KEY F3")) return "circle";
   if (includesAny("F4", "KEY F4")) return "primaryPrev";
   if (includesAny("F5", "KEY F5")) return "primaryNext";
+  if (includesAny("3", "KEY 3", "NUMPAD 3")) return "toggleDirection";
   if (includesAny("F6", "KEY F6") || hasToken("F6")) return "dpadUp";
   if (includesAny("F8", "KEY F8") || hasToken("F8")) return "dpadDown";
   if (includesAny("F9", "KEY F9")) return "stopLossSnap";
+  if (includesAny("F10", "KEY F10")) return "updateStopLoss";
 
   return null;
 }
@@ -121,7 +123,7 @@ function setupKeyboardController({ onAction, onShutdownRequested }) {
 
   console.log(
     "Global keyboard listener active — " +
-    "F1=cross F2=triangle F3=circle F4/F5=primary F6/F8=stopLoss+/- F9=snap"
+    "F1=cross F2=triangle F3=circle 3=direction F4/F5=primary F6/F8=stopLoss+/- F9=snap F10=updateSL"
   );
 
   return () => {

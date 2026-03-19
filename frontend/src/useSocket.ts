@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { io, Socket } from "socket.io-client";
-import type { AccountMode, AccountPosition, AccountSettings, Candle, GapRange, HudState, SessionInfo, StopLossProjections, Tick, Timeframe } from "./types";
+import type { AccountMode, AccountSettings, Candle, GapRange, HudState, SessionInfo, StopLossProjections, Tick, Timeframe, TradeResult } from "./types";
 import {
   fetchCurrentSessionSnapshot,
   fetchSessionSnapshotById
@@ -97,7 +97,8 @@ export function useSocket(
   const [stopLossProjections, setStopLossProjections] = useState<StopLossProjections | null>(null);
   const [accountSettings, setAccountSettings] = useState<AccountSettings | null>(null);
   const [accountMode, setAccountMode] = useState<AccountMode>("test");
-  const [activePosition, setActivePosition] = useState<AccountPosition | null>(null);
+  const [isLong, setIsLong] = useState(true);
+  const [tradeResult, setTradeResult] = useState<TradeResult | null>(null);
   const trackedSymbolsKey = useMemo(() => {
     const set = new Set<string>();
     for (const symbol of [selectedSymbol, ...trackedSymbols]) {
@@ -180,8 +181,8 @@ export function useSocket(
       if (payload.mode === "live" || payload.mode === "test") {
         setAccountMode(payload.mode);
       }
-      if (payload.activePosition !== undefined) {
-        setActivePosition(payload.activePosition || null);
+      if (typeof payload.isLong === "boolean") {
+        setIsLong(payload.isLong);
       }
     });
 
@@ -237,12 +238,19 @@ export function useSocket(
       }
     });
 
-    socket.on("activePosition:update", (payload: any) => {
+    socket.on("direction:update", (payload: any) => {
       if (!payload) return;
       const sym = String(payload.symbol ?? "").toUpperCase();
       if (sym === selectedSymbolRef.current || !sym) {
-        setActivePosition(payload.position || null);
+        setIsLong(Boolean(payload.isLong));
       }
+    });
+
+    socket.on("trade:result", (payload: any) => {
+      if (!payload) return;
+      const sym = String(payload.symbol ?? "").toUpperCase();
+      if (sym && sym !== selectedSymbolRef.current) return;
+      setTradeResult(payload as TradeResult);
     });
 
     socket.on("tick", (tickPayload: any) => {
@@ -299,7 +307,8 @@ export function useSocket(
     stopLossProjections,
     accountSettings,
     accountMode,
-    activePosition,
+    isLong,
+    tradeResult,
     setStopLossPrice
   };
 }

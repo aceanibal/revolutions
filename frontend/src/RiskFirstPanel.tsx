@@ -11,8 +11,6 @@ interface RiskFirstPanelProps {
   accountBalance: number;
   riskPercentage: number;
   entryPrice: number;
-  livePrice: number;
-  hasActiveTrade: boolean;
   stopLossPrice: number;
   isLong: boolean;
   makerFeeRate: number;
@@ -22,15 +20,12 @@ interface RiskFirstPanelProps {
   accountMode: AccountMode;
   onModeToggle: () => void;
   onRiskPercentageChange: (value: number) => void;
-  onIsLongChange: (value: boolean) => void;
 }
 
 export function RiskFirstPanel({
   accountBalance,
   riskPercentage,
   entryPrice,
-  livePrice,
-  hasActiveTrade,
   stopLossPrice,
   isLong,
   makerFeeRate,
@@ -39,8 +34,7 @@ export function RiskFirstPanel({
   warningText,
   accountMode,
   onModeToggle,
-  onRiskPercentageChange,
-  onIsLongChange
+  onRiskPercentageChange
 }: RiskFirstPanelProps) {
   return (
     <aside className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -78,18 +72,10 @@ export function RiskFirstPanel({
           />
         </label>
         <div className="space-y-1">
-          <span className="block text-slate-500">
-            {hasActiveTrade ? "Entry Px" : "Live Price"}
-          </span>
+          <span className="block text-slate-500">Live Price</span>
           <p className="w-full rounded-md border border-slate-200 bg-slate-100 px-2 py-1 tabular-nums text-slate-900">
             {entryPrice > 0 ? entryPrice.toFixed(4) : "—"}
           </p>
-          {hasActiveTrade && livePrice > 0 && (
-            <p className="flex items-center gap-1 text-[10px] tabular-nums text-slate-500">
-              <span>Live</span>
-              <span className="font-medium text-slate-700">{livePrice.toFixed(4)}</span>
-            </p>
-          )}
         </div>
         <div className="space-y-1">
           <span className="block text-slate-500">Stop Loss</span>
@@ -111,29 +97,13 @@ export function RiskFirstPanel({
         </div>
       </div>
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => onIsLongChange(true)}
-          className={`rounded-md px-2 py-1 text-xs font-semibold ${
-            isLong ? "bg-emerald-600 text-white" : "bg-white text-slate-700 ring-1 ring-slate-300"
+        <span
+          className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+            isLong ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
           }`}
         >
-          Long
-        </button>
-        <button
-          type="button"
-          onClick={() => onIsLongChange(false)}
-          className={`rounded-md px-2 py-1 text-xs font-semibold ${
-            !isLong ? "bg-rose-600 text-white" : "bg-white text-slate-700 ring-1 ring-slate-300"
-          }`}
-        >
-          Short
-        </button>
-        {hasActiveTrade && (
-          <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-700">
-            Active Position
-          </span>
-        )}
+          {isLong ? "Long" : "Short"}
+        </span>
       </div>
       <div className="grid gap-2 sm:grid-cols-3">
         <div className="rounded-lg border border-slate-200 bg-white p-2 text-xs">
@@ -143,11 +113,11 @@ export function RiskFirstPanel({
           <p className="text-lg font-semibold tabular-nums text-slate-900">{metrics.leverage.toFixed(2)}x</p>
         </div>
         <div className="rounded-lg border border-slate-200 bg-white p-2 text-xs">
-          <p className="font-semibold text-slate-700">Estimated Total Fees</p>
+          <p className="font-semibold text-slate-700">Estimated Fees</p>
           <div className="mt-1 grid grid-cols-2 gap-y-1 tabular-nums">
-            <span className="text-slate-500">Entry</span>
+            <span className="text-slate-500">Entry (taker)</span>
             <span className="text-right">{fmtUsd(metrics.entryFee)}</span>
-            <span className="text-slate-500">Exit</span>
+            <span className="text-slate-500">Stop Loss (taker)</span>
             <span className="text-right">{fmtUsd(metrics.exitFee)}</span>
             <span className="text-slate-500">Total</span>
             <span className="text-right font-semibold">{fmtUsd(metrics.totalFees)}</span>
