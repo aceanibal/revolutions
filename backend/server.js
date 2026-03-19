@@ -5,8 +5,7 @@ const {
   computePositionSize,
   emitHudUpdate: accountEmitHudUpdate,
   fetchAccountBalance,
-  getBalanceRefreshMs,
-  hasAccountConfigured,
+  clearAccountCache,
   isAccountConfiguredForMode,
   fetchClearinghouseState,
   fetchSpotClearinghouseState,
@@ -264,7 +263,6 @@ function emitDirectionUpdate(target, symbol = primarySymbol) {
 }
 
 let seenFirstDataForSymbol = new Set();
-let balanceIntervalId = null;
 let cleanupKeyboardController = null;
 let sessionRolloverIntervalId = null;
 
@@ -702,9 +700,33 @@ app.patch("/api/account/mode", (req, res) => {
   accountMode = next;
   console.log("[server] Account mode changed to:", accountMode);
   io.emit("mode:update", { mode: accountMode });
-  void doFetchBalance();
+  void doFetchBalance({ force: true });
   void refreshFeeAndMetaCache();
   res.json({ ok: true, mode: accountMode });
+});
+
+app.get("/api/account/balance", async (req, res) => {
+  const mode = resolveMode(req);
+  if (!isAccountConfiguredForMode(mode)) {
+    return res.status(400).json({ ok: false, message: `No ${mode} account configured` });
+  }
+  try {
+    const shouldForceRefresh =
+      String(req.query?.refresh || "")
+        .trim()
+        .toLowerCase() === "true";
+    if (shouldForceRefresh) {
+      clearAccountCache(mode);
+    }
+    const nextBalance = await fetchAccountBalance(mode);
+    if (mode === accountMode && Number.isFinite(nextBalance)) {
+      balance = Number(nextBalance);
+      emitHudUpdate();
+    }
+    res.json({ ok: true, mode, balance: Number(nextBalance ?? 0) });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error.message || "Failed to fetch account balance" });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -781,19 +803,23 @@ async function refreshActivePosition() {
   }
 }
 
-async function doFetchBalance() {
-  if (!isAccountConfiguredForMode(accountMode)) return;
-  fetchAccountBalance({
-    mode: accountMode,
-    onBalance: (parsedBalance) => {
-      balance = parsedBalance;
-      console.log("Fetched balance:", { balance, mode: accountMode });
+async function doFetchBalance({ force = false } = {}) {
+  if (!isAccountConfiguredForMode(accountMode)) return null;
+  if (force) {
+    clearAccountCache(accountMode);
+  }
+  try {
+    const parsedBalance = await fetchAccountBalance(accountMode);
+    if (Number.isFinite(parsedBalance)) {
+      balance = Number(parsedBalance);
+      console.log("Fetched balance:", { balance, mode: accountMode, force });
       emitHudUpdate();
-    },
-    onError: (error) => {
-      console.log("Failed to fetch balance:", error.message);
+      return balance;
     }
-  });
+  } catch (error) {
+    console.log("Failed to fetch balance:", error.message);
+  }
+  return null;
 }
 
 async function emitSessionUpdate() {
@@ -974,7 +1000,10 @@ async function executeCrossTrade() {
   }
 
   await refreshActivePosition();
-  emitHudUpdate();
+  const refreshedBalance = await doFetchBalance({ force: true });
+  if (!Number.isFinite(refreshedBalance)) {
+    emitHudUpdate();
+  }
   emitTradeResult({
     ok: true,
     action: "cross",
@@ -1023,7 +1052,10 @@ async function executeAzizMethod() {
     activeStopLossOrderBySymbol.delete(symbol);
   }
 
-  emitHudUpdate();
+  const refreshedBalance = await doFetchBalance({ force: true });
+  if (!Number.isFinite(refreshedBalance)) {
+    emitHudUpdate();
+  }
   emitTradeResult({
     ok: true,
     action: "triangle",
@@ -1065,7 +1097,10 @@ async function executeBailout() {
   activeStopLossOrderBySymbol.delete(symbol);
 
   await refreshActivePosition();
-  emitHudUpdate();
+  const refreshedBalance = await doFetchBalance({ force: true });
+  if (!Number.isFinite(refreshedBalance)) {
+    emitHudUpdate();
+  }
   emitTradeResult({
     ok: true,
     action: "circle",
@@ -1263,9 +1298,6 @@ async function shutdown(signal) {
   shuttingDown = true;
   console.log(`Shutting down due to ${signal}...`);
 
-  if (balanceIntervalId) {
-    clearInterval(balanceIntervalId);
-  }
   if (sessionRolloverIntervalId) {
     clearInterval(sessionRolloverIntervalId);
   }
@@ -1451,11 +1483,10 @@ async function bootstrapServer() {
     });
 
     if (isAccountConfiguredForMode(accountMode)) {
-      void doFetchBalance();
-      balanceIntervalId = setInterval(() => void doFetchBalance(), getBalanceRefreshMs());
+      void doFetchBalance({ force: true });
     } else {
       console.log(
-        `[server] Account balance polling disabled for ${accountMode} mode: no wallet configured`
+        `[server] Account balance fetch disabled for ${accountMode} mode: no wallet configured`
       );
     }
 

@@ -74,8 +74,6 @@ function ModeSection({
 
   useEffect(() => {
     void refresh();
-    const id = setInterval(() => void refresh(), 20_000);
-    return () => clearInterval(id);
   }, [refresh]);
 
   const modeLabel = mode === "live" ? "Live" : "Test";

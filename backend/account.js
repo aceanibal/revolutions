@@ -46,9 +46,6 @@ const HYPERLIQUID_ACCOUNT_TEST =
   process.env.HYPERLIQUID_ACCOUNT_TEST ||
   "";
 
-const BALANCE_REFRESH_MS = 20_000;
-
-
 console.log("[account] Live wallet:", HYPERLIQUID_ACCOUNT_LIVE ? `${HYPERLIQUID_ACCOUNT_LIVE.slice(0, 8)}...` : "(not configured)");
 console.log("[account] Test wallet:", HYPERLIQUID_ACCOUNT_TEST ? `${HYPERLIQUID_ACCOUNT_TEST.slice(0, 8)}...` : "(not configured)");
 
@@ -480,7 +477,7 @@ function emitHudUpdate(io, { stopLossPrice, balance, lastPrice }) {
   });
 }
 
-async function fetchAccountBalance({ mode = "live", onBalance, onError } = {}) {
+async function fetchAccountBalance(mode = "live") {
   try {
     const [perpsPayload, spotPayload] = await Promise.all([
       fetchClearinghouseState(mode),
@@ -502,24 +499,19 @@ async function fetchAccountBalance({ mode = "live", onBalance, onError } = {}) {
 
     const totalBalance = perpsBalance + spotBalance;
 
-    if (Number.isFinite(totalBalance) && totalBalance >= 0) {
-      if (typeof onBalance === "function") {
-        onBalance(totalBalance);
-      }
-    }
+    return Number.isFinite(totalBalance) && totalBalance >= 0 ? totalBalance : null;
   } catch (error) {
-    if (typeof onError === "function") {
-      onError(error);
-    }
+    throw error;
   }
 }
 
-function getBalanceRefreshMs() {
-  return BALANCE_REFRESH_MS;
-}
-
-function hasAccountConfigured() {
-  return isAccountConfiguredForMode("live");
+function clearAccountCache(mode) {
+  if (mode !== "live" && mode !== "test") return;
+  cache.delete(`clearinghouse:${mode}`);
+  cache.delete(`spotClearinghouse:${mode}`);
+  cache.delete(`fills:${mode}`);
+  cache.delete(`fees:${mode}`);
+  cache.delete(`meta:${mode}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -530,8 +522,7 @@ module.exports = {
   computePositionSize,
   emitHudUpdate,
   fetchAccountBalance,
-  getBalanceRefreshMs,
-  hasAccountConfigured,
+  clearAccountCache,
 
   getConfig,
   isAccountConfiguredForMode,
