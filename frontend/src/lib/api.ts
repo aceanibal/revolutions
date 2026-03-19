@@ -1,4 +1,17 @@
-import type { Candle, GapRange, PersistenceStatus, SessionInfo, Timeframe } from "../types";
+import type {
+  AccountFees,
+  AccountFill,
+  AccountMode,
+  AccountOverview,
+  AccountPosition,
+  AccountSettings,
+  Candle,
+  GapRange,
+  LeveragePreview,
+  PersistenceStatus,
+  SessionInfo,
+  Timeframe
+} from "../types";
 
 const HYPERLIQUID_INFO_URL =
   (import.meta as any).env?.VITE_HYPERLIQUID_INFO_URL ?? "https://api.hyperliquid.xyz/info";
@@ -425,6 +438,129 @@ export async function fetchPersistenceStatus(): Promise<PersistenceStatus | null
         : null,
       mode: payload.mode === "persisted" ? "persisted" : "fallback"
     };
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Account API
+// ---------------------------------------------------------------------------
+
+export async function fetchAccountOverview(
+  mode: AccountMode = "live"
+): Promise<{ overview: AccountOverview; positions: AccountPosition[] } | null> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/account/overview?mode=${mode}`);
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    if (!data?.ok) return null;
+    return { overview: data.overview, positions: data.positions ?? [] };
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchAccountPositions(
+  mode: AccountMode = "live"
+): Promise<AccountPosition[]> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/account/positions?mode=${mode}`);
+    if (!res.ok) return [];
+    const data: any = await res.json();
+    return data?.ok ? (data.positions ?? []) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchAccountFills(
+  mode: AccountMode = "live"
+): Promise<AccountFill[]> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/account/fills?mode=${mode}`);
+    if (!res.ok) return [];
+    const data: any = await res.json();
+    return data?.ok ? (data.fills ?? []) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchAccountFees(
+  mode: AccountMode = "live"
+): Promise<AccountFees | null> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/account/fees?mode=${mode}`);
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    return data?.ok ? data.fees : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchLeveragePreview(params: {
+  symbol: string;
+  stopLossDistancePct: number;
+  riskBudgetPct?: number;
+  slippageBps?: number;
+  mode?: AccountMode;
+}): Promise<LeveragePreview | null> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/account/leverage-preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params)
+    });
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    return data?.ok ? data.preview : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchAccountSettings(): Promise<AccountSettings | null> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/account/settings`);
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    return data?.ok ? data.settings : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function patchAccountMode(
+  mode: AccountMode
+): Promise<AccountMode | null> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/account/mode`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode })
+    });
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    return data?.ok ? data.mode : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function updateAccountSettings(
+  partial: Partial<AccountSettings>
+): Promise<AccountSettings | null> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/account/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(partial)
+    });
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    return data?.ok ? data.settings : null;
   } catch {
     return null;
   }

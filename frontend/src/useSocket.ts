@@ -1,11 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { io, Socket } from "socket.io-client";
-import type { Candle, GapRange, HudState, SessionInfo, Tick, Timeframe } from "./types";
+import type { AccountMode, AccountPosition, AccountSettings, Candle, GapRange, HudState, SessionInfo, StopLossProjections, Tick, Timeframe } from "./types";
 import {
-  fetchAccountBalance,
-  fetchActiveSessionId,
   fetchCurrentSessionSnapshot,
-  fetchPersistenceStatus,
   fetchSessionSnapshotById
 } from "./lib/api";
 
@@ -62,13 +59,6 @@ function upsertLiveCandle(candles: Candle[], tick: Tick, intervalMs: number): Ca
   return [...candles.slice(0, -1), updated];
 }
 
-function computePositionSize(balance: number, price: number, riskPercent: number): number {
-  if (!Number.isFinite(price) || price <= 0) {
-    return 0;
-  }
-  return (balance * (riskPercent / 100)) / price;
-}
-
 const emptySessionInfo: SessionInfo = {
   id: "",
   status: "active",
@@ -84,9 +74,9 @@ export function useSocket(
   trackedSymbols: string[] = [],
   selectedSessionId: string | null = null
 ) {
+  const socketRef = useRef<Socket | null>(null);
   const selectedSymbolRef = useRef(selectedSymbol.toUpperCase());
-  const [autoSelectedSessionId, setAutoSelectedSessionId] = useState<string | null>(null);
-  const effectiveSelectedSessionId = selectedSessionId || autoSelectedSessionId;
+  const effectiveSelectedSessionId = selectedSessionId;
   const liveMode = !effectiveSelectedSessionId;
   const [hud, setHud] = useState<HudState>({
     symbol: "",
@@ -104,6 +94,10 @@ export function useSocket(
   const [connected, setConnected] = useState(false);
   const [sessionInfo, setSessionInfo] = useState<SessionInfo>(emptySessionInfo);
   const [historyPreloading, setHistoryPreloading] = useState(false);
+  const [stopLossProjections, setStopLossProjections] = useState<StopLossProjections | null>(null);
+  const [accountSettings, setAccountSettings] = useState<AccountSettings | null>(null);
+  const [accountMode, setAccountMode] = useState<AccountMode>("test");
+  const [activePosition, setActivePosition] = useState<AccountPosition | null>(null);
   const trackedSymbolsKey = useMemo(() => {
     const set = new Set<string>();
     for (const symbol of [selectedSymbol, ...trackedSymbols]) {
@@ -116,34 +110,6 @@ export function useSocket(
   useEffect(() => {
     selectedSymbolRef.current = selectedSymbol.toUpperCase();
   }, [selectedSymbol]);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (selectedSessionId) {
-      setAutoSelectedSessionId(null);
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    const syncSessionSource = async () => {
-      const activeSessionId = await fetchActiveSessionId();
-      if (cancelled) return;
-      if (activeSessionId) {
-        setAutoSelectedSessionId(null);
-        return;
-      }
-
-      const status = await fetchPersistenceStatus();
-      if (cancelled) return;
-      setAutoSelectedSessionId(status?.lastSqlSavedSessionId || null);
-    };
-
-    void syncSessionSource();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedSessionId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -187,6 +153,7 @@ export function useSocket(
 
   useEffect(() => {
     const socket: Socket = io("/", { path: "/socket.io" });
+    socketRef.current = socket;
 
     socket.on("connect", () => {
       setConnected(true);
@@ -207,6 +174,15 @@ export function useSocket(
         stopLossPrice: Number(payload.stopLossPrice ?? 0),
         positionSize: Number(payload.positionSize ?? 0)
       }));
+      if (payload.settings) {
+        setAccountSettings(payload.settings as AccountSettings);
+      }
+      if (payload.mode === "live" || payload.mode === "test") {
+        setAccountMode(payload.mode);
+      }
+      if (payload.activePosition !== undefined) {
+        setActivePosition(payload.activePosition || null);
+      }
     });
 
     socket.on("session:update", (payload: SessionInfo) => {
@@ -245,6 +221,30 @@ export function useSocket(
       }));
     });
 
+    socket.on("stopLoss:projections", (payload: any) => {
+      if (!payload) return;
+      setStopLossProjections(payload as StopLossProjections);
+    });
+
+    socket.on("settings:update", (payload: any) => {
+      if (!payload) return;
+      setAccountSettings(payload as AccountSettings);
+    });
+
+    socket.on("mode:update", (payload: any) => {
+      if (payload?.mode === "live" || payload?.mode === "test") {
+        setAccountMode(payload.mode);
+      }
+    });
+
+    socket.on("activePosition:update", (payload: any) => {
+      if (!payload) return;
+      const sym = String(payload.symbol ?? "").toUpperCase();
+      if (sym === selectedSymbolRef.current || !sym) {
+        setActivePosition(payload.position || null);
+      }
+    });
+
     socket.on("tick", (tickPayload: any) => {
       if (!liveMode) return;
       const tick: Tick = {
@@ -261,26 +261,10 @@ export function useSocket(
 
     return () => {
       setConnected(false);
+      socketRef.current = null;
       socket.disconnect();
     };
   }, [liveMode]);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const balance = await fetchAccountBalance();
-      if (cancelled) return;
-      if (!Number.isFinite(balance) || balance < 0) return;
-      setHud((prev) => ({
-        ...prev,
-        balance,
-        positionSize: computePositionSize(balance, prev.price, prev.riskPercent)
-      }));
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const selectedCandles = useMemo(() => {
     if (timeframe === "5m") return candles5m;
@@ -292,6 +276,16 @@ export function useSocket(
     return gaps1m;
   }, [timeframe, gaps1m, gaps5m]);
 
+  const setStopLossPrice = (nextStopLossPrice: number) => {
+    const next = Number(nextStopLossPrice);
+    if (!Number.isFinite(next) || next < 0) return;
+    setHud((prev) => ({ ...prev, stopLossPrice: next }));
+    socketRef.current?.emit("stopLoss:set", {
+      symbol: selectedSymbolRef.current,
+      stopLossPrice: next
+    });
+  };
+
   return {
     hud,
     candles: selectedCandles,
@@ -301,7 +295,12 @@ export function useSocket(
     waitingForLiveData: liveMode && selectedCandles.length === 0,
     historyPreloading,
     connected,
-    sessionInfo
+    sessionInfo,
+    stopLossProjections,
+    accountSettings,
+    accountMode,
+    activePosition,
+    setStopLossPrice
   };
 }
 

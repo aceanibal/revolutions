@@ -5,7 +5,8 @@ import {
   ISeriesApi,
   HistogramData,
   Time,
-  TickMarkType
+  TickMarkType,
+  CreatePriceLineOptions
 } from "lightweight-charts";
 import type { Candle, GapRange } from "./types";
 import { normalizeCandles } from "./chart/logic/candles";
@@ -18,6 +19,12 @@ interface ChartProps {
   vwapPeriod?: number;
   emaEnabled?: boolean;
   emaPeriod?: number;
+  entryPrice?: number;
+  stopLossPrice?: number;
+  breakEvenPrice?: number;
+  isLong?: boolean;
+  enableStopLossDrag?: boolean;
+  onStopLossPriceChange?: (nextPrice: number) => void;
   onCrosshairTimeChange?: (timeSec: number | null) => void;
 }
 
@@ -41,6 +48,12 @@ export function Chart({
   vwapPeriod = 20,
   emaEnabled = true,
   emaPeriod = 9,
+  entryPrice = 0,
+  stopLossPrice = 0,
+  breakEvenPrice = 0,
+  isLong = true,
+  enableStopLossDrag = false,
+  onStopLossPriceChange,
   onCrosshairTimeChange
 }: ChartProps) {
   const palette = {
@@ -56,6 +69,11 @@ export function Chart({
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const vwapSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const emaSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const stopLossLineRef = useRef<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null>(null);
+  const breakEvenLineRef = useRef<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null>(null);
+  const entryLineRef = useRef<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null>(null);
+  const draggingStopLossRef = useRef(false);
+  const latestStopLossRef = useRef(stopLossPrice);
 
   useEffect(() => {
     if (!containerRef.current || chartRef.current) {
@@ -167,18 +185,17 @@ export function Chart({
     };
     chart.subscribeCrosshairMove(handleCrosshairMove);
 
-    const handleResize = () => {
+    const ro = new ResizeObserver(() => {
       if (!containerRef.current || !chartRef.current) return;
       chartRef.current.applyOptions({
         width: containerRef.current.clientWidth,
         height: containerRef.current.clientHeight
       });
-    };
-
-    window.addEventListener("resize", handleResize);
+    });
+    ro.observe(containerRef.current);
 
     return () => {
-      window.removeEventListener("resize", handleResize);
+      ro.disconnect();
       chart.unsubscribeCrosshairMove(handleCrosshairMove);
       chart.remove();
       chartRef.current = null;
@@ -244,6 +261,111 @@ export function Chart({
     }));
     (seriesRef.current as any)?.setMarkers?.(markers);
   }, [candles, gaps, vwapEnabled, vwapPeriod, emaEnabled, emaPeriod]);
+
+  useEffect(() => {
+    latestStopLossRef.current = stopLossPrice;
+  }, [stopLossPrice]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    const series = seriesRef.current;
+    const container = containerRef.current;
+    if (!chart || !series || !container || !enableStopLossDrag || !onStopLossPriceChange) return;
+
+    const proximityPx = 8;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!latestStopLossRef.current || latestStopLossRef.current <= 0) return;
+      const rect = container.getBoundingClientRect();
+      const y = event.clientY - rect.top;
+      const slCoordinate = series.priceToCoordinate(latestStopLossRef.current);
+      if (slCoordinate === null) return;
+      if (Math.abs(y - slCoordinate) <= proximityPx) {
+        draggingStopLossRef.current = true;
+      }
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      if (!draggingStopLossRef.current) return;
+      const rect = container.getBoundingClientRect();
+      const y = event.clientY - rect.top;
+      const nextPrice = series.coordinateToPrice(y);
+      if (nextPrice && Number.isFinite(nextPrice) && nextPrice > 0) {
+        onStopLossPriceChange(nextPrice);
+      }
+    };
+
+    const stopDragging = () => {
+      draggingStopLossRef.current = false;
+    };
+
+    container.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", stopDragging);
+    window.addEventListener("pointercancel", stopDragging);
+    return () => {
+      container.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", stopDragging);
+      window.removeEventListener("pointercancel", stopDragging);
+    };
+  }, [enableStopLossDrag, onStopLossPriceChange]);
+
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series) return;
+    const overlapThreshold = entryPrice > 0 ? entryPrice * 0.000001 : 0.000001;
+    const entryOverlapsStopLoss =
+      entryPrice > 0 &&
+      stopLossPrice > 0 &&
+      Math.abs(entryPrice - stopLossPrice) <= overlapThreshold;
+
+    if (stopLossLineRef.current) {
+      series.removePriceLine(stopLossLineRef.current);
+      stopLossLineRef.current = null;
+    }
+    if (breakEvenLineRef.current) {
+      series.removePriceLine(breakEvenLineRef.current);
+      breakEvenLineRef.current = null;
+    }
+    if (entryLineRef.current) {
+      series.removePriceLine(entryLineRef.current);
+      entryLineRef.current = null;
+    }
+
+    if (entryPrice > 0 && !entryOverlapsStopLoss) {
+      entryLineRef.current = series.createPriceLine({
+        price: entryPrice,
+        color: "rgba(139, 92, 246, 0.95)",
+        lineWidth: 2,
+        lineStyle: 0,
+        axisLabelVisible: true,
+        title: "Entry Px"
+      });
+    }
+
+    if (stopLossPrice > 0) {
+      const slLineOpts: CreatePriceLineOptions = {
+        price: stopLossPrice,
+        color: "rgba(96, 165, 250, 0.8)",
+        lineWidth: 2,
+        lineStyle: 0,
+        axisLabelVisible: true,
+        title: entryOverlapsStopLoss ? "SL / Entry" : "SL"
+      };
+      stopLossLineRef.current = series.createPriceLine(slLineOpts);
+    }
+
+    if (breakEvenPrice > 0) {
+      breakEvenLineRef.current = series.createPriceLine({
+        price: breakEvenPrice,
+        color: isLong ? "rgba(251, 146, 60, 0.95)" : "rgba(250, 204, 21, 0.95)",
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: "Break-even"
+      });
+    }
+  }, [entryPrice, stopLossPrice, breakEvenPrice, isLong]);
 
   return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 }

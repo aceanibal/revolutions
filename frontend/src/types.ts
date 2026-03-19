@@ -59,3 +59,101 @@ export interface PersistenceStatus {
   mode: "persisted" | "fallback";
 }
 
+// ---------------------------------------------------------------------------
+// Account types
+// ---------------------------------------------------------------------------
+
+export type AccountMode = "live" | "test";
+
+export interface SpotBalance {
+  coin: string;
+  total: number;
+  hold: number;
+}
+
+export interface AccountOverview {
+  accountValue: number;
+  perpsAccountValue: number;
+  spotUsdValue: number;
+  spotBalances: SpotBalance[];
+  totalNtlPos: number;
+  totalMarginUsed: number;
+  totalRawUsd: number;
+  withdrawable: number;
+  crossMaintenanceMarginUsed: number;
+  time: number | null;
+}
+
+export interface AccountPosition {
+  coin: string;
+  szi: number;
+  entryPx: number;
+  positionValue: number;
+  unrealizedPnl: number;
+  returnOnEquity: number;
+  liquidationPx: number | null;
+  marginUsed: number;
+  maxLeverage: number;
+  leverage: { type: string; value: number };
+  cumFunding: { allTime: number; sinceOpen: number; sinceChange: number };
+}
+
+export interface AccountFill {
+  coin: string;
+  side: string;
+  px: number;
+  sz: number;
+  time: number;
+  fee: number;
+  feeToken: string;
+  closedPnl: number;
+  dir: string;
+  crossed: boolean;
+  oid: number | null;
+  tid: number | null;
+}
+
+export interface AccountFees {
+  userAddRate: number;
+  userCrossRate: number;
+  userSpotAddRate: number;
+  userSpotCrossRate: number;
+  baseAdd: number;
+  baseCross: number;
+}
+
+export interface LeveragePreview {
+  effectiveLossPct: number;
+  recommendedLeverage: number;
+  exchangeMaxLeverage: number;
+  cappedLeverage: number;
+  entryFeePct: number;
+  exitFeePct: number;
+  totalFeePct: number;
+  slippagePct: number;
+  riskDollars: number;
+  notionalPosition: number;
+  positionSizeUnits: number;
+  feeBufferPct: number;
+  feeCostUsd?: number;
+  warning: string | null;
+}
+
+export interface StopLossProjection extends LeveragePreview {
+  distancePct: number;
+}
+
+export interface StopLossProjections {
+  stopLossPrice: number;
+  currentPrice: number;
+  long: StopLossProjection | null;
+  short: StopLossProjection | null;
+  feeBufferPrice: number;
+}
+
+export interface AccountSettings {
+  riskPercent: number;
+  slippageBps: number;
+  stopLossStep: number;
+}
+

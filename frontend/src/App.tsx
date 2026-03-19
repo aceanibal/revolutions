@@ -4,6 +4,7 @@ import { SymbolStreamsPanel } from "./SymbolStreamsPanel";
 import { LiveMonitorPanel } from "./LiveMonitorPanel";
 import { ReportPanel } from "./ReportPanel";
 import { AssetsPanel } from "./AssetsPanel";
+import { AccountPanel } from "./AccountPanel";
 import {
   addStream,
   fetchPersistenceStatus,
@@ -12,16 +13,18 @@ import {
 } from "./lib/api";
 import type { PersistenceStatus, SessionInfo } from "./types";
 
-type AppTab = "trade" | "report" | "assets";
+type AppTab = "trade" | "report" | "assets" | "account";
 
 const tabs: { id: AppTab; name: string }[] = [
   { id: "trade", name: "Trade" },
   { id: "report", name: "Report" },
-  { id: "assets", name: "Assets" }
+  { id: "assets", name: "Assets" },
+  { id: "account", name: "Account" }
 ];
-const SPLITTER_HEIGHT_PX = 8;
-const MIN_CHART_HEIGHT_PX = 180;
-const MIN_MONITOR_HEIGHT_PX = 120;
+const DEFAULT_MONITOR_HEIGHT_PX = 220;
+const DEFAULT_CHART_HEIGHT_PX = 520;
+const MIN_CHART_HEIGHT_PX = 300;
+const MAX_CHART_HEIGHT_PX = 1200;
 
 function classNames(...classes: Array<string | boolean | null | undefined>) {
   return classes.filter(Boolean).join(" ");
@@ -52,10 +55,11 @@ export function App() {
   const [clockNowMs, setClockNowMs] = useState<number>(() => Date.now());
   const [savingSession, setSavingSession] = useState(false);
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
-  const [liveMonitorHeightPx, setLiveMonitorHeightPx] = useState<number>(220);
-  const [isResizingPanels, setIsResizingPanels] = useState(false);
-  const panelContainerRef = useRef<HTMLDivElement | null>(null);
-  const resizeDragRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const [liveMonitorHeightPx] = useState<number>(DEFAULT_MONITOR_HEIGHT_PX);
+  const [chartHeightPx, setChartHeightPx] = useState<number>(DEFAULT_CHART_HEIGHT_PX);
+  const [isDraggingChart, setIsDraggingChart] = useState(false);
+  const chartDragRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const [riskPanelNode, setRiskPanelNode] = useState<HTMLDivElement | null>(null);
 
   const sessionElapsedMs = sessionInfo ? clockNowMs - sessionInfo.startedAtMs : 0;
   const sessionStatusLabel = sessionInfo?.status === "closed" ? "saved" : sessionInfo?.status || "";
@@ -148,52 +152,41 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!isResizingPanels) return;
+    if (!isDraggingChart) return;
 
-    const handlePointerMove = (event: PointerEvent) => {
-      if (!resizeDragRef.current || !panelContainerRef.current) return;
-
-      const deltaY = event.clientY - resizeDragRef.current.startY;
-      const nextMonitorHeight = resizeDragRef.current.startHeight + deltaY;
-      const availableHeight = panelContainerRef.current.clientHeight;
-      const maxMonitorHeight = Math.max(
-        MIN_MONITOR_HEIGHT_PX,
-        availableHeight - MIN_CHART_HEIGHT_PX - SPLITTER_HEIGHT_PX
+    const onMove = (e: PointerEvent) => {
+      if (!chartDragRef.current) return;
+      const delta = e.clientY - chartDragRef.current.startY;
+      const next = Math.round(
+        Math.max(MIN_CHART_HEIGHT_PX, Math.min(MAX_CHART_HEIGHT_PX, chartDragRef.current.startHeight + delta))
       );
-      const clampedHeight = Math.max(
-        MIN_MONITOR_HEIGHT_PX,
-        Math.min(maxMonitorHeight, Math.round(nextMonitorHeight))
-      );
-      setLiveMonitorHeightPx(clampedHeight);
+      setChartHeightPx(next);
     };
 
-    const stopResize = () => {
-      setIsResizingPanels(false);
-      resizeDragRef.current = null;
+    const onUp = () => {
+      setIsDraggingChart(false);
+      chartDragRef.current = null;
     };
 
     document.body.style.userSelect = "none";
     document.body.style.cursor = "row-resize";
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", stopResize);
-    window.addEventListener("pointercancel", stopResize);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
 
     return () => {
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", stopResize);
-      window.removeEventListener("pointercancel", stopResize);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
     };
-  }, [isResizingPanels]);
+  }, [isDraggingChart]);
 
-  const handleSplitterPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    resizeDragRef.current = {
-      startY: event.clientY,
-      startHeight: liveMonitorHeightPx
-    };
-    setIsResizingPanels(true);
+  const handleChartResizeDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    chartDragRef.current = { startY: e.clientY, startHeight: chartHeightPx };
+    setIsDraggingChart(true);
   };
 
   return (
@@ -349,54 +342,43 @@ export function App() {
         </div>
       </header>
 
-      <main className="overflow-x-auto px-2 py-2">
+      <main className="overflow-auto px-2 py-2">
         {activeTab === "trade" && (
-          <div className="h-[calc(100vh-5.5rem)] overflow-hidden">
-            <div className="grid h-full min-w-[1400px] grid-rows-[auto,minmax(0,1fr)] gap-2">
-              <SymbolStreamsPanel
-                selectedSymbol={selectedSymbol}
-                onSelectedChange={setSelectedSymbol}
-                onPrimaryChange={setPrimarySymbol}
-                onStreamsChange={handleStreamsChange}
+          <div className="min-w-[1200px] space-y-2">
+            <SymbolStreamsPanel
+              selectedSymbol={selectedSymbol}
+              onSelectedChange={setSelectedSymbol}
+              onPrimaryChange={setPrimarySymbol}
+              onStreamsChange={handleStreamsChange}
+              compact
+            />
+            <div style={{ height: `${chartHeightPx}px` }}>
+              <ChartPanel
+                symbol={primarySymbol}
+                trackedSymbols={[...subscribedAssets, primarySymbol].filter(Boolean)}
+                vwapEnabled={vwapEnabled}
+                vwapPeriod={vwapPeriod}
+                emaEnabled={emaEnabled}
+                emaPeriod={emaPeriod}
+                onSessionInfoChange={handleSessionInfoChange}
+                onHistoryPreloadingChange={setHistoryPreloading}
+                riskPanelTarget={riskPanelNode}
+              />
+            </div>
+            <div
+              onPointerDown={handleChartResizeDown}
+              className="group flex cursor-row-resize items-center justify-center py-1"
+              style={{ touchAction: "none" }}
+            >
+              <div className="h-1 w-16 rounded-full bg-slate-300 transition group-hover:bg-slate-400 group-active:bg-indigo-400" />
+            </div>
+            <div ref={setRiskPanelNode} />
+            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white" style={{ height: `${liveMonitorHeightPx}px` }}>
+              <LiveMonitorPanel
+                onSubscribeAsset={handleSubscribeAsset}
+                subscribedAssets={subscribedAssets}
                 compact
               />
-              <div
-                ref={panelContainerRef}
-                className="grid min-h-0"
-                style={{
-                  gridTemplateRows: `minmax(${MIN_CHART_HEIGHT_PX}px,1fr) ${SPLITTER_HEIGHT_PX}px ${liveMonitorHeightPx}px`
-                }}
-              >
-                <div className="min-h-0">
-                  <ChartPanel
-                    symbol={primarySymbol}
-                    trackedSymbols={[...subscribedAssets, primarySymbol].filter(Boolean)}
-                    vwapEnabled={vwapEnabled}
-                    vwapPeriod={vwapPeriod}
-                    emaEnabled={emaEnabled}
-                    emaPeriod={emaPeriod}
-                    onSessionInfoChange={handleSessionInfoChange}
-                    onHistoryPreloadingChange={setHistoryPreloading}
-                  />
-                </div>
-                <div
-                  role="separator"
-                  aria-orientation="horizontal"
-                  aria-label="Resize chart and live monitor"
-                  onPointerDown={handleSplitterPointerDown}
-                  className="group flex cursor-row-resize items-center justify-center rounded-full"
-                  style={{ touchAction: "none" }}
-                >
-                  <div className="h-1 w-20 rounded-full bg-slate-300 transition group-hover:bg-slate-400" />
-                </div>
-                <div className="min-h-0 overflow-hidden rounded-xl border border-slate-200 bg-white">
-                  <LiveMonitorPanel
-                    onSubscribeAsset={handleSubscribeAsset}
-                    subscribedAssets={subscribedAssets}
-                    compact
-                  />
-                </div>
-              </div>
             </div>
           </div>
         )}
@@ -410,6 +392,12 @@ export function App() {
         {activeTab === "assets" && (
           <div className="h-[calc(100vh-5.5rem)] overflow-auto">
             <AssetsPanel snapshotMode={snapshotMode} onSelectAsset={handleAssetsPanelSelect} />
+          </div>
+        )}
+
+        {activeTab === "account" && (
+          <div className="h-[calc(100vh-5.5rem)] overflow-auto">
+            <AccountPanel symbol={primarySymbol} />
           </div>
         )}
       </main>

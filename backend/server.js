@@ -6,19 +6,34 @@ const {
   emitHudUpdate: accountEmitHudUpdate,
   fetchAccountBalance,
   getBalanceRefreshMs,
-  hasAccountConfigured
+  hasAccountConfigured,
+  isAccountConfiguredForMode,
+  fetchClearinghouseState,
+  fetchSpotClearinghouseState,
+  fetchUserFills,
+  fetchUserFees,
+  fetchMeta,
+  normalizeAccountOverview,
+  normalizePositions,
+  normalizeFills,
+  normalizeFeeRates,
+  normalizeMetaForSymbol,
+  computeLeveragePreview,
+  computeStopLossProjections,
+  loadSettings,
+  getSettings,
+  patchSettings
 } = require("./account");
 const { connectHyperliquidWs, subscribeToSymbol, unsubscribeFromSymbol } = require("./priceStream");
 const { setupKeyboardController } = require("./controller");
 const { SessionStore } = require("./sessionStore");
-const { detectGapRanges, intervalForTimeframe } = require("./sessionMath");
+const { detectGapRanges, intervalForTimeframe, upsertCandle } = require("./sessionMath");
 
 const PORT = process.env.PORT || 3000;
 const HYPERLIQUID_WS_URL =
   process.env.HYPERLIQUID_WS_URL || "wss://api.hyperliquid.xyz/ws";
 const DEFAULT_SYMBOL = "";
 const DEFAULT_STOP_LOSS_PRICE = 0;
-const STOP_LOSS_STEP = 5;
 const ARCHIVE_ON_SHUTDOWN = String(process.env.SESSION_ARCHIVE_ON_SHUTDOWN || "")
   .trim()
   .toLowerCase() === "true";
@@ -28,7 +43,7 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: "*",
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: false
   }
@@ -37,7 +52,7 @@ const io = new Server(server, {
 // Basic CORS handling for REST API (including preflight) - allow all origins and common methods
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+  res.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type,Authorization");
 
   if (req.method === "OPTIONS") {
@@ -57,9 +72,161 @@ app.use(express.json());
 let primarySymbol = DEFAULT_SYMBOL;
 // All symbols we maintain active Hyperliquid streams for.
 const activeSymbols = new Set();
-let stopLossPrice = DEFAULT_STOP_LOSS_PRICE;
+const stopLossBySymbol = new Map(); // symbol -> price
+let accountMode = "test";
+const activePositionBySymbol = new Map();
 let balance = 0;
 let lastPrice = 0;
+
+// ---------------------------------------------------------------------------
+// Stop-loss step (dpadUp/dpadDown)
+// Uses ATR * k where ATR comes from recent in-memory 1m candles, and the
+// final step is rounded UP to the smallest candle-based price increment.
+// ---------------------------------------------------------------------------
+const ATR_TIMEFRAME = "1m";
+const ATR_PERIOD = 14;
+const ATR_CANDLE_MAX = 120; // cap in-memory candles per symbol
+
+const atrIntervalMs = intervalForTimeframe(ATR_TIMEFRAME);
+const candleMapsForAtrBySymbol = new Map(); // symbol -> Map(bucketStartMs -> candle)
+const atrInfoBySymbol = new Map(); // symbol -> { atr: number, tickInc: number }
+const atrLastBucketStartBySymbol = new Map(); // symbol -> bucketStartMs
+
+function getOrCreateAtrCandleMap(symbol) {
+  if (!candleMapsForAtrBySymbol.has(symbol)) {
+    candleMapsForAtrBySymbol.set(symbol, new Map());
+  }
+  return candleMapsForAtrBySymbol.get(symbol);
+}
+
+function fallbackTickInc(price) {
+  if (!Number.isFinite(price) || price <= 0) return 0.01;
+  if (price >= 1000) return 1;
+  if (price >= 100) return 0.1;
+  if (price >= 10) return 0.01;
+  if (price >= 1) return 0.001;
+  if (price >= 0.1) return 0.0001;
+  return 0.000001;
+}
+
+function roundUpToIncrement(value, increment) {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  if (!Number.isFinite(increment) || increment <= 0) return value;
+
+  // tickInc is usually a power-of-ten (derived from candle diffs). Using pow10
+  // arithmetic avoids most floating rounding surprises.
+  const decimals = Math.round(-Math.log10(increment));
+  if (decimals < 0 || decimals > 12) {
+    // Fallback for weird increments: still do a basic ceil.
+    return Math.ceil(value / increment) * increment;
+  }
+  const factor = Math.pow(10, decimals);
+  const scaled = value * factor;
+  return Math.ceil(scaled - 1e-12) / factor;
+}
+
+function computeTickIncFromCandles(candles, fallbackPrice) {
+  const ordered = Array.isArray(candles) ? [...candles].sort((a, b) => a.timeMs - b.timeMs) : [];
+  if (ordered.length < 3) return fallbackTickInc(fallbackPrice);
+
+  const closes = ordered.map((c) => Number(c.close)).filter((v) => Number.isFinite(v));
+  if (closes.length < 2) return fallbackTickInc(fallbackPrice);
+
+  let minDiff = Infinity;
+  for (let i = 1; i < closes.length; i += 1) {
+    const diff = Math.abs(closes[i] - closes[i - 1]);
+    if (!Number.isFinite(diff) || diff <= 0) continue;
+    if (diff < minDiff) minDiff = diff;
+  }
+
+  if (!Number.isFinite(minDiff) || minDiff <= 0) return fallbackTickInc(fallbackPrice);
+
+  // Convert minDiff to a power-of-ten tick. This acts like "lowest chart step"
+  // without needing exchange tickSize metadata.
+  const decimals = Math.min(8, Math.max(0, Math.round(-Math.log10(minDiff))));
+  const tickInc = Math.pow(10, -decimals);
+  return tickInc > 0 ? tickInc : fallbackTickInc(fallbackPrice);
+}
+
+function computeAtrFromCandles(candles) {
+  const ordered = Array.isArray(candles) ? [...candles].sort((a, b) => a.timeMs - b.timeMs) : [];
+  if (ordered.length < 2) return null;
+
+  // Use up to ATR_PERIOD TR values from the tail.
+  const usableTrCount = Math.min(ATR_PERIOD, ordered.length - 1);
+  const startIdx = ordered.length - usableTrCount - 1; // inclusive, so we have prev close
+
+  const trs = [];
+  for (let i = startIdx + 1; i < ordered.length; i += 1) {
+    const prev = ordered[i - 1];
+    const cur = ordered[i];
+    const hl = Math.max(0, Number(cur.high) - Number(cur.low));
+    const hp = Math.abs(Number(cur.high) - Number(prev.close));
+    const lp = Math.abs(Number(cur.low) - Number(prev.close));
+    const tr = Math.max(hl, hp, lp);
+    if (Number.isFinite(tr) && tr >= 0) trs.push(tr);
+  }
+
+  if (trs.length === 0) return null;
+  const sum = trs.reduce((a, b) => a + b, 0);
+  return sum / trs.length;
+}
+
+function updateAtrForTick(symbol, { price, ts, size } = {}) {
+  if (!symbol) return;
+  if (!Number.isFinite(price) || price <= 0) return;
+  if (!Number.isFinite(ts)) return;
+
+  const bucketStart = Math.floor(ts / atrIntervalMs) * atrIntervalMs;
+  const candleMap = getOrCreateAtrCandleMap(symbol);
+
+  // Maintain a bounded candle history in-memory.
+  if (candleMap.size > ATR_CANDLE_MAX) {
+    const entries = Array.from(candleMap.entries()).sort((a, b) => a[0] - b[0]);
+    const toDrop = candleMap.size - ATR_CANDLE_MAX;
+    for (let i = 0; i < toDrop; i += 1) {
+      candleMap.delete(entries[i][0]);
+    }
+  }
+
+  upsertCandle(candleMap, { symbol, price, size: size ?? 0, ts }, atrIntervalMs, "live");
+
+  const lastBucketStart = atrLastBucketStartBySymbol.get(symbol);
+  if (lastBucketStart === bucketStart) return; // only recompute when a new bucket starts
+  atrLastBucketStartBySymbol.set(symbol, bucketStart);
+
+  const candles = Array.from(candleMap.values());
+  const atr = computeAtrFromCandles(candles);
+  if (!Number.isFinite(atr) || atr <= 0) return;
+
+  const tickInc = computeTickIncFromCandles(candles, price);
+  if (!Number.isFinite(tickInc) || tickInc <= 0) return;
+
+  atrInfoBySymbol.set(symbol, { atr, tickInc });
+}
+
+function getAtrStopLossStep() {
+  const settings = getSettings();
+  const k = Number.isFinite(settings?.stopLossStep) ? Number(settings.stopLossStep) : 0.5;
+
+  const atrInfo = atrInfoBySymbol.get(primarySymbol);
+  if (atrInfo?.atr && atrInfo?.tickInc) {
+    const raw = atrInfo.atr * k;
+    const step = roundUpToIncrement(raw, atrInfo.tickInc);
+    return step > 0 ? step : atrInfo.tickInc;
+  }
+
+  // If ATR isn't ready yet, fall back to a tiny chart-based increment.
+  const inc = fallbackTickInc(lastPrice);
+  const raw = inc * Math.max(0.1, k);
+  return roundUpToIncrement(raw, inc) || inc;
+}
+
+function getStopLossPrice(symbol) {
+  if (!symbol) return 0;
+  const v = stopLossBySymbol.get(symbol);
+  return Number.isFinite(v) && v > 0 ? v : 0;
+}
 
 let seenFirstDataForSymbol = new Set();
 let balanceIntervalId = null;
@@ -355,12 +522,241 @@ app.get("/api/persistence/status", (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Account API routes
+// ---------------------------------------------------------------------------
+
+function resolveMode(req) {
+  const raw = String(req.query?.mode || req.body?.mode || "").toLowerCase();
+  if (raw === "test" || raw === "live") return raw;
+  return accountMode;
+}
+
+app.get("/api/account/overview", async (req, res) => {
+  const mode = resolveMode(req);
+  if (!isAccountConfiguredForMode(mode)) {
+    return res.status(400).json({ ok: false, message: `No ${mode} account configured` });
+  }
+  try {
+    const [perpsPayload, spotPayload] = await Promise.all([
+      fetchClearinghouseState(mode),
+      fetchSpotClearinghouseState(mode).catch(() => null)
+    ]);
+    const overview = normalizeAccountOverview(perpsPayload, spotPayload);
+    const positions = normalizePositions(perpsPayload);
+    res.json({ ok: true, mode, overview, positions });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error.message || "Failed to fetch account overview" });
+  }
+});
+
+app.get("/api/account/positions", async (req, res) => {
+  const mode = resolveMode(req);
+  if (!isAccountConfiguredForMode(mode)) {
+    return res.status(400).json({ ok: false, message: `No ${mode} account configured` });
+  }
+  try {
+    const payload = await fetchClearinghouseState(mode);
+    res.json({ ok: true, mode, positions: normalizePositions(payload) });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error.message || "Failed to fetch positions" });
+  }
+});
+
+app.get("/api/account/fills", async (req, res) => {
+  const mode = resolveMode(req);
+  if (!isAccountConfiguredForMode(mode)) {
+    return res.status(400).json({ ok: false, message: `No ${mode} account configured` });
+  }
+  try {
+    const payload = await fetchUserFills(mode);
+    res.json({ ok: true, mode, fills: normalizeFills(payload) });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error.message || "Failed to fetch fills" });
+  }
+});
+
+app.get("/api/account/fees", async (req, res) => {
+  const mode = resolveMode(req);
+  if (!isAccountConfiguredForMode(mode)) {
+    return res.status(400).json({ ok: false, message: `No ${mode} account configured` });
+  }
+  try {
+    const payload = await fetchUserFees(mode);
+    res.json({ ok: true, mode, fees: normalizeFeeRates(payload) });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error.message || "Failed to fetch fees" });
+  }
+});
+
+app.post("/api/account/leverage-preview", async (req, res) => {
+  const mode = resolveMode(req);
+  const symbol = normalizeSymbol(req.body?.symbol || primarySymbol);
+  const stopLossDistancePct = Number(req.body?.stopLossDistancePct ?? 0);
+  const settings = getSettings();
+  const riskBudgetPct = Number(req.body?.riskBudgetPct ?? settings.riskPercent);
+  const slippageBps = Number(req.body?.slippageBps ?? settings.slippageBps);
+
+  if (!Number.isFinite(stopLossDistancePct) || stopLossDistancePct <= 0) {
+    return res.status(400).json({ ok: false, message: "stopLossDistancePct must be a positive number" });
+  }
+
+  try {
+    let makerFeePct = 0.0002;
+    let takerFeePct = 0.00035;
+    let exchangeMaxLeverage = 50;
+
+    if (isAccountConfiguredForMode(mode)) {
+      try {
+        const feesPayload = await fetchUserFees(mode);
+        const fees = normalizeFeeRates(feesPayload);
+        makerFeePct = fees.userAddRate || makerFeePct;
+        takerFeePct = fees.userCrossRate || takerFeePct;
+      } catch { /* use defaults */ }
+    }
+
+    try {
+      const metaPayload = await fetchMeta(mode);
+      const symbolMeta = normalizeMetaForSymbol(metaPayload, symbol);
+      if (symbolMeta) {
+        exchangeMaxLeverage = symbolMeta.maxLeverage;
+      }
+    } catch { /* use defaults */ }
+
+    const preview = computeLeveragePreview({
+      stopLossDistancePct,
+      riskBudgetPct,
+      makerFeePct,
+      takerFeePct,
+      slippageBps,
+      exchangeMaxLeverage,
+      accountBalance: balance,
+      entryPrice: lastPrice
+    });
+
+    res.json({ ok: true, mode, symbol, preview });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error.message || "Failed to compute leverage preview" });
+  }
+});
+
+app.get("/api/account/settings", (req, res) => {
+  res.json({ ok: true, settings: getSettings() });
+});
+
+app.patch("/api/account/settings", (req, res) => {
+  const updated = patchSettings(req.body || {});
+  io.emit("settings:update", updated);
+  res.json({ ok: true, settings: updated });
+});
+
+app.get("/api/account/mode", (req, res) => {
+  res.json({ ok: true, mode: accountMode });
+});
+
+app.patch("/api/account/mode", (req, res) => {
+  const next = String(req.body?.mode || "").toLowerCase();
+  if (next !== "live" && next !== "test") {
+    return res.status(400).json({ ok: false, message: "Mode must be 'live' or 'test'" });
+  }
+  accountMode = next;
+  console.log("[server] Account mode changed to:", accountMode);
+  io.emit("mode:update", { mode: accountMode });
+  void doFetchBalanceAndPosition();
+  void refreshFeeAndMetaCache();
+  res.json({ ok: true, mode: accountMode });
+});
+
+// ---------------------------------------------------------------------------
+// HUD + projection helpers
+// ---------------------------------------------------------------------------
+
+let cachedFeeRates = { makerFeePct: 0.0002, takerFeePct: 0.00035 };
+let cachedExchangeMaxLeverage = 50;
+
+async function refreshFeeAndMetaCache() {
+  try {
+    if (isAccountConfiguredForMode(accountMode)) {
+      const feesPayload = await fetchUserFees(accountMode);
+      const fees = normalizeFeeRates(feesPayload);
+      if (fees.userAddRate > 0) cachedFeeRates.makerFeePct = fees.userAddRate;
+      if (fees.userCrossRate > 0) cachedFeeRates.takerFeePct = fees.userCrossRate;
+    }
+  } catch { /* keep previous */ }
+
+  try {
+    if (primarySymbol) {
+      const metaPayload = await fetchMeta(accountMode);
+      const symbolMeta = normalizeMetaForSymbol(metaPayload, primarySymbol);
+      if (symbolMeta) cachedExchangeMaxLeverage = symbolMeta.maxLeverage;
+    }
+  } catch { /* keep previous */ }
+}
+
+function emitStopLossProjections() {
+  const settings = getSettings();
+  const stopLossPrice = getStopLossPrice(primarySymbol);
+  const projections = computeStopLossProjections({
+    currentPrice: lastPrice,
+    stopLossPrice,
+    accountBalance: balance,
+    riskBudgetPct: settings.riskPercent,
+    makerFeePct: cachedFeeRates.makerFeePct,
+    takerFeePct: cachedFeeRates.takerFeePct,
+    slippageBps: settings.slippageBps,
+    exchangeMaxLeverage: cachedExchangeMaxLeverage
+  });
+  io.emit("stopLoss:projections", {
+    stopLossPrice,
+    currentPrice: lastPrice,
+    ...projections
+  });
+}
+
 function emitHudUpdate() {
+  const stopLossPrice = getStopLossPrice(primarySymbol);
   accountEmitHudUpdate(io, {
     stopLossPrice,
     balance,
     lastPrice
   });
+  emitStopLossProjections();
+}
+
+async function refreshActivePosition() {
+  if (!isAccountConfiguredForMode(accountMode)) return;
+  try {
+    const payload = await fetchClearinghouseState(accountMode);
+    const positions = normalizePositions(payload);
+    for (const symbol of activeSymbols) {
+      const pos = positions.find((p) => p.coin === symbol) || null;
+      activePositionBySymbol.set(symbol, pos);
+    }
+    emitActivePosition();
+  } catch (err) {
+    console.log("[server] refreshActivePosition error:", err?.message || err);
+  }
+}
+
+function emitActivePosition() {
+  const pos = activePositionBySymbol.get(primarySymbol) || null;
+  io.emit("activePosition:update", { symbol: primarySymbol, position: pos });
+}
+
+async function doFetchBalanceAndPosition() {
+  if (!isAccountConfiguredForMode(accountMode)) return;
+  fetchAccountBalance({
+    mode: accountMode,
+    onBalance: (parsedBalance) => {
+      balance = parsedBalance;
+      console.log("Fetched account info:", { balance, mode: accountMode });
+      emitHudUpdate();
+    },
+    onError: (error) => {
+      console.log("Failed to fetch account info:", error.message);
+    }
+  });
+  await refreshActivePosition();
 }
 
 async function emitSessionUpdate() {
@@ -435,17 +831,31 @@ function handleControllerAction(action) {
     return;
   }
 
-  if (action === "dpadUp" || action === "dpadRight") {
-    stopLossPrice += STOP_LOSS_STEP;
-    console.log("stopLossPrice updated:", stopLossPrice);
+  if (action === "stopLossSnap") {
+    if (primarySymbol && lastPrice > 0) {
+      stopLossBySymbol.set(primarySymbol, lastPrice);
+      console.log("stopLoss snapped to price:", lastPrice, "for", primarySymbol);
+      emitHudUpdate();
+      emitControllerEvent("stopLossSnap");
+    }
+    return;
+  }
+
+  if (action === "dpadUp") {
+    const step = getAtrStopLossStep();
+    const current = getStopLossPrice(primarySymbol);
+    const next = current + step;
+    stopLossBySymbol.set(primarySymbol, next);
     emitHudUpdate();
     emitControllerEvent(action);
     return;
   }
 
-  if (action === "dpadDown" || action === "dpadLeft") {
-    stopLossPrice -= STOP_LOSS_STEP;
-    console.log("stopLossPrice updated:", stopLossPrice);
+  if (action === "dpadDown") {
+    const step = getAtrStopLossStep();
+    const current = getStopLossPrice(primarySymbol);
+    const next = Math.max(0, current - step);
+    stopLossBySymbol.set(primarySymbol, next);
     emitHudUpdate();
     emitControllerEvent(action);
   }
@@ -497,17 +907,21 @@ async function shutdown(signal) {
 io.on("connection", (socket) => {
   console.log("Client connected:", socket.id);
 
+  const settings = getSettings();
   socket.emit("initialState", {
     symbol: primarySymbol,
     balance,
-    riskPercent: 2,
+    riskPercent: settings.riskPercent,
     positionSize: computePositionSize(balance, lastPrice),
-    stopLossPrice
+    stopLossPrice: getStopLossPrice(primarySymbol),
+    settings,
+    mode: accountMode,
+    activePosition: activePositionBySymbol.get(primarySymbol) || null
   });
 
-  // Send initial streams state to the new client.
   emitStreamsUpdate(socket);
   void emitSessionUpdate();
+  emitStopLossProjections();
 
   socket.on("symbol:subscribe", async (payload) => {
     const symbol = normalizeSymbol(payload?.symbol || primarySymbol);
@@ -527,6 +941,16 @@ io.on("connection", (socket) => {
       seenFirstDataForSymbol.delete(primarySymbol);
       io.emit("symbolChanged", { symbol: primarySymbol });
       emitStreamsUpdate();
+    }
+  });
+
+  socket.on("stopLoss:set", (payload) => {
+    const symbol = normalizeSymbol(payload?.symbol || primarySymbol);
+    const price = Number(payload?.stopLossPrice ?? 0);
+    if (!symbol || !Number.isFinite(price) || price < 0) return;
+    stopLossBySymbol.set(symbol, price);
+    if (symbol === primarySymbol) {
+      emitHudUpdate();
     }
   });
 
@@ -554,6 +978,9 @@ io.on("connection", (socket) => {
 console.log(`Server starting on port ${PORT}`);
 
 async function bootstrapServer() {
+  loadSettings();
+  console.log("[server] Account settings loaded:", JSON.stringify(getSettings()));
+
   try {
     await sessionStore.init();
     await sessionStore.ensureActiveSession(Date.now());
@@ -577,13 +1004,16 @@ async function bootstrapServer() {
           lastPrice = price;
           emitHudUpdate();
         }
+        const ts = Date.now();
+        // Update ATR cache for this symbol (even if not primary) so step is ready.
+        updateAtrForTick(symbol, { price, ts, size: 0 });
         void sessionStore
           .ingestTick(
             {
               symbol,
               price,
               size: 0,
-              ts: Date.now()
+              ts
             },
             "live"
           )
@@ -595,6 +1025,11 @@ async function bootstrapServer() {
           .catch(() => {});
       },
       onTick: (trade) => {
+        updateAtrForTick(trade.symbol, {
+          price: trade.price,
+          ts: trade.ts,
+          size: trade.size
+        });
         void sessionStore
           .ingestTick(
             {
@@ -621,29 +1056,20 @@ async function bootstrapServer() {
       }
     });
 
-    if (hasAccountConfigured()) {
-      const doFetchBalance = () =>
-        fetchAccountBalance({
-          onBalance: (parsedBalance) => {
-            balance = parsedBalance;
-            console.log("Fetched account info:", { balance });
-            emitHudUpdate();
-          },
-          onError: (error) => {
-            console.log("Failed to fetch account info:", error.message);
-          }
-        });
-
-      doFetchBalance();
-      balanceIntervalId = setInterval(doFetchBalance, getBalanceRefreshMs());
+    if (isAccountConfiguredForMode(accountMode)) {
+      void doFetchBalanceAndPosition();
+      balanceIntervalId = setInterval(() => void doFetchBalanceAndPosition(), getBalanceRefreshMs());
     } else {
       console.log(
-        "Account balance polling disabled: set HYPERLIQUID_ACCOUNT in backend/account.js"
+        `[server] Account balance polling disabled for ${accountMode} mode: no wallet configured`
       );
     }
 
+    void refreshFeeAndMetaCache();
+    setInterval(() => void refreshFeeAndMetaCache(), 60_000);
+
     console.log(
-      "PS5 controller handling removed from backend; use Enjoyable F-key mappings (F1-F9)."
+      "Keyboard shortcuts active: F1=cross F2=triangle F3=circle F4/F5=primary F6/F8=stopLoss"
     );
     cleanupKeyboardController = setupKeyboardController({
       onAction: handleControllerAction,
@@ -661,12 +1087,22 @@ async function bootstrapServer() {
 
 void bootstrapServer();
 
+const RUNNING_UNDER_LAUNCHER = !!process.send;
+
 process.on("SIGINT", () => {
-  void shutdown("SIGINT");
+  if (RUNNING_UNDER_LAUNCHER) {
+    shutdown("SIGINT");
+  } else {
+    console.log("[server] SIGINT received but ignored (use /api/session/save or market-window rollover).");
+  }
 });
 
 process.on("SIGTERM", () => {
-  void shutdown("SIGTERM");
+  if (RUNNING_UNDER_LAUNCHER) {
+    shutdown("SIGTERM");
+  } else {
+    console.log("[server] SIGTERM received but ignored (use /api/session/save or market-window rollover).");
+  }
 });
 
 

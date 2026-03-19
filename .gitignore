@@ -14,3 +14,5 @@ Y
 .env.*
 data/
 backend/data/
+backend/account-settings.json
+.env*

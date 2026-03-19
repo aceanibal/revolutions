@@ -4,7 +4,8 @@
   "description": "Split-brain Hyperliquid mainnet dashboard with PS5 controller input.",
   "main": "backend/server.js",
   "scripts": {
-    "start": "node backend/server.js"
+    "start": "node backend/launcher.js",
+    "start:raw": "node backend/server.js"
   },
   "keywords": [
     "hyperliquid",
@@ -16,6 +17,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "dotenv": "^17.3.1",
     "express": "^4.22.1",
     "ioredis": "^5.10.0",
     "luxon": "^3.7.2",
