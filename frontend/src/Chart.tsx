@@ -214,7 +214,7 @@ export function Chart({
     seriesRef.current.setData(
       data.map(({ time, open, high, low, close, source }) => {
         const isUp = close >= open;
-        const sourceKey = source === "history" || source === "mixed" ? source : "live";
+        const sourceKey = source === "mixed" ? "mixed" : source === "live" ? "live" : "history";
         const color = isUp ? palette[sourceKey].up : palette[sourceKey].down;
         return {
           time: time as Time,

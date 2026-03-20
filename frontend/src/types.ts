@@ -16,7 +16,7 @@ export interface Candle {
   low: number;
   close: number;
   volume: number;
-  source?: "live" | "history" | "mixed";
+  source?: "live" | "history" | "mixed" | "gap_fill";
   isGapFill?: boolean;
 }
 
@@ -41,6 +41,17 @@ export interface SessionInfo {
   breakReason: SessionBreakReason;
   marketWindowStartMs?: number;
   marketWindowEndMs?: number;
+}
+
+export interface SavedSession {
+  id: string;
+  status: SessionStatus;
+  startedAtMs: number;
+  endedAtMs: number | null;
+  breakReason: SessionBreakReason;
+  assetCount: number;
+  candleCount: number;
+  notes: string;
 }
 
 export interface GapRange {

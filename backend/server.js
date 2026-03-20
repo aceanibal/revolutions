@@ -288,6 +288,12 @@ async function preloadSymbolHistory(symbol, options = {}) {
     console.log(
       `[server] preloadSymbolHistory done symbol=${normalized} session=${result?.sessionId || "n/a"}`
     );
+    if (result?.sessionId) {
+      io.emit("session:snapshot:ready", {
+        symbol: normalized,
+        sessionId: result.sessionId
+      });
+    }
   } catch (error) {
     console.log("History preload warning:", error?.message || error);
   }
@@ -529,6 +535,65 @@ app.get("/api/sessions", async (req, res) => {
     res.json({ ok: true, sessions });
   } catch (error) {
     res.status(500).json({ ok: false, message: error.message || "Failed to list sessions" });
+  }
+});
+
+app.get("/api/sessions/all", async (req, res) => {
+  try {
+    const sessions = await sessionStore.listAllSessions();
+    res.json({ ok: true, sessions });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error.message || "Failed to list saved sessions" });
+  }
+});
+
+app.get("/api/sessions/:id/symbols", async (req, res) => {
+  const sessionId = String(req.params?.id || "").trim();
+  if (!sessionId) {
+    return res.status(400).json({ ok: false, message: "Missing session id" });
+  }
+
+  try {
+    const symbols = await sessionStore.getSessionSymbols(sessionId);
+    return res.json({ ok: true, sessionId, symbols });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error.message || "Failed to load session symbols" });
+  }
+});
+
+app.get("/api/sessions/:id/notes", async (req, res) => {
+  const sessionId = String(req.params?.id || "").trim();
+  if (!sessionId) {
+    return res.status(400).json({ ok: false, message: "Missing session id" });
+  }
+
+  try {
+    const notes = await sessionStore.getSessionNotes(sessionId);
+    return res.json({ ok: true, sessionId, notes });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error.message || "Failed to load session notes" });
+  }
+});
+
+app.put("/api/sessions/:id/notes", async (req, res) => {
+  const sessionId = String(req.params?.id || "").trim();
+  if (!sessionId) {
+    return res.status(400).json({ ok: false, message: "Missing session id" });
+  }
+
+  const notes = String(req.body?.notes || "");
+  if (notes.length > 20_000) {
+    return res.status(400).json({ ok: false, message: "Notes too long (max 20,000 characters)" });
+  }
+
+  try {
+    const saved = await sessionStore.saveSessionNotes(sessionId, notes);
+    if (!saved) {
+      return res.status(404).json({ ok: false, message: "Session not found or SQLite unavailable" });
+    }
+    return res.json({ ok: true, ...saved });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error.message || "Failed to save session notes" });
   }
 });
 

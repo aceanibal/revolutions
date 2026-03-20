@@ -44,8 +44,8 @@ function upsertLiveCandle(candles: Candle[], tick: Tick, intervalMs: number): Ca
     ];
   }
 
-  const mergedSource =
-    last.source === "live" || !last.source ? "live" : last.source === "history" ? "mixed" : "mixed";
+  const mergedSource: Candle["source"] =
+    last.source === "live" || !last.source ? "live" : "mixed";
 
   const updated: Candle = {
     ...last,
@@ -265,6 +265,19 @@ export function useSocket(
       if (tick.symbol !== selectedSymbolRef.current) return;
       setCandles1m((prev) => upsertLiveCandle(prev, tick, 60_000));
       setCandles5m((prev) => upsertLiveCandle(prev, tick, 5 * 60_000));
+    });
+
+    socket.on("session:snapshot:ready", async (payload: any) => {
+      if (!liveMode) return;
+      const sym = String(payload?.symbol ?? "").toUpperCase();
+      if (sym !== selectedSymbolRef.current) return;
+      const snapshot = await fetchCurrentSessionSnapshot(sym);
+      if (!snapshot) return;
+      setCandles1m(snapshot.candlesByTimeframe["1m"] || []);
+      setCandles5m(snapshot.candlesByTimeframe["5m"] || []);
+      setGaps1m(snapshot.gapsByTimeframe["1m"] || []);
+      setGaps5m(snapshot.gapsByTimeframe["5m"] || []);
+      setSessionInfo(snapshot.sessionInfo || emptySessionInfo);
     });
 
     return () => {

@@ -291,7 +291,7 @@ class SessionStore {
     }
   }
 
-  mergeHistoryCandle(existing, incoming, bucketStart) {
+  mergeHistoryCandle(existing, incoming, bucketStart, sourceOverride = null, isGapFillFlag = false) {
     if (!existing) {
       return {
         timeMs: bucketStart,
@@ -300,21 +300,21 @@ class SessionStore {
         low: incoming.low,
         close: incoming.close,
         volume: incoming.volume,
-        source: "history",
-        isGapFill: false
+        source: sourceOverride || "history",
+        isGapFill: isGapFillFlag
       };
     }
 
-    const source = existing.source === "history" ? "history" : "mixed";
+    const source = sourceOverride || (existing.source === "history" ? "history" : "mixed");
     return {
       ...existing,
       timeMs: bucketStart,
       high: Math.max(Number(existing.high ?? incoming.high), incoming.high),
       low: Math.min(Number(existing.low ?? incoming.low), incoming.low),
-      // Preserve live close if we already had live data in this bucket.
       close: existing.source === "live" || existing.source === "mixed" ? existing.close : incoming.close,
       volume: Math.max(Number(existing.volume ?? 0), Number(incoming.volume ?? 0)),
-      source
+      source,
+      isGapFill: isGapFillFlag || Boolean(existing.isGapFill)
     };
   }
 
@@ -330,7 +330,7 @@ class SessionStore {
     if (!sessionId) return null;
 
     console.log(
-      `[sessionStore] History preload start symbol=${upper} session=${sessionId} force=${force}`
+      `[sessionStore] Preload start symbol=${upper} session=${sessionId} force=${force}`
     );
 
     const multi = this.redis.multi();
@@ -338,19 +338,25 @@ class SessionStore {
     multi.expire(this.sessionSymbolsKey(sessionId), this.sameDayTtlSeconds);
     await multi.exec();
 
-    const loadedCounts = {
-      "1m": 0,
-      "5m": 0
-    };
+    // Phase 1: Live data — already streaming via WebSocket before this method is called
+    console.log(`[sessionStore] Phase 1 (live): streaming active for ${upper}`);
+
+    // Phase 2 + 3: Gap fill then historical backfill, per timeframe.
+    // A single API fetch per timeframe is classified by position relative to live data.
+    const phaseCounts = {};
     for (const timeframe of TIMEFRAMES) {
-      loadedCounts[timeframe] = await this.preloadHistoricalTimeframe(sessionId, upper, timeframe, {
+      phaseCounts[timeframe] = await this.preloadHistoricalTimeframe(sessionId, upper, timeframe, {
         force
       });
     }
 
     const sessionInfo = await this.getSessionInfo(sessionId);
+    const summary = TIMEFRAMES.map(
+      (tf) =>
+        `${tf}=[gap=${phaseCounts[tf].gapFill} hist=${phaseCounts[tf].history} skipLive=${phaseCounts[tf].skippedLive}]`
+    ).join(" ");
     console.log(
-      `[sessionStore] History preload done symbol=${upper} session=${sessionId} 1m=${loadedCounts["1m"]} 5m=${loadedCounts["5m"]}`
+      `[sessionStore] Preload complete symbol=${upper} session=${sessionId} ${summary}`
     );
     return { sessionId, sessionInfo };
   }
@@ -361,44 +367,107 @@ class SessionStore {
     const alreadyLoaded = await this.redis.get(loadedKey);
     if (alreadyLoaded === "1" && !force) {
       console.log(
-        `[sessionStore] History preload skip symbol=${symbol} timeframe=${timeframe} session=${sessionId} (already loaded)`
+        `[sessionStore] Preload skip ${symbol} ${timeframe} (already loaded)`
       );
-      return 0;
+      return { gapFill: 0, history: 0, skippedLive: 0 };
     }
 
     const history = await this.fetchHistoricalCandles(symbol, timeframe);
     console.log(
-      `[sessionStore] History fetched symbol=${symbol} timeframe=${timeframe} candles=${history.length}`
+      `[sessionStore] Fetched ${history.length} API candles for ${symbol} ${timeframe}`
     );
+    if (history.length === 0) {
+      await this.redis.set(loadedKey, "1", "EX", this.sameDayTtlSeconds);
+      return { gapFill: 0, history: 0, skippedLive: 0 };
+    }
+
     const intervalMs = intervalForTimeframe(timeframe);
     const key = this.sessionCandlesKey(sessionId, symbol, timeframe);
-    const existingRaw = await this.redis.hgetall(key);
-    const map = new Map();
 
+    // Snapshot existing candles to identify live data boundaries
+    const existingRaw = await this.redis.hgetall(key);
+    const existingBuckets = new Map();
     for (const [bucket, raw] of Object.entries(existingRaw || {})) {
       const parsed = parseSafeJson(raw);
-      if (!parsed) continue;
-      map.set(Number(bucket), parsed);
+      if (parsed) existingBuckets.set(Number(bucket), parsed);
     }
+
+    // Determine live data boundaries for gap vs history classification
+    const liveBucketTimes = [];
+    for (const [bucket, candle] of existingBuckets) {
+      if (candle.source === "live" || candle.source === "mixed") {
+        liveBucketTimes.push(bucket);
+      }
+    }
+    liveBucketTimes.sort((a, b) => a - b);
+    const liveMinMs = liveBucketTimes.length > 0 ? liveBucketTimes[0] : Infinity;
+    const liveMaxMs = liveBucketTimes.length > 0 ? liveBucketTimes[liveBucketTimes.length - 1] : -Infinity;
+
+    // Phase 2 (gap fill) + Phase 3 (history backfill) via pipeline.
+    // HSETNX for new buckets prevents overwriting concurrent live tick writes.
+    const pipeline = this.redis.pipeline();
+    let gapFillCount = 0;
+    let historyCount = 0;
+    let skippedLiveCount = 0;
+    let pipelineOps = 0;
 
     for (const candle of history) {
       const bucketStart = Math.floor(candle.timeMs / intervalMs) * intervalMs;
-      const existing = map.get(bucketStart);
-      map.set(bucketStart, this.mergeHistoryCandle(existing, candle, bucketStart));
+      const existing = existingBuckets.get(bucketStart);
+
+      if (existing && (existing.source === "live" || existing.source === "mixed")) {
+        skippedLiveCount++;
+        continue;
+      }
+
+      const isGapFill = bucketStart > liveMinMs && bucketStart < liveMaxMs;
+      const source = isGapFill ? "gap_fill" : "history";
+
+      const merged = existing
+        ? this.mergeHistoryCandle(existing, candle, bucketStart, source, isGapFill)
+        : {
+            timeMs: bucketStart,
+            open: candle.open,
+            high: candle.high,
+            low: candle.low,
+            close: candle.close,
+            volume: candle.volume,
+            source,
+            isGapFill
+          };
+
+      if (!existing) {
+        pipeline.hsetnx(key, String(bucketStart), JSON.stringify(merged));
+      } else {
+        pipeline.hset(key, String(bucketStart), JSON.stringify(merged));
+      }
+      pipelineOps++;
+
+      if (isGapFill) {
+        gapFillCount++;
+      } else {
+        historyCount++;
+      }
     }
 
-    const payload = {};
-    for (const [bucket, candle] of map.entries()) {
-      payload[String(bucket)] = JSON.stringify(candle);
-    }
-
-    if (Object.keys(payload).length > 0) {
-      await this.redis.hset(key, payload);
+    if (pipelineOps > 0) {
+      await pipeline.exec();
       await this.redis.expire(key, this.sameDayTtlSeconds);
     }
+
     await this.redis.set(loadedKey, "1", "EX", this.sameDayTtlSeconds);
+
+    if (gapFillCount > 0) {
+      console.log(
+        `[sessionStore] Phase 2 (gap_fill): ${symbol} ${timeframe} filled=${gapFillCount} candles between live [${liveMinMs}..${liveMaxMs}]`
+      );
+    }
+    console.log(
+      `[sessionStore] Phase 3 (history): ${symbol} ${timeframe} backfilled=${historyCount} skippedLive=${skippedLiveCount}`
+    );
+
     await this.updateGapRanges(sessionId, symbol, timeframe);
-    return history.length;
+    return { gapFill: gapFillCount, history: historyCount, skippedLive: skippedLiveCount };
   }
 
   async upsertCandleForTick(sessionId, symbol, timeframe, tick) {
@@ -423,6 +492,56 @@ class SessionStore {
     const gaps = detectGapRanges(candles, intervalForTimeframe(timeframe));
     const key = this.sessionGapsKey(sessionId, symbol, timeframe);
     await this.redis.set(key, JSON.stringify(gaps), "EX", this.sameDayTtlSeconds);
+  }
+
+  async fillGapRanges(sessionId, symbol, timeframe) {
+    if (!this.redis || !sessionId || !symbol) return 0;
+    const intervalMs = intervalForTimeframe(timeframe);
+    const candles = await this.getCandles(sessionId, symbol, timeframe);
+    const gaps = detectGapRanges(candles, intervalMs);
+    if (gaps.length === 0) return 0;
+
+    const history = await this.fetchHistoricalCandles(symbol, timeframe);
+    if (history.length === 0) return 0;
+
+    const gapSet = new Set();
+    for (const gap of gaps) {
+      for (let t = gap.fromTimeMs; t <= gap.toTimeMs; t += intervalMs) {
+        gapSet.add(t);
+      }
+    }
+
+    const key = this.sessionCandlesKey(sessionId, symbol, timeframe);
+    const pipeline = this.redis.pipeline();
+    let filled = 0;
+
+    for (const candle of history) {
+      const bucketStart = Math.floor(candle.timeMs / intervalMs) * intervalMs;
+      if (!gapSet.has(bucketStart)) continue;
+
+      const merged = {
+        timeMs: bucketStart,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume,
+        source: "gap_fill",
+        isGapFill: true
+      };
+      pipeline.hsetnx(key, String(bucketStart), JSON.stringify(merged));
+      filled++;
+    }
+
+    if (filled > 0) {
+      await pipeline.exec();
+      await this.redis.expire(key, this.sameDayTtlSeconds);
+      await this.updateGapRanges(sessionId, symbol, timeframe);
+      console.log(
+        `[sessionStore] fillGapRanges ${symbol} ${timeframe}: attempted=${filled} across ${gaps.length} gaps`
+      );
+    }
+    return filled;
   }
 
   async getCandles(sessionId, symbol, timeframe) {
@@ -521,14 +640,73 @@ class SessionStore {
 
   async getSessionSnapshot(sessionId, symbol, timeframe = "1m") {
     const upper = normalizeSymbol(symbol);
-    const sessionInfo = await this.getSessionInfo(sessionId);
-    if (!sessionInfo || !upper) return null;
+    if (!upper) return null;
+    let sessionInfo = await this.getSessionInfo(sessionId);
+    if (!sessionInfo && this.sqlite) {
+      const row = this.sqlite
+        .prepare(
+          "SELECT id, started_at_ms, ended_at_ms, status, break_reason, asset_count, candle_count FROM sessions WHERE id = ? LIMIT 1"
+        )
+        .get(sessionId);
+      if (row?.id) {
+        sessionInfo = {
+          id: String(row.id || ""),
+          status: String(row.status || "closed"),
+          startedAtMs: Number(row.started_at_ms || 0),
+          endedAtMs: row.ended_at_ms ? Number(row.ended_at_ms) : null,
+          lastEventAtMs: null,
+          assetCount: Number(row.asset_count || 0),
+          candleCount: Number(row.candle_count || 0),
+          breakReason: row.break_reason || null
+        };
+      }
+    }
+    if (!sessionInfo) return null;
+
+    const getCandlesForTimeframe = async (tf) => {
+      const redisCandles = await this.getCandles(sessionId, upper, tf);
+      if (redisCandles.length > 0 || !this.sqlite) return redisCandles;
+      const rows = this.sqlite
+        .prepare(
+          `
+            SELECT
+              bucket_start_ms,
+              open,
+              high,
+              low,
+              close,
+              volume,
+              source,
+              is_gap_fill
+            FROM session_candles
+            WHERE session_id = ? AND symbol = ? AND timeframe = ?
+            ORDER BY bucket_start_ms ASC
+          `
+        )
+        .all(sessionId, upper, tf);
+      return rows.map((row) => ({
+        timeMs: Number(row.bucket_start_ms || 0),
+        open: Number(row.open),
+        high: Number(row.high),
+        low: Number(row.low),
+        close: Number(row.close),
+        volume: Number(row.volume || 0),
+        source: row.source || "history",
+        isGapFill: Boolean(row.is_gap_fill)
+      }));
+    };
+
+    const getGapsForTimeframe = async (tf, candles) => {
+      const redisGaps = await this.getGaps(sessionId, upper, tf);
+      if (redisGaps.length > 0 || !this.sqlite) return redisGaps;
+      return detectGapRanges(candles, intervalForTimeframe(tf));
+    };
 
     if (timeframe === "all") {
-      const candles1m = await this.getCandles(sessionId, upper, "1m");
-      const candles5m = await this.getCandles(sessionId, upper, "5m");
-      const gaps1m = await this.getGaps(sessionId, upper, "1m");
-      const gaps5m = await this.getGaps(sessionId, upper, "5m");
+      const candles1m = await getCandlesForTimeframe("1m");
+      const candles5m = await getCandlesForTimeframe("5m");
+      const gaps1m = await getGapsForTimeframe("1m", candles1m);
+      const gaps5m = await getGapsForTimeframe("5m", candles5m);
       return {
         sessionInfo,
         symbol: upper,
@@ -537,8 +715,8 @@ class SessionStore {
       };
     }
 
-    const candles = await this.getCandles(sessionId, upper, timeframe);
-    const gaps = await this.getGaps(sessionId, upper, timeframe);
+    const candles = await getCandlesForTimeframe(timeframe);
+    const gaps = await getGapsForTimeframe(timeframe, candles);
     return {
       sessionInfo,
       symbol: upper,
@@ -583,6 +761,104 @@ class SessionStore {
     }
 
     return result.sort((a, b) => a.startedAtMs - b.startedAtMs);
+  }
+
+  async listAllSessions() {
+    if (!this.sqlite) return [];
+    const rows = this.sqlite
+      .prepare(
+        `
+          SELECT
+            s.id,
+            s.status,
+            s.started_at_ms,
+            s.ended_at_ms,
+            s.break_reason,
+            s.asset_count,
+            s.candle_count,
+            COALESCE(n.notes, '') AS notes
+          FROM sessions s
+          LEFT JOIN session_notes n ON n.session_id = s.id
+          ORDER BY s.started_at_ms DESC
+        `
+      )
+      .all();
+    return rows.map((row) => ({
+      id: String(row.id || ""),
+      status: String(row.status || "closed"),
+      startedAtMs: Number(row.started_at_ms || 0),
+      endedAtMs: row.ended_at_ms ? Number(row.ended_at_ms) : null,
+      lastEventAtMs: null,
+      assetCount: Number(row.asset_count || 0),
+      candleCount: Number(row.candle_count || 0),
+      breakReason: row.break_reason || null,
+      notes: String(row.notes || "")
+    }));
+  }
+
+  async getSessionSymbols(sessionId) {
+    if (!sessionId) return [];
+    const normalizedSessionId = String(sessionId).trim();
+    if (!normalizedSessionId) return [];
+
+    if (this.redis) {
+      const redisSymbols = await this.redis.smembers(this.sessionSymbolsKey(normalizedSessionId));
+      const normalizedRedis = Array.from(new Set(redisSymbols.map(normalizeSymbol).filter(Boolean)));
+      if (normalizedRedis.length > 0) {
+        return normalizedRedis;
+      }
+    }
+
+    if (!this.sqlite) return [];
+    const rows = this.sqlite
+      .prepare(
+        `
+          SELECT symbol, MIN(ts_ms) AS first_seen_ms
+          FROM (
+            SELECT symbol, bucket_start_ms AS ts_ms FROM session_candles WHERE session_id = ?
+            UNION ALL
+            SELECT symbol, ts_ms FROM session_ticks WHERE session_id = ?
+          )
+          GROUP BY symbol
+          ORDER BY first_seen_ms ASC
+        `
+      )
+      .all(normalizedSessionId, normalizedSessionId);
+    return Array.from(new Set(rows.map((row) => normalizeSymbol(row.symbol)).filter(Boolean)));
+  }
+
+  async getSessionNotes(sessionId) {
+    if (!this.sqlite || !sessionId) return "";
+    const normalizedSessionId = String(sessionId).trim();
+    if (!normalizedSessionId) return "";
+    const row = this.sqlite
+      .prepare("SELECT notes FROM session_notes WHERE session_id = ? LIMIT 1")
+      .get(normalizedSessionId);
+    return row?.notes ? String(row.notes) : "";
+  }
+
+  async saveSessionNotes(sessionId, notes) {
+    if (!this.sqlite || !sessionId) return null;
+    const normalizedSessionId = String(sessionId).trim();
+    if (!normalizedSessionId) return null;
+    const normalizedNotes = String(notes || "");
+    const nowMs = Date.now();
+    this.sqlite
+      .prepare(
+        `
+          INSERT INTO session_notes (session_id, notes, updated_at_ms)
+          VALUES (?, ?, ?)
+          ON CONFLICT(session_id) DO UPDATE SET
+            notes = excluded.notes,
+            updated_at_ms = excluded.updated_at_ms
+        `
+      )
+      .run(normalizedSessionId, normalizedNotes, nowMs);
+    return {
+      sessionId: normalizedSessionId,
+      notes: normalizedNotes,
+      updatedAtMs: nowMs
+    };
   }
 
   async saveSessionCheckpoint(sessionId, savedAtMs = Date.now(), reason = "manual_save") {
@@ -810,9 +1086,16 @@ class SessionStore {
         PRIMARY KEY (session_id, symbol, timeframe, bucket_start_ms)
       );
 
+      CREATE TABLE IF NOT EXISTS session_notes (
+        session_id TEXT PRIMARY KEY,
+        notes TEXT NOT NULL DEFAULT '',
+        updated_at_ms INTEGER NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_sessions_started_at_ms ON sessions (started_at_ms);
       CREATE INDEX IF NOT EXISTS idx_session_ticks_lookup ON session_ticks (session_id, symbol, ts_ms);
       CREATE INDEX IF NOT EXISTS idx_session_candles_lookup ON session_candles (session_id, symbol, timeframe, bucket_start_ms);
+      CREATE INDEX IF NOT EXISTS idx_session_notes_updated_at_ms ON session_notes (updated_at_ms);
     `);
     try {
       this.sqlite.exec("ALTER TABLE sessions ADD COLUMN last_saved_at_ms INTEGER;");

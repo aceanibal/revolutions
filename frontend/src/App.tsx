@@ -5,6 +5,7 @@ import { LiveMonitorPanel } from "./LiveMonitorPanel";
 import { ReportPanel } from "./ReportPanel";
 import { AssetsPanel } from "./AssetsPanel";
 import { AccountPanel } from "./AccountPanel";
+import { StudyPanel } from "./StudyPanel";
 import {
   addStream,
   fetchPersistenceStatus,
@@ -13,13 +14,14 @@ import {
 } from "./lib/api";
 import type { PersistenceStatus, SessionInfo } from "./types";
 
-type AppTab = "trade" | "report" | "assets" | "account";
+type AppTab = "trade" | "report" | "assets" | "account" | "study";
 
 const tabs: { id: AppTab; name: string }[] = [
   { id: "trade", name: "Trade" },
   { id: "report", name: "Report" },
   { id: "assets", name: "Assets" },
-  { id: "account", name: "Account" }
+  { id: "account", name: "Account" },
+  { id: "study", name: "Study" }
 ];
 const DEFAULT_MONITOR_HEIGHT_PX = 220;
 const DEFAULT_CHART_HEIGHT_PX = 520;
@@ -398,6 +400,12 @@ export function App() {
         {activeTab === "account" && (
           <div className="h-[calc(100vh-5.5rem)] overflow-auto">
             <AccountPanel symbol={primarySymbol} />
+          </div>
+        )}
+
+        {activeTab === "study" && (
+          <div className="h-[calc(100vh-5.5rem)] overflow-auto">
+            <StudyPanel />
           </div>
         )}
       </main>

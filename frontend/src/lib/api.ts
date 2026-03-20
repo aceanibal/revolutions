@@ -9,6 +9,7 @@ import type {
   GapRange,
   LeveragePreview,
   PersistenceStatus,
+  SavedSession,
   SessionInfo,
   Timeframe
 } from "../types";
@@ -411,6 +412,71 @@ export async function fetchTodaySessions(): Promise<SessionInfo[]> {
     return payload.sessions as SessionInfo[];
   } catch {
     return [];
+  }
+}
+
+export async function fetchAllSessions(): Promise<SavedSession[]> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/sessions/all`);
+    if (!res.ok) {
+      return [];
+    }
+    const payload: any = await res.json();
+    if (!payload?.ok || !Array.isArray(payload.sessions)) {
+      return [];
+    }
+    return payload.sessions as SavedSession[];
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchSessionSymbols(sessionId: string): Promise<string[]> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/symbols`);
+    if (!res.ok) {
+      return [];
+    }
+    const payload: any = await res.json();
+    if (!payload?.ok || !Array.isArray(payload.symbols)) {
+      return [];
+    }
+    return payload.symbols.map((symbol: unknown) => String(symbol || "").toUpperCase()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchSessionNotes(sessionId: string): Promise<string> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/notes`);
+    if (!res.ok) {
+      return "";
+    }
+    const payload: any = await res.json();
+    if (!payload?.ok) {
+      return "";
+    }
+    return String(payload.notes || "");
+  } catch {
+    return "";
+  }
+}
+
+export async function saveSessionNotes(sessionId: string, notes: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/notes`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ notes })
+    });
+    if (!res.ok) {
+      return false;
+    }
+    const payload: any = await res.json();
+    return Boolean(payload?.ok);
+  } catch {
+    return false;
   }
 }
 
