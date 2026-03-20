@@ -386,7 +386,7 @@ function computeLeveragePreview({
 
   let warning = null;
   if (feePctOfRisk > 30) {
-    warning = `Fees+slippage consume ${feePctOfRisk.toFixed(1)}% of total risk — consider wider stop`;
+    warning = `Planning buffer dominates risk: fees + assumed execution slippage are ${feePctOfRisk.toFixed(1)}% of total loss model. This is a conservative estimate; consider a wider stop.`;
   }
   if (rawLeverage > exchangeMaxLeverage) {
     warning = `Recommended leverage (${rawLeverage.toFixed(2)}x) exceeds exchange max (${exchangeMaxLeverage}x) — capped`;

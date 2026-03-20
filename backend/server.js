@@ -80,6 +80,7 @@ let primarySymbol = DEFAULT_SYMBOL;
 // All symbols we maintain active Hyperliquid streams for.
 const activeSymbols = new Set();
 const stopLossBySymbol = new Map(); // symbol -> price
+const lastPriceBySymbol = new Map(); // symbol -> latest streamed price
 let accountMode = "live";
 const activePositionBySymbol = new Map();
 const isLongBySymbol = new Map(); // symbol -> true(long), false(short)
@@ -226,7 +227,8 @@ function getAtrStopLossStep() {
   }
 
   // If ATR isn't ready yet, fall back to a tiny chart-based increment.
-  const inc = fallbackTickInc(lastPrice);
+  const primaryPrice = getLatestPriceForSymbol(primarySymbol);
+  const inc = fallbackTickInc(primaryPrice > 0 ? primaryPrice : lastPrice);
   const raw = inc * Math.max(0.1, k);
   return roundUpToIncrement(raw, inc) || inc;
 }
@@ -235,6 +237,20 @@ function getStopLossPrice(symbol) {
   if (!symbol) return 0;
   const v = stopLossBySymbol.get(symbol);
   return Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+function getLatestPriceForSymbol(symbol) {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized) return 0;
+  const v = Number(lastPriceBySymbol.get(normalized) ?? 0);
+  return Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+function syncPrimaryLastPrice() {
+  const next = getLatestPriceForSymbol(primarySymbol);
+  if (next > 0) {
+    lastPrice = next;
+  }
 }
 
 function getDirectionForSymbol(symbol) {
@@ -379,6 +395,7 @@ app.post("/api/change-symbol", async (req, res) => {
   primarySymbol = nextSymbol;
   seenFirstDataForSymbol.delete(primarySymbol);
   getDirectionForSymbol(primarySymbol);
+  syncPrimaryLastPrice();
 
   // Notify all clients about the new primary and updated streams.
   io.emit("symbolChanged", { symbol: primarySymbol });
@@ -387,6 +404,7 @@ app.post("/api/change-symbol", async (req, res) => {
     primary: primarySymbol
   });
   emitDirectionUpdate();
+  emitHudUpdate();
 
   await preloadSymbolHistory(nextSymbol);
   res.json({ ok: true, symbol: primarySymbol });
@@ -750,6 +768,7 @@ app.post("/api/account/leverage-preview", async (req, res) => {
     let makerFeePct = 0.0002;
     let takerFeePct = 0.00035;
     let exchangeMaxLeverage = 50;
+    let accountBalanceForMode = 0;
 
     if (isAccountConfiguredForMode(mode)) {
       try {
@@ -758,6 +777,17 @@ app.post("/api/account/leverage-preview", async (req, res) => {
         makerFeePct = fees.userAddRate || makerFeePct;
         takerFeePct = fees.userCrossRate || takerFeePct;
       } catch { /* use defaults */ }
+
+      try {
+        const modeBalance = await fetchAccountBalance(mode);
+        if (Number.isFinite(modeBalance) && modeBalance >= 0) {
+          accountBalanceForMode = Number(modeBalance);
+        }
+      } catch { /* keep fallback below */ }
+    }
+
+    if (accountBalanceForMode <= 0 && mode === accountMode && Number.isFinite(balance) && balance > 0) {
+      accountBalanceForMode = Number(balance);
     }
 
     try {
@@ -775,7 +805,7 @@ app.post("/api/account/leverage-preview", async (req, res) => {
       takerFeePct,
       slippageBps,
       exchangeMaxLeverage,
-      accountBalance: balance,
+      accountBalance: accountBalanceForMode,
       entryPrice: lastPrice
     });
 
@@ -863,10 +893,11 @@ async function refreshFeeAndMetaCache() {
 }
 
 function emitStopLossProjections() {
+  const currentPrice = getLatestPriceForSymbol(primarySymbol) || lastPrice;
   const settings = getSettings();
   const stopLossPrice = getStopLossPrice(primarySymbol);
   const projections = computeStopLossProjections({
-    currentPrice: lastPrice,
+    currentPrice,
     stopLossPrice,
     accountBalance: balance,
     riskBudgetPct: settings.riskPercent,
@@ -877,12 +908,13 @@ function emitStopLossProjections() {
   });
   io.emit("stopLoss:projections", {
     stopLossPrice,
-    currentPrice: lastPrice,
+    currentPrice,
     ...projections
   });
 }
 
 function emitHudUpdate() {
+  syncPrimaryLastPrice();
   const stopLossPrice = getStopLossPrice(primarySymbol);
   accountEmitHudUpdate(io, {
     stopLossPrice,
@@ -1016,10 +1048,12 @@ function cyclePrimarySymbol(direction) {
 
   primarySymbol = nextSymbol;
   seenFirstDataForSymbol.delete(primarySymbol);
+  syncPrimaryLastPrice();
   console.log("Primary symbol moved via controller:", primarySymbol);
   io.emit("symbolChanged", { symbol: primarySymbol });
   emitStreamsUpdate();
   emitDirectionUpdate();
+  emitHudUpdate();
 }
 
 async function executeCrossTrade() {
@@ -1378,9 +1412,10 @@ async function handleControllerAction(action) {
     }
 
     if (action === "stopLossSnap") {
-      if (primarySymbol && lastPrice > 0) {
-        stopLossBySymbol.set(primarySymbol, lastPrice);
-        console.log("stopLoss snapped to price:", lastPrice, "for", primarySymbol);
+      const snapPrice = getLatestPriceForSymbol(primarySymbol) || lastPrice;
+      if (primarySymbol && snapPrice > 0) {
+        stopLossBySymbol.set(primarySymbol, snapPrice);
+        console.log("stopLoss snapped to price:", snapPrice, "for", primarySymbol);
         emitHudUpdate();
         emitControllerEvent("stopLossSnap");
       }
@@ -1460,6 +1495,7 @@ async function shutdown(signal) {
 
 io.on("connection", (socket) => {
   console.log("Client connected:", socket.id);
+  syncPrimaryLastPrice();
 
   const settings = getSettings();
   socket.emit("initialState", {
@@ -1495,9 +1531,11 @@ io.on("connection", (socket) => {
       primarySymbol = symbol;
       seenFirstDataForSymbol.delete(primarySymbol);
       getDirectionForSymbol(primarySymbol);
+      syncPrimaryLastPrice();
       io.emit("symbolChanged", { symbol: primarySymbol });
       emitStreamsUpdate();
       emitDirectionUpdate();
+      emitHudUpdate();
     }
   });
 
@@ -1528,9 +1566,11 @@ io.on("connection", (socket) => {
     primarySymbol = nextSymbol;
     seenFirstDataForSymbol.delete(primarySymbol);
     getDirectionForSymbol(primarySymbol);
+    syncPrimaryLastPrice();
     io.emit("symbolChanged", { symbol: primarySymbol });
     emitStreamsUpdate();
     emitDirectionUpdate();
+    emitHudUpdate();
   });
 });
 
@@ -1558,6 +1598,10 @@ async function bootstrapServer() {
       getActiveSymbols: () => Array.from(activeSymbols),
       seenFirstDataForSymbol,
       onPriceUpdate: ({ symbol, price }) => {
+        const normalized = normalizeSymbol(symbol);
+        if (normalized && Number.isFinite(price) && price > 0) {
+          lastPriceBySymbol.set(normalized, price);
+        }
         // Only HUD/position sizing are tied to the primary symbol.
         if (symbol === primarySymbol) {
           lastPrice = price;
