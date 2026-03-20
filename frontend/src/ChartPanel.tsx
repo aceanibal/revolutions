@@ -2,10 +2,16 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSocket } from "./useSocket";
 import { Chart } from "./Chart";
-import type { SessionInfo, Timeframe } from "./types";
-import { fetchAccountFees, fetchAccountOverview, fetchAccountSettings } from "./lib/api";
-import { calculateRiskFirstMetrics } from "./lib/riskCalculator";
+import type { LeveragePreview, SessionInfo, Timeframe } from "./types";
+import { fetchAccountFees, fetchAccountOverview, fetchAccountSettings, fetchLeveragePreview } from "./lib/api";
+import type { RiskFirstMetrics } from "./lib/riskCalculator";
 import { RiskFirstPanel } from "./RiskFirstPanel";
+
+const EXECUTION_ENTRY_SLIPPAGE_BPS = 200; // matches hyperliquid.js executeTrade 2%
+const EXECUTION_STOP_SLIPPAGE_BPS = 300; // matches hyperliquid.js placeStopLoss 3%
+const EFFECTIVE_SLIPPAGE_BPS = EXECUTION_ENTRY_SLIPPAGE_BPS + EXECUTION_STOP_SLIPPAGE_BPS;
+const ENTRY_SLIPPAGE_FRAC = EXECUTION_ENTRY_SLIPPAGE_BPS / 10_000;
+const EXIT_SLIPPAGE_FRAC = EXECUTION_STOP_SLIPPAGE_BPS / 10_000;
 
 interface ChartPanelProps {
   symbol: string;
@@ -55,6 +61,7 @@ export function ChartPanel({
   const [takerFeeRate, setTakerFeeRate] = useState(0.00035);
   const [positionEntryPrice, setPositionEntryPrice] = useState(0);
   const [liveAccountBalance, setLiveAccountBalance] = useState(0);
+  const [leveragePreview, setLeveragePreview] = useState<LeveragePreview | null>(null);
   const maxExchangeLeverage = 50;
 
   const entryPrice = hud.price;
@@ -92,26 +99,55 @@ export function ChartPanel({
 
   const slPrice = stopLossProjections?.stopLossPrice ?? hud.stopLossPrice;
   const accountBalanceForRisk = liveAccountBalance;
-  const metrics = useMemo(
-    () =>
-      calculateRiskFirstMetrics({
-        accountBalance: accountBalanceForRisk,
-        riskPercentage,
-        entryPrice,
-        stopLossPrice,
-        isLong,
-        makerFeeRate,
-        takerFeeRate,
+  const metrics = useMemo<RiskFirstMetrics>(() => {
+    const preview = leveragePreview;
+    if (!preview) {
+      return {
+        riskAmount: 0,
+        priceDistance: 0,
+        positionSize: 0,
+        notionalValue: 0,
+        leverage: 0,
+        entryFee: 0,
+        exitFee: 0,
+        totalFees: 0,
+        breakEvenPrice: 0,
+        leverageTooHigh: false,
         maxExchangeLeverage
-      }),
-    [accountBalanceForRisk, riskPercentage, entryPrice, stopLossPrice, isLong, makerFeeRate, takerFeeRate]
-  );
-  const warningText =
-    metrics.leverageTooHigh
-      ? `Warning: leverage ${metrics.leverage.toFixed(
-          2
-        )}x is above ${maxExchangeLeverage}x. Stop loss is too tight.`
-      : null;
+      };
+    }
+    const distance = Math.abs(entryPrice - stopLossPrice);
+    const notional = Number(preview.notionalPosition || 0);
+    const size = Number(preview.positionSizeUnits || 0);
+    const effectiveMaxLev = Number(preview.exchangeMaxLeverage || maxExchangeLeverage);
+    const entryFee = notional * Math.max(0, takerFeeRate);
+    const exitFee = size * Math.max(0, stopLossPrice) * Math.max(0, takerFeeRate);
+    const totalFees = entryFee + exitFee;
+    const breakEvenPrice =
+      entryPrice > 0
+        ? isLong
+          ? entryPrice *
+            ((1 + takerFeeRate + ENTRY_SLIPPAGE_FRAC) /
+              Math.max(1e-12, 1 - takerFeeRate - EXIT_SLIPPAGE_FRAC))
+          : entryPrice *
+            ((1 - takerFeeRate - ENTRY_SLIPPAGE_FRAC) /
+              (1 + takerFeeRate + EXIT_SLIPPAGE_FRAC))
+        : 0;
+    return {
+      riskAmount: Number(preview.riskDollars || 0),
+      priceDistance: distance,
+      positionSize: size,
+      notionalValue: notional,
+      leverage: Number(preview.cappedLeverage || 0),
+      entryFee,
+      exitFee,
+      totalFees,
+      breakEvenPrice,
+      leverageTooHigh: Number(preview.recommendedLeverage || 0) > effectiveMaxLev,
+      maxExchangeLeverage: effectiveMaxLev
+    };
+  }, [leveragePreview, entryPrice, stopLossPrice, takerFeeRate, isLong]);
+  const warningText = leveragePreview?.warning || null;
 
   useEffect(() => {
     if (slPrice >= 0) {
@@ -163,6 +199,35 @@ export function ChartPanel({
       cancelled = true;
     };
   }, [symbol, tradeResult]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!symbol || entryPrice <= 0 || stopLossPrice <= 0 || accountBalanceForRisk <= 0) {
+        setLeveragePreview(null);
+        return;
+      }
+      const stopLossDistancePct = isLong
+        ? ((entryPrice - stopLossPrice) / entryPrice) * 100
+        : ((stopLossPrice - entryPrice) / entryPrice) * 100;
+      if (!Number.isFinite(stopLossDistancePct) || stopLossDistancePct <= 0) {
+        setLeveragePreview(null);
+        return;
+      }
+      const preview = await fetchLeveragePreview({
+        symbol,
+        stopLossDistancePct,
+        riskBudgetPct: riskPercentage,
+        slippageBps: EFFECTIVE_SLIPPAGE_BPS,
+        mode: "live"
+      });
+      if (cancelled) return;
+      setLeveragePreview(preview);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [symbol, entryPrice, stopLossPrice, isLong, riskPercentage, accountBalanceForRisk]);
 
   const handleStopLossPriceChange = (nextPrice: number) => {
     setStopLossPrice(nextPrice);

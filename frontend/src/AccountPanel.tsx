@@ -4,7 +4,6 @@ import {
   fetchAccountFills,
   fetchAccountFees,
   fetchAccountSettings,
-  fetchLeveragePreview,
   updateAccountSettings
 } from "./lib/api";
 import type {
@@ -13,8 +12,7 @@ import type {
   AccountMode,
   AccountOverview,
   AccountPosition,
-  AccountSettings,
-  LeveragePreview
+  AccountSettings
 } from "./types";
 
 function fmtUsd(v: number | undefined | null): string {
@@ -226,105 +224,6 @@ function StatCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-function LeveragePlanner({ symbol }: { symbol: string }) {
-  const [stopLossDistancePct, setStopLossDistancePct] = useState(2);
-  const [riskBudgetPct, setRiskBudgetPct] = useState(2);
-  const [slippageBps, setSlippageBps] = useState(10);
-  const [preview, setPreview] = useState<LeveragePreview | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const compute = useCallback(async () => {
-    if (stopLossDistancePct <= 0) return;
-    setLoading(true);
-    const result = await fetchLeveragePreview({
-      symbol,
-      stopLossDistancePct,
-      riskBudgetPct,
-      slippageBps
-    });
-    setPreview(result);
-    setLoading(false);
-  }, [symbol, stopLossDistancePct, riskBudgetPct, slippageBps]);
-
-  useEffect(() => {
-    void compute();
-  }, [compute]);
-
-  return (
-    <div className="space-y-3">
-      <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Stop-Loss Leverage Planner</h4>
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="space-y-0.5">
-          <span className="block text-[10px] font-medium text-slate-500">SL Distance %</span>
-          <input
-            type="number"
-            min={0.01}
-            max={50}
-            step={0.1}
-            value={stopLossDistancePct}
-            onChange={(e) => setStopLossDistancePct(Number(e.target.value))}
-            className="w-20 rounded-md border border-slate-200 px-2 py-1 text-xs tabular-nums outline-none focus:border-indigo-300 focus:ring-1 focus:ring-indigo-300"
-          />
-        </label>
-        <label className="space-y-0.5">
-          <span className="block text-[10px] font-medium text-slate-500">Risk Budget %</span>
-          <input
-            type="number"
-            min={0.1}
-            max={100}
-            step={0.1}
-            value={riskBudgetPct}
-            onChange={(e) => setRiskBudgetPct(Number(e.target.value))}
-            className="w-20 rounded-md border border-slate-200 px-2 py-1 text-xs tabular-nums outline-none focus:border-indigo-300 focus:ring-1 focus:ring-indigo-300"
-          />
-        </label>
-        <label className="space-y-0.5">
-          <span className="block text-[10px] font-medium text-slate-500">Slippage (bps)</span>
-          <input
-            type="number"
-            min={0}
-            max={500}
-            step={1}
-            value={slippageBps}
-            onChange={(e) => setSlippageBps(Number(e.target.value))}
-            className="w-20 rounded-md border border-slate-200 px-2 py-1 text-xs tabular-nums outline-none focus:border-indigo-300 focus:ring-1 focus:ring-indigo-300"
-          />
-        </label>
-        <button
-          type="button"
-          onClick={() => void compute()}
-          disabled={loading}
-          className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-        >
-          {loading ? "..." : "Calculate"}
-        </button>
-      </div>
-
-      {preview && (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
-          <StatCard label="Effective Loss / 1x" value={fmtPct(preview.effectiveLossPct)} />
-          <StatCard label="Recommended Lev." value={`${preview.recommendedLeverage}x`} />
-          <StatCard label="Capped Leverage" value={`${preview.cappedLeverage}x`} />
-          <StatCard label="Exchange Max" value={`${preview.exchangeMaxLeverage}x`} />
-          <StatCard label="Entry Fee" value={fmtPct(preview.entryFeePct)} />
-          <StatCard label="Exit Fee" value={fmtPct(preview.exitFeePct)} />
-          <StatCard label="Total Fees" value={fmtPct(preview.totalFeePct)} />
-          <StatCard label="Fee Buffer" value={fmtPct(preview.feeBufferPct)} />
-          <StatCard label="Risk $" value={fmtUsd(preview.riskDollars)} />
-          <StatCard label="Notional" value={fmtUsd(preview.notionalPosition)} />
-          <StatCard label="Position Size" value={fmtNum(preview.positionSizeUnits, 6)} />
-          <StatCard label="Slippage" value={fmtPct(preview.slippagePct)} />
-        </div>
-      )}
-      {preview?.warning && (
-        <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-800">
-          {preview.warning}
-        </p>
-      )}
-    </div>
-  );
-}
-
 function SettingsForm() {
   const [settings, setSettings] = useState<AccountSettings | null>(null);
   const [draft, setDraft] = useState<Partial<AccountSettings>>({});
@@ -378,18 +277,6 @@ function SettingsForm() {
           />
         </label>
         <label className="space-y-0.5">
-          <span className="block text-[10px] font-medium text-slate-500">Slippage (bps)</span>
-          <input
-            type="number"
-            min={0}
-            max={500}
-            step={1}
-            value={draft.slippageBps ?? settings.slippageBps}
-            onChange={(e) => setDraft((d) => ({ ...d, slippageBps: Number(e.target.value) }))}
-            className="w-20 rounded-md border border-slate-200 px-2 py-1 text-xs tabular-nums outline-none focus:border-indigo-300 focus:ring-1 focus:ring-indigo-300"
-          />
-        </label>
-        <label className="space-y-0.5">
           <span className="block text-[10px] font-medium text-slate-500">
             SL Step k (multiplies ATR)
           </span>
@@ -427,9 +314,6 @@ export function AccountPanel({ symbol }: AccountPanelProps) {
   return (
     <div className="space-y-8 p-4 sm:p-6">
       <SettingsForm />
-
-      <LeveragePlanner symbol={symbol} />
-
       <div className="grid gap-6">
         <ModeSection mode="live" symbol={symbol} />
       </div>
