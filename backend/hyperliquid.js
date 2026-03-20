@@ -1,11 +1,12 @@
 const fs = require("fs");
 const path = require("path");
 const dotenv = require("dotenv");
+const { Wallet } = require("ethers");
+const { ExchangeClient, HttpTransport, InfoClient } = require("@nktkas/hyperliquid");
+const { formatPrice, formatSize } = require("@nktkas/hyperliquid/utils");
 
 // ---------------------------------------------------------------------------
-// Load env files: .env for live, .env_test for testnet
-// dotenv.parse() reads the file without polluting process.env so the two
-// wallet files stay isolated from each other.
+// Env files: .env for live, .env_test for testnet
 // ---------------------------------------------------------------------------
 
 const ROOT_DIR = path.resolve(__dirname, "..");
@@ -46,8 +47,8 @@ const HYPERLIQUID_ACCOUNT_TEST =
   process.env.HYPERLIQUID_ACCOUNT_TEST ||
   "";
 
-console.log("[account] Live wallet:", HYPERLIQUID_ACCOUNT_LIVE ? `${HYPERLIQUID_ACCOUNT_LIVE.slice(0, 8)}...` : "(not configured)");
-console.log("[account] Test wallet:", HYPERLIQUID_ACCOUNT_TEST ? `${HYPERLIQUID_ACCOUNT_TEST.slice(0, 8)}...` : "(not configured)");
+console.log("[hyperliquid] Live wallet:", HYPERLIQUID_ACCOUNT_LIVE ? `${HYPERLIQUID_ACCOUNT_LIVE.slice(0, 8)}...` : "(not configured)");
+console.log("[hyperliquid] Test wallet:", HYPERLIQUID_ACCOUNT_TEST ? `${HYPERLIQUID_ACCOUNT_TEST.slice(0, 8)}...` : "(not configured)");
 
 function getConfig(mode) {
   if (mode === "test") {
@@ -62,7 +63,7 @@ function isAccountConfiguredForMode(mode) {
 }
 
 // ---------------------------------------------------------------------------
-// TTL cache — avoids hammering Hyperliquid endpoints
+// TTL cache
 // ---------------------------------------------------------------------------
 
 const cache = new Map();
@@ -97,6 +98,43 @@ async function hlPost(mode, body) {
     throw new Error(`Hyperliquid HTTP ${response.status}`);
   }
   return response.json();
+}
+
+// ---------------------------------------------------------------------------
+// SDK client cache (for signed/exchange operations)
+// ---------------------------------------------------------------------------
+
+const clientCache = new Map();
+
+function getModeSecrets(mode = "live") {
+  const envVars = mode === "test" ? testEnvVars : liveEnvVars;
+  const privateKey = String(
+    envVars.Private_Key || process.env[`HYPERLIQUID_PRIVATE_KEY_${mode.toUpperCase()}`] || ""
+  ).trim();
+  const { account } = getConfig(mode);
+  return { privateKey, account };
+}
+
+function getOrCreateClients(mode = "live") {
+  if (clientCache.has(mode)) return clientCache.get(mode);
+
+  const isTestnet = mode === "test";
+  const { privateKey, account } = getModeSecrets(mode);
+  if (!privateKey) {
+    throw new Error(`No ${mode} private key configured`);
+  }
+  if (!account) {
+    throw new Error(`No ${mode} account address configured`);
+  }
+
+  const transport = new HttpTransport({ isTestnet });
+  const wallet = new Wallet(privateKey);
+  const exchange = new ExchangeClient({ transport, wallet });
+  const info = new InfoClient({ transport });
+
+  const clients = { transport, exchange, info, account };
+  clientCache.set(mode, clients);
+  return clients;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +193,32 @@ async function fetchMeta(mode = "live") {
   const payload = await hlPost(mode, { type: "meta" });
   setCache(cacheKey, payload);
   return payload;
+}
+
+async function fetchOpenOrders(mode = "live") {
+  const { account } = getConfig(mode);
+  const payload = await hlPost(mode, { type: "openOrders", user: account });
+  return Array.isArray(payload) ? payload : [];
+}
+
+async function fetchAllMids(mode = "live") {
+  const cacheKey = `allMids:${mode}`;
+  const cached = getCached(cacheKey);
+  if (cached) return cached;
+
+  const payload = await hlPost(mode, { type: "allMids" });
+  setCache(cacheKey, payload);
+  return payload;
+}
+
+async function fetchMidPrice(symbol, mode = "live") {
+  const mids = await fetchAllMids(mode);
+  const upper = String(symbol || "").trim().toUpperCase();
+  const price = Number(mids?.[upper] ?? 0);
+  if (!Number.isFinite(price) || price <= 0) {
+    throw new Error(`No mid price available for ${upper}`);
+  }
+  return price;
 }
 
 // ---------------------------------------------------------------------------
@@ -270,7 +334,7 @@ function normalizeMetaForSymbol(metaPayload, symbol) {
 }
 
 // ---------------------------------------------------------------------------
-// Leverage calculator
+// Leverage / risk calculators
 // ---------------------------------------------------------------------------
 
 function computeLeveragePreview({
@@ -452,13 +516,13 @@ function patchSettings(partial) {
   try {
     fs.writeFileSync(SETTINGS_PATH, JSON.stringify(next, null, 2), "utf-8");
   } catch (err) {
-    console.log("[account] Failed to persist settings:", err?.message || err);
+    console.log("[hyperliquid] Failed to persist settings:", err?.message || err);
   }
   return next;
 }
 
 // ---------------------------------------------------------------------------
-// Legacy exports (backward compatible with server.js)
+// Legacy helpers (backward compat with server.js)
 // ---------------------------------------------------------------------------
 
 function computePositionSize(balance, lastPrice) {
@@ -512,6 +576,384 @@ function clearAccountCache(mode) {
   cache.delete(`fills:${mode}`);
   cache.delete(`fees:${mode}`);
   cache.delete(`meta:${mode}`);
+  cache.delete(`allMids:${mode}`);
+}
+
+// ---------------------------------------------------------------------------
+// Exchange operations (trade execution, order management)
+// ---------------------------------------------------------------------------
+
+function roundDown(value, decimals = 6) {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  const factor = 10 ** Math.max(0, decimals);
+  return Math.floor(value * factor) / factor;
+}
+
+function parseFirstOrderStatus(orderResponse) {
+  const statuses = orderResponse?.response?.data?.statuses;
+  if (!Array.isArray(statuses) || statuses.length === 0) {
+    throw new Error("Exchange returned empty order status");
+  }
+  const first = statuses[0];
+  if (typeof first === "string") {
+    return { kind: first, raw: first, oid: null, avgPx: null, totalSz: null };
+  }
+  if (first?.error) {
+    throw new Error(first.error);
+  }
+  if (first?.filled) {
+    return {
+      kind: "filled",
+      raw: first,
+      oid: Number(first.filled.oid ?? 0) || null,
+      avgPx: Number(first.filled.avgPx ?? 0) || null,
+      totalSz: Number(first.filled.totalSz ?? 0) || null
+    };
+  }
+  if (first?.resting) {
+    return {
+      kind: "resting",
+      raw: first,
+      oid: Number(first.resting.oid ?? 0) || null,
+      avgPx: null,
+      totalSz: null
+    };
+  }
+  return { kind: "unknown", raw: first, oid: null, avgPx: null, totalSz: null };
+}
+
+async function resolveAsset(symbol, mode = "live") {
+  const upper = String(symbol || "").trim().toUpperCase();
+  if (!upper) throw new Error("Symbol is required");
+
+  const { info } = getOrCreateClients(mode);
+  const meta = await info.meta();
+  const universe = Array.isArray(meta?.universe) ? meta.universe : [];
+  const asset = universe.findIndex((entry) => String(entry?.name || "").toUpperCase() === upper);
+  if (asset < 0) {
+    throw new Error(`Unknown symbol: ${upper}`);
+  }
+  const entry = universe[asset] || {};
+  return {
+    symbol: upper,
+    asset,
+    szDecimals: Number(entry.szDecimals ?? 0),
+    maxLeverage: Number(entry.maxLeverage ?? 50)
+  };
+}
+
+async function resolveAssetIndex(symbol, mode = "live") {
+  const resolved = await resolveAsset(symbol, mode);
+  return resolved.asset;
+}
+
+function slippagePrice(livePrice, isBuy, szDecimals) {
+  const slippageFrac = 0.02;
+  const raw = isBuy ? livePrice * (1 + slippageFrac) : livePrice * (1 - slippageFrac);
+  return formatPrice(raw, szDecimals, "perp");
+}
+
+async function executeTrade({
+  symbol,
+  isLong,
+  positionSize,
+  leverage,
+  price,
+  mode = "live"
+}) {
+  if (!Number.isFinite(price) || price <= 0) throw new Error("Live price is required");
+  const { exchange } = getOrCreateClients(mode);
+  const { asset, szDecimals } = await resolveAsset(symbol, mode);
+
+  const size = roundDown(Number(positionSize), szDecimals);
+  if (!Number.isFinite(size) || size <= 0) throw new Error("Position size must be positive");
+  const integerLeverage = Math.max(1, Math.floor(Math.max(1, Number(leverage || 1))));
+  const px = slippagePrice(price, Boolean(isLong), szDecimals);
+
+  console.log("[hyperliquid] executeTrade", {
+    symbol, asset, szDecimals, isLong,
+    livePrice: price, px,
+    size: formatSize(size, szDecimals),
+    leverage: integerLeverage,
+    mode
+  });
+
+  await exchange.updateLeverage({
+    asset,
+    isCross: true,
+    leverage: integerLeverage
+  });
+
+  const orderResponse = await exchange.order({
+    orders: [
+      {
+        a: asset,
+        b: Boolean(isLong),
+        p: px,
+        s: formatSize(size, szDecimals),
+        r: false,
+        t: { limit: { tif: "FrontendMarket" } }
+      }
+    ],
+    grouping: "na"
+  });
+
+  const status = parseFirstOrderStatus(orderResponse);
+  return {
+    symbol: String(symbol || "").toUpperCase(),
+    asset,
+    side: isLong ? "long" : "short",
+    size,
+    leverage: integerLeverage,
+    avgPx: status.avgPx,
+    oid: status.oid,
+    status: status.kind,
+    raw: orderResponse
+  };
+}
+
+async function placeStopLoss({
+  symbol,
+  isLong,
+  size,
+  triggerPrice,
+  mode = "live"
+}) {
+  const { exchange } = getOrCreateClients(mode);
+  const { asset, szDecimals } = await resolveAsset(symbol, mode);
+
+  const safeSize = roundDown(Number(size || 0), szDecimals);
+  if (!Number.isFinite(safeSize) || safeSize <= 0) throw new Error("Stop-loss size must be positive");
+  const triggerPx = Number(triggerPrice || 0);
+  if (!Number.isFinite(triggerPx) || triggerPx <= 0) throw new Error("Stop-loss trigger price must be positive");
+
+  const isBuyToClose = !Boolean(isLong);
+  const slippageFrac = 0.03;
+  const limitPx = isBuyToClose
+    ? triggerPx * (1 + slippageFrac)
+    : triggerPx * (1 - slippageFrac);
+
+  const orderResponse = await exchange.order({
+    orders: [
+      {
+        a: asset,
+        b: isBuyToClose,
+        p: formatPrice(limitPx, szDecimals, "perp"),
+        s: formatSize(safeSize, szDecimals),
+        r: true,
+        t: {
+          trigger: {
+            isMarket: true,
+            triggerPx: formatPrice(triggerPx, szDecimals, "perp"),
+            tpsl: "sl"
+          }
+        }
+      }
+    ],
+    grouping: "positionTpsl"
+  });
+
+  const status = parseFirstOrderStatus(orderResponse);
+  return {
+    symbol: String(symbol || "").toUpperCase(),
+    asset,
+    oid: status.oid,
+    status: status.kind,
+    raw: orderResponse
+  };
+}
+
+async function closePosition({
+  symbol,
+  isLong,
+  size,
+  price,
+  mode = "live"
+}) {
+  if (!Number.isFinite(price) || price <= 0) throw new Error("Live price is required");
+  const { exchange } = getOrCreateClients(mode);
+  const { asset, szDecimals } = await resolveAsset(symbol, mode);
+
+  const closeSize = roundDown(Number(size || 0), szDecimals);
+  if (!Number.isFinite(closeSize) || closeSize <= 0) throw new Error("Close size must be positive");
+
+  const isBuyToClose = !Boolean(isLong);
+
+  const orderResponse = await exchange.order({
+    orders: [
+      {
+        a: asset,
+        b: isBuyToClose,
+        p: slippagePrice(price, isBuyToClose, szDecimals),
+        s: formatSize(closeSize, szDecimals),
+        r: true,
+        t: { limit: { tif: "FrontendMarket" } }
+      }
+    ],
+    grouping: "na"
+  });
+
+  const status = parseFirstOrderStatus(orderResponse);
+  return {
+    symbol: String(symbol || "").toUpperCase(),
+    asset,
+    size: closeSize,
+    avgPx: status.avgPx,
+    oid: status.oid,
+    status: status.kind,
+    raw: orderResponse
+  };
+}
+
+async function updateStopLoss({
+  symbol,
+  isLong,
+  size,
+  newTriggerPrice,
+  oldOid = null,
+  oldAsset = null,
+  mode = "live"
+}) {
+  const upper = String(symbol || "").trim().toUpperCase();
+  if (!upper) throw new Error("Symbol is required");
+  if (!Number.isFinite(Number(newTriggerPrice)) || Number(newTriggerPrice) <= 0) {
+    throw new Error("New trigger price must be positive");
+  }
+
+  // Place new stop loss FIRST so we're never unprotected
+  const stopResult = await placeStopLoss({
+    symbol: upper,
+    isLong,
+    size,
+    triggerPrice: newTriggerPrice,
+    mode
+  });
+
+  // Cancel old stop loss only after the new one is confirmed
+  let cancelResult = null;
+  if (Number.isFinite(oldOid) && oldOid > 0 && Number.isFinite(oldAsset) && oldAsset >= 0) {
+    try {
+      cancelResult = await cancelOrderById({ asset: oldAsset, oid: oldOid, mode });
+    } catch {
+      cancelResult = await cancelAllOrders({ symbol: upper, mode });
+    }
+  } else {
+    cancelResult = await cancelAllOrders({ symbol: upper, mode });
+  }
+
+  return {
+    symbol: upper,
+    oldCanceled: cancelResult,
+    oid: stopResult.oid,
+    asset: stopResult.asset,
+    status: stopResult.status,
+    triggerPrice: Number(newTriggerPrice),
+    raw: stopResult.raw
+  };
+}
+
+async function executeAzizExit({
+  symbol,
+  price,
+  oldStopOid = null,
+  oldStopAsset = null,
+  mode = "live"
+}) {
+  const upper = String(symbol || "").trim().toUpperCase();
+  if (!upper) throw new Error("Symbol is required");
+  if (!Number.isFinite(price) || price <= 0) throw new Error("Live price is required");
+
+  clearAccountCache(mode);
+  const payload = await fetchClearinghouseState(mode);
+  const positions = normalizePositions(payload);
+  const pos = positions.find(p => p.coin === upper);
+  if (!pos) throw new Error(`No open position for ${upper}`);
+
+  const posSize = Math.abs(pos.szi);
+  if (!Number.isFinite(posSize) || posSize <= 0) throw new Error("Position size is invalid");
+  const isLong = pos.szi > 0;
+  const entryPx = Number(pos.entryPx);
+  if (!Number.isFinite(entryPx) || entryPx <= 0) throw new Error("Entry price is invalid");
+
+  const halfSize = posSize / 2;
+
+  const closeResult = await closePosition({
+    symbol: upper,
+    isLong,
+    size: halfSize,
+    price,
+    mode
+  });
+
+  clearAccountCache(mode);
+  const updatedPayload = await fetchClearinghouseState(mode);
+  const updatedPositions = normalizePositions(updatedPayload);
+  const remaining = updatedPositions.find(p => p.coin === upper);
+
+  let stopResult = null;
+  if (remaining && Math.abs(remaining.szi) > 0) {
+    const remainingSize = Math.abs(remaining.szi);
+    const remainingIsLong = remaining.szi > 0;
+
+    stopResult = await updateStopLoss({
+      symbol: upper,
+      isLong: remainingIsLong,
+      size: remainingSize,
+      newTriggerPrice: entryPx,
+      oldOid: oldStopOid,
+      oldAsset: oldStopAsset,
+      mode
+    });
+  }
+
+  return {
+    symbol: upper,
+    side: isLong ? "long" : "short",
+    closedSize: closeResult.size,
+    closedAvgPx: closeResult.avgPx,
+    remainingSize: remaining ? Math.abs(remaining.szi) : 0,
+    breakEvenPrice: entryPx,
+    stopLoss: stopResult ? {
+      oid: stopResult.oid,
+      asset: stopResult.asset,
+      status: stopResult.status,
+      triggerPrice: stopResult.triggerPrice
+    } : null
+  };
+}
+
+async function getOpenOrders({ mode = "live" } = {}) {
+  const { info, account } = getOrCreateClients(mode);
+  const orders = await info.openOrders({ user: account });
+  return Array.isArray(orders) ? orders : [];
+}
+
+async function cancelOrderById({ asset, oid, mode = "live" }) {
+  const { exchange } = getOrCreateClients(mode);
+  if (!Number.isFinite(asset) || asset < 0 || !Number.isFinite(oid) || oid <= 0) {
+    return { canceled: false };
+  }
+  const result = await exchange.cancel({
+    cancels: [{ a: Number(asset), o: Number(oid) }]
+  });
+  return { canceled: true, result };
+}
+
+async function cancelAllOrders({ symbol, mode = "live" }) {
+  const { exchange } = getOrCreateClients(mode);
+  const { asset, symbol: upper } = await resolveAsset(symbol, mode);
+  const openOrders = await getOpenOrders({ mode });
+  const cancels = openOrders
+    .filter((order) => String(order?.coin || "").toUpperCase() === upper)
+    .map((order) => ({ a: asset, o: Number(order?.oid || 0) }))
+    .filter((entry) => Number.isFinite(entry.o) && entry.o > 0);
+
+  if (cancels.length === 0) {
+    return { canceledCount: 0, result: null };
+  }
+
+  const result = await exchange.cancel({ cancels });
+  return { canceledCount: cancels.length, result };
 }
 
 // ---------------------------------------------------------------------------
@@ -519,26 +961,52 @@ function clearAccountCache(mode) {
 // ---------------------------------------------------------------------------
 
 module.exports = {
-  computePositionSize,
-  emitHudUpdate,
-  fetchAccountBalance,
-  clearAccountCache,
-
+  // Config
   getConfig,
   isAccountConfiguredForMode,
+
+  // Fetchers (read-only info API)
   fetchClearinghouseState,
   fetchSpotClearinghouseState,
   fetchUserFills,
   fetchUserFees,
   fetchMeta,
+  fetchOpenOrders,
+  fetchAllMids,
+  fetchMidPrice,
+  fetchAccountBalance,
+
+  // Normalizers
   normalizeAccountOverview,
   normalizePositions,
   normalizeFills,
   normalizeFeeRates,
   normalizeMetaForSymbol,
+
+  // Risk / leverage calculators
   computeLeveragePreview,
   computeStopLossProjections,
+
+  // Settings
   loadSettings,
   getSettings,
-  patchSettings
+  patchSettings,
+
+  // Exchange operations (signed, require private key)
+  getOrCreateClients,
+  resolveAsset,
+  resolveAssetIndex,
+  executeTrade,
+  placeStopLoss,
+  updateStopLoss,
+  executeAzizExit,
+  closePosition,
+  getOpenOrders,
+  cancelOrderById,
+  cancelAllOrders,
+
+  // Legacy helpers
+  computePositionSize,
+  emitHudUpdate,
+  clearAccountCache
 };

@@ -21,19 +21,19 @@ const {
   computeStopLossProjections,
   loadSettings,
   getSettings,
-  patchSettings
-} = require("./account");
+  patchSettings,
+  executeTrade,
+  placeStopLoss,
+  updateStopLoss,
+  executeAzizExit,
+  closePosition,
+  cancelOrderById,
+  cancelAllOrders
+} = require("./hyperliquid");
 const { connectHyperliquidWs, subscribeToSymbol, unsubscribeFromSymbol } = require("./priceStream");
 const { setupKeyboardController } = require("./controller");
 const { SessionStore } = require("./sessionStore");
 const { detectGapRanges, intervalForTimeframe, upsertCandle } = require("./sessionMath");
-const {
-  executeTrade,
-  placeStopLoss,
-  closePosition,
-  cancelOrderById,
-  cancelAllOrders
-} = require("./exchange");
 
 const PORT = process.env.PORT || 3000;
 const HYPERLIQUID_WS_URL =
@@ -1087,32 +1087,31 @@ async function executeAzizMethod() {
     emitTradeResult({ ok: false, action: "triangle", symbol: symbol || "", error: "No active trade to scale out" });
     return;
   }
-  const isLong = inferDirectionFromPosition(position);
-  const positionSize = Math.abs(Number(position.szi ?? 0));
-  if (isLong === null || !Number.isFinite(positionSize) || positionSize <= 0) {
-    emitTradeResult({ ok: false, action: "triangle", symbol, error: "Active position size is invalid" });
-    return;
-  }
   if (!Number.isFinite(lastPrice) || lastPrice <= 0) {
     emitTradeResult({ ok: false, action: "triangle", symbol, error: "Live price is unavailable" });
     return;
   }
 
-  const settings = getSettings();
-  const closeResult = await closePosition({
+  const tracked = activeStopLossOrderBySymbol.get(symbol);
+  const result = await executeAzizExit({
     symbol,
-    isLong,
-    size: positionSize * 0.5,
     price: lastPrice,
+    oldStopOid: tracked?.oid ?? null,
+    oldStopAsset: tracked?.asset ?? null,
     mode: accountMode
   });
 
   await refreshActivePosition();
   const updated = getActivePosition(symbol);
-  if (updated && Number.isFinite(updated.entryPx) && Number(updated.entryPx) > 0) {
+  if (updated) {
     setDirectionForSymbol(symbol, Number(updated.szi) > 0);
-    stopLossBySymbol.set(symbol, Number(updated.entryPx));
-    await maybeRearmStopLossForPosition(symbol, updated);
+    stopLossBySymbol.set(symbol, result.breakEvenPrice);
+  }
+  if (result.stopLoss?.oid && result.stopLoss?.asset != null) {
+    activeStopLossOrderBySymbol.set(symbol, {
+      asset: Number(result.stopLoss.asset),
+      oid: Number(result.stopLoss.oid)
+    });
   } else {
     activeStopLossOrderBySymbol.delete(symbol);
   }
@@ -1125,9 +1124,9 @@ async function executeAzizMethod() {
     ok: true,
     action: "triangle",
     symbol,
-    side: isLong ? "long" : "short",
-    size: closeResult.size,
-    avgPx: closeResult.avgPx,
+    side: result.side,
+    size: result.closedSize,
+    avgPx: result.closedAvgPx,
     details: "Closed 50% and moved stop loss to break-even"
   });
 }
@@ -1202,25 +1201,13 @@ async function executeStopLossUpdate() {
   }
 
   const tracked = activeStopLossOrderBySymbol.get(symbol);
-  if (tracked?.asset != null && tracked?.oid != null) {
-    try {
-      await cancelOrderById({
-        asset: Number(tracked.asset),
-        oid: Number(tracked.oid),
-        mode: accountMode
-      });
-    } catch {
-      await cancelAllOrders({ symbol, mode: accountMode });
-    }
-  } else {
-    await cancelAllOrders({ symbol, mode: accountMode });
-  }
-
-  const stopResult = await placeStopLoss({
+  const stopResult = await updateStopLoss({
     symbol,
     isLong,
     size: positionSize,
-    triggerPrice: stopLossPrice,
+    newTriggerPrice: stopLossPrice,
+    oldOid: tracked?.oid ?? null,
+    oldAsset: tracked?.asset ?? null,
     mode: accountMode
   });
   console.log("[server] stop-loss update placed", {
