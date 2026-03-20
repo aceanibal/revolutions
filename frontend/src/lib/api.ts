@@ -11,6 +11,7 @@ import type {
   PersistenceStatus,
   SavedSession,
   SessionInfo,
+  SessionTrade,
   Timeframe
 } from "../types";
 
@@ -460,6 +461,22 @@ export async function fetchSessionNotes(sessionId: string): Promise<string> {
     return String(payload.notes || "");
   } catch {
     return "";
+  }
+}
+
+export async function fetchSessionTrades(sessionId: string): Promise<SessionTrade[]> {
+  try {
+    const res = await fetch(`${BACKEND_BASE_URL}/api/sessions/${encodeURIComponent(sessionId)}/trades`);
+    if (!res.ok) {
+      return [];
+    }
+    const payload: any = await res.json();
+    if (!payload?.ok || !Array.isArray(payload.trades)) {
+      return [];
+    }
+    return payload.trades as SessionTrade[];
+  } catch {
+    return [];
   }
 }
 

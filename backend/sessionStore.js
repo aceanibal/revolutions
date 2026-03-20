@@ -776,9 +776,15 @@ class SessionStore {
             s.break_reason,
             s.asset_count,
             s.candle_count,
-            COALESCE(n.notes, '') AS notes
+            COALESCE(n.notes, '') AS notes,
+            COALESCE(t.trade_count, 0) AS trade_count
           FROM sessions s
           LEFT JOIN session_notes n ON n.session_id = s.id
+          LEFT JOIN (
+            SELECT session_id, COUNT(*) AS trade_count
+            FROM session_trades
+            GROUP BY session_id
+          ) t ON t.session_id = s.id
           ORDER BY s.started_at_ms DESC
         `
       )
@@ -792,7 +798,114 @@ class SessionStore {
       assetCount: Number(row.asset_count || 0),
       candleCount: Number(row.candle_count || 0),
       breakReason: row.break_reason || null,
-      notes: String(row.notes || "")
+      notes: String(row.notes || ""),
+      tradeCount: Number(row.trade_count || 0)
+    }));
+  }
+
+  async persistTrades(sessionId, trades, mode = "live") {
+    if (!this.sqlite || !sessionId || !Array.isArray(trades) || trades.length === 0) return 0;
+    const normalizedSessionId = String(sessionId).trim();
+    if (!normalizedSessionId) return 0;
+    const normalizedMode = mode === "test" ? "test" : "live";
+
+    const insertTrade = this.sqlite.prepare(
+      `
+        INSERT OR IGNORE INTO session_trades (
+          session_id,
+          mode,
+          coin,
+          side,
+          dir,
+          px,
+          sz,
+          time_ms,
+          fee,
+          fee_token,
+          closed_pnl,
+          crossed,
+          oid,
+          tid
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+    );
+
+    let inserted = 0;
+    this.sqlite.exec("BEGIN");
+    try {
+      for (const trade of trades) {
+        const timeMs = Number(trade?.time ?? 0);
+        const coin = normalizeSymbol(trade?.coin);
+        if (!coin || !Number.isFinite(timeMs) || timeMs <= 0) continue;
+        const result = insertTrade.run(
+          normalizedSessionId,
+          normalizedMode,
+          coin,
+          String(trade?.side ?? ""),
+          String(trade?.dir ?? ""),
+          Number(trade?.px ?? 0),
+          Number(trade?.sz ?? 0),
+          timeMs,
+          Number(trade?.fee ?? 0),
+          String(trade?.feeToken ?? "USDC"),
+          Number(trade?.closedPnl ?? 0),
+          Boolean(trade?.crossed) ? 1 : 0,
+          trade?.oid == null ? "" : String(trade.oid),
+          trade?.tid == null ? "" : String(trade.tid)
+        );
+        inserted += Number(result?.changes || 0);
+      }
+      this.sqlite.exec("COMMIT");
+      return inserted;
+    } catch (error) {
+      this.sqlite.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  async getSessionTrades(sessionId) {
+    if (!this.sqlite || !sessionId) return [];
+    const normalizedSessionId = String(sessionId).trim();
+    if (!normalizedSessionId) return [];
+    const rows = this.sqlite
+      .prepare(
+        `
+          SELECT
+            mode,
+            coin,
+            side,
+            dir,
+            px,
+            sz,
+            time_ms,
+            fee,
+            fee_token,
+            closed_pnl,
+            crossed,
+            oid,
+            tid
+          FROM session_trades
+          WHERE session_id = ?
+          ORDER BY time_ms DESC
+        `
+      )
+      .all(normalizedSessionId);
+
+    return rows.map((row) => ({
+      mode: String(row.mode || "live"),
+      coin: String(row.coin || ""),
+      side: String(row.side || ""),
+      dir: String(row.dir || ""),
+      px: Number(row.px || 0),
+      sz: Number(row.sz || 0),
+      time: Number(row.time_ms || 0),
+      fee: Number(row.fee || 0),
+      feeToken: String(row.fee_token || "USDC"),
+      closedPnl: Number(row.closed_pnl || 0),
+      crossed: Boolean(row.crossed),
+      oid: row.oid ? Number(row.oid) : null,
+      tid: row.tid ? Number(row.tid) : null
     }));
   }
 
@@ -1092,10 +1205,29 @@ class SessionStore {
         updated_at_ms INTEGER NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS session_trades (
+        session_id TEXT NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'live',
+        coin TEXT NOT NULL,
+        side TEXT NOT NULL,
+        dir TEXT NOT NULL DEFAULT '',
+        px REAL NOT NULL,
+        sz REAL NOT NULL,
+        time_ms INTEGER NOT NULL,
+        fee REAL NOT NULL DEFAULT 0,
+        fee_token TEXT NOT NULL DEFAULT 'USDC',
+        closed_pnl REAL NOT NULL DEFAULT 0,
+        crossed INTEGER NOT NULL DEFAULT 0,
+        oid TEXT NOT NULL DEFAULT '',
+        tid TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (session_id, mode, time_ms, coin, side, px, sz, oid, tid)
+      );
+
       CREATE INDEX IF NOT EXISTS idx_sessions_started_at_ms ON sessions (started_at_ms);
       CREATE INDEX IF NOT EXISTS idx_session_ticks_lookup ON session_ticks (session_id, symbol, ts_ms);
       CREATE INDEX IF NOT EXISTS idx_session_candles_lookup ON session_candles (session_id, symbol, timeframe, bucket_start_ms);
       CREATE INDEX IF NOT EXISTS idx_session_notes_updated_at_ms ON session_notes (updated_at_ms);
+      CREATE INDEX IF NOT EXISTS idx_session_trades_lookup ON session_trades (session_id);
     `);
     try {
       this.sqlite.exec("ALTER TABLE sessions ADD COLUMN last_saved_at_ms INTEGER;");

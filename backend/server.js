@@ -501,6 +501,27 @@ app.get("/api/session/active-id", async (req, res) => {
   }
 });
 
+async function persistSessionTradesForMode({ sessionId, mode, startedAtMs, endedAtMs }) {
+  if (!isAccountConfiguredForMode(mode)) {
+    return { mode, saved: 0, skipped: true };
+  }
+  try {
+    const payload = await fetchUserFills(mode);
+    const fills = normalizeFills(payload);
+    const since = Number(startedAtMs || 0);
+    const until = Number(endedAtMs || Date.now());
+    const filtered = fills.filter((fill) => {
+      const ts = Number(fill?.time || 0);
+      return Number.isFinite(ts) && ts >= since && ts <= until;
+    });
+    const saved = await sessionStore.persistTrades(sessionId, filtered, mode);
+    return { mode, saved, skipped: false };
+  } catch (error) {
+    console.log(`[server] Failed to persist ${mode} trades for session ${sessionId}:`, error?.message || error);
+    return { mode, saved: 0, skipped: false, error: error?.message || String(error) };
+  }
+}
+
 app.post("/api/session/save", async (req, res) => {
   try {
     const requestedSessionId = String(req.body?.sessionId || "").trim();
@@ -512,11 +533,18 @@ app.post("/api/session/save", async (req, res) => {
     if (!payload) {
       return res.status(404).json({ ok: false, message: "Session not found or unavailable for save" });
     }
+    const startedAtMs = Number(payload.startedAtMs || 0);
+    const endedAtMs = Number(payload.lastSavedAtMs || Date.now());
+    const tradePersistence = await Promise.all([
+      persistSessionTradesForMode({ sessionId, mode: "live", startedAtMs, endedAtMs }),
+      persistSessionTradesForMode({ sessionId, mode: "test", startedAtMs, endedAtMs })
+    ]);
     const sessionInfo = await sessionStore.getSessionInfo(sessionId);
     return res.json({
       ok: true,
       sessionId,
       sessionInfo,
+      tradePersistence,
       persistence: sessionStore.getPersistenceStatus()
     });
   } catch (error) {
@@ -572,6 +600,19 @@ app.get("/api/sessions/:id/notes", async (req, res) => {
     return res.json({ ok: true, sessionId, notes });
   } catch (error) {
     return res.status(500).json({ ok: false, message: error.message || "Failed to load session notes" });
+  }
+});
+
+app.get("/api/sessions/:id/trades", async (req, res) => {
+  const sessionId = String(req.params?.id || "").trim();
+  if (!sessionId) {
+    return res.status(400).json({ ok: false, message: "Missing session id" });
+  }
+  try {
+    const trades = await sessionStore.getSessionTrades(sessionId);
+    return res.json({ ok: true, sessionId, trades });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error.message || "Failed to load session trades" });
   }
 });
 

@@ -52,6 +52,7 @@ export interface SavedSession {
   assetCount: number;
   candleCount: number;
   notes: string;
+  tradeCount?: number;
 }
 
 export interface GapRange {
@@ -122,6 +123,10 @@ export interface AccountFill {
   crossed: boolean;
   oid: number | null;
   tid: number | null;
+}
+
+export interface SessionTrade extends AccountFill {
+  mode: AccountMode;
 }
 
 export interface AccountFees {
