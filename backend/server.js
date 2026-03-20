@@ -43,6 +43,7 @@ const DEFAULT_STOP_LOSS_PRICE = 0;
 const ARCHIVE_ON_SHUTDOWN = String(process.env.SESSION_ARCHIVE_ON_SHUTDOWN || "")
   .trim()
   .toLowerCase() === "true";
+const MIN_ORDER_NOTIONAL = 10;
 
 const app = express();
 const server = http.createServer(app);
@@ -79,7 +80,7 @@ let primarySymbol = DEFAULT_SYMBOL;
 // All symbols we maintain active Hyperliquid streams for.
 const activeSymbols = new Set();
 const stopLossBySymbol = new Map(); // symbol -> price
-let accountMode = "test";
+let accountMode = "live";
 const activePositionBySymbol = new Map();
 const isLongBySymbol = new Map(); // symbol -> true(long), false(short)
 const activeStopLossOrderBySymbol = new Map(); // symbol -> { asset, oid }
@@ -1077,48 +1078,68 @@ async function executeCrossTrade() {
     emitTradeResult({ ok: false, action: "cross", symbol, error: "Calculated position size is invalid" });
     return;
   }
+  if (!Number.isFinite(preview.notionalPosition) || preview.notionalPosition < MIN_ORDER_NOTIONAL) {
+    emitTradeResult({
+      ok: false,
+      action: "cross",
+      symbol,
+      error: `Position value ($${Number(preview.notionalPosition || 0).toFixed(2)}) is below minimum $${MIN_ORDER_NOTIONAL.toFixed(2)}`
+    });
+    return;
+  }
 
-  const tradeResult = await executeTrade({
-    symbol,
-    isLong,
-    positionSize: preview.positionSizeUnits,
-    leverage: preview.cappedLeverage,
-    price: lastPrice,
-    mode: accountMode
-  });
+  try {
+    const tradeResult = await executeTrade({
+      symbol,
+      isLong,
+      positionSize: preview.positionSizeUnits,
+      leverage: preview.cappedLeverage,
+      price: lastPrice,
+      mode: accountMode
+    });
 
-  const stopResult = await placeStopLoss({
-    symbol,
-    isLong,
-    size: tradeResult.size,
-    triggerPrice: stopLossPrice,
-    mode: accountMode
-  });
-  if (
-    Number.isFinite(stopResult?.asset) &&
-    Number.isFinite(stopResult?.oid) &&
-    Number(stopResult.oid) > 0
-  ) {
-    activeStopLossOrderBySymbol.set(symbol, {
-      asset: Number(stopResult.asset),
-      oid: Number(stopResult.oid)
+    const stopResult = await placeStopLoss({
+      symbol,
+      isLong,
+      size: tradeResult.size,
+      triggerPrice: stopLossPrice,
+      mode: accountMode
+    });
+    if (
+      Number.isFinite(stopResult?.asset) &&
+      Number.isFinite(stopResult?.oid) &&
+      Number(stopResult.oid) > 0
+    ) {
+      activeStopLossOrderBySymbol.set(symbol, {
+        asset: Number(stopResult.asset),
+        oid: Number(stopResult.oid)
+      });
+    }
+
+    await refreshActivePosition();
+    const refreshedBalance = await doFetchBalance({ force: true });
+    if (!Number.isFinite(refreshedBalance)) {
+      emitHudUpdate();
+    }
+    emitTradeResult({
+      ok: true,
+      action: "cross",
+      symbol,
+      side: isLong ? "long" : "short",
+      size: tradeResult.size,
+      avgPx: tradeResult.avgPx,
+      details: "Trade opened and stop loss placed"
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    emitTradeResult({
+      ok: false,
+      action: "cross",
+      symbol,
+      error: message,
+      details: "Trade open/stop placement failed — verify position and set stop loss manually if needed."
     });
   }
-
-  await refreshActivePosition();
-  const refreshedBalance = await doFetchBalance({ force: true });
-  if (!Number.isFinite(refreshedBalance)) {
-    emitHudUpdate();
-  }
-  emitTradeResult({
-    ok: true,
-    action: "cross",
-    symbol,
-    side: isLong ? "long" : "short",
-    size: tradeResult.size,
-    avgPx: tradeResult.avgPx,
-    details: "Trade opened and stop loss placed"
-  });
 }
 
 async function executeAzizMethod() {
@@ -1130,6 +1151,16 @@ async function executeAzizMethod() {
   }
   if (!Number.isFinite(lastPrice) || lastPrice <= 0) {
     emitTradeResult({ ok: false, action: "triangle", symbol, error: "Live price is unavailable" });
+    return;
+  }
+  const halfNotional = (Math.abs(Number(position?.szi ?? 0)) * lastPrice) / 2;
+  if (!Number.isFinite(halfNotional) || halfNotional < MIN_ORDER_NOTIONAL) {
+    emitTradeResult({
+      ok: false,
+      action: "triangle",
+      symbol,
+      error: `Position too small for Aziz exit (50% = $${Number(halfNotional || 0).toFixed(2)}, minimum $${MIN_ORDER_NOTIONAL.toFixed(2)})`
+    });
     return;
   }
 
@@ -1189,8 +1220,17 @@ async function executeBailout() {
     emitTradeResult({ ok: false, action: "circle", symbol, error: "Live price is unavailable" });
     return;
   }
+  const closeNotional = positionSize * lastPrice;
+  if (!Number.isFinite(closeNotional) || closeNotional < MIN_ORDER_NOTIONAL) {
+    emitTradeResult({
+      ok: false,
+      action: "circle",
+      symbol,
+      error: `Close value ($${Number(closeNotional || 0).toFixed(2)}) is below minimum $${MIN_ORDER_NOTIONAL.toFixed(2)}`
+    });
+    return;
+  }
 
-  const settings = getSettings();
   const closeResult = await closePosition({
     symbol,
     isLong,

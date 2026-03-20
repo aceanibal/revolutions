@@ -77,12 +77,12 @@ function ModeSection({
   }, [refresh]);
 
   const modeLabel = mode === "live" ? "Live" : "Test";
-  const modeColor = mode === "live" ? "emerald" : "amber";
+  const modeDotClass = mode === "live" ? "bg-emerald-500" : "bg-amber-500";
 
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
-        <span className={`inline-flex h-2.5 w-2.5 rounded-full bg-${modeColor}-500`} />
+        <span className={`inline-flex h-2.5 w-2.5 rounded-full ${modeDotClass}`} />
         <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-700">{modeLabel} Account</h3>
         <button
           type="button"
@@ -430,9 +430,8 @@ export function AccountPanel({ symbol }: AccountPanelProps) {
 
       <LeveragePlanner symbol={symbol} />
 
-      <div className="grid gap-6 xl:grid-cols-2">
+      <div className="grid gap-6">
         <ModeSection mode="live" symbol={symbol} />
-        <ModeSection mode="test" symbol={symbol} />
       </div>
     </div>
   );

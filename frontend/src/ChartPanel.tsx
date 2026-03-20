@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSocket } from "./useSocket";
 import { Chart } from "./Chart";
-import type { AccountMode, SessionInfo, Timeframe } from "./types";
-import { fetchAccountFees, fetchAccountSettings, patchAccountMode } from "./lib/api";
+import type { SessionInfo, Timeframe } from "./types";
+import { fetchAccountFees, fetchAccountOverview, fetchAccountSettings } from "./lib/api";
 import { calculateRiskFirstMetrics } from "./lib/riskCalculator";
 import { RiskFirstPanel } from "./RiskFirstPanel";
 
@@ -44,7 +44,6 @@ export function ChartPanel({
     sessionInfo,
     gaps,
     stopLossProjections,
-    accountMode,
     isLong,
     tradeResult,
     setStopLossPrice: setStopLossPriceOnSocket
@@ -54,6 +53,8 @@ export function ChartPanel({
   const [visibleTradeResult, setVisibleTradeResult] = useState<typeof tradeResult>(null);
   const [makerFeeRate, setMakerFeeRate] = useState(0.0001);
   const [takerFeeRate, setTakerFeeRate] = useState(0.00035);
+  const [positionEntryPrice, setPositionEntryPrice] = useState(0);
+  const [liveAccountBalance, setLiveAccountBalance] = useState(0);
   const maxExchangeLeverage = 50;
 
   const entryPrice = hud.price;
@@ -90,10 +91,11 @@ export function ChartPanel({
   }, [historyPreloading, onHistoryPreloadingChange]);
 
   const slPrice = stopLossProjections?.stopLossPrice ?? hud.stopLossPrice;
+  const accountBalanceForRisk = liveAccountBalance;
   const metrics = useMemo(
     () =>
       calculateRiskFirstMetrics({
-        accountBalance: hud.balance,
+        accountBalance: accountBalanceForRisk,
         riskPercentage,
         entryPrice,
         stopLossPrice,
@@ -102,7 +104,7 @@ export function ChartPanel({
         takerFeeRate,
         maxExchangeLeverage
       }),
-    [hud.balance, riskPercentage, entryPrice, stopLossPrice, isLong, makerFeeRate, takerFeeRate]
+    [accountBalanceForRisk, riskPercentage, entryPrice, stopLossPrice, isLong, makerFeeRate, takerFeeRate]
   );
   const warningText =
     metrics.leverageTooHigh
@@ -120,14 +122,14 @@ export function ChartPanel({
   useEffect(() => {
     if (!tradeResult) return;
     setVisibleTradeResult(tradeResult);
-    const timeoutId = window.setTimeout(() => setVisibleTradeResult(null), 3000);
+    const timeoutId = window.setTimeout(() => setVisibleTradeResult(null), 6000);
     return () => window.clearTimeout(timeoutId);
   }, [tradeResult]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [fees, settings] = await Promise.all([fetchAccountFees(accountMode), fetchAccountSettings()]);
+      const [fees, settings] = await Promise.all([fetchAccountFees("live"), fetchAccountSettings()]);
       if (cancelled) return;
       if (fees) {
         setMakerFeeRate(Math.max(0, Number(fees.userAddRate ?? 0)));
@@ -140,21 +142,36 @@ export function ChartPanel({
     return () => {
       cancelled = true;
     };
-  }, [accountMode]);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!symbol) {
+        setPositionEntryPrice(0);
+        return;
+      }
+      const overview = await fetchAccountOverview("live");
+      if (cancelled) return;
+      const nextBalance = Number(overview?.overview?.accountValue ?? 0);
+      setLiveAccountBalance(Number.isFinite(nextBalance) && nextBalance > 0 ? nextBalance : 0);
+      const position = overview?.positions?.find((p) => String(p.coin || "").toUpperCase() === symbol.toUpperCase());
+      const nextEntry = Number(position?.entryPx ?? 0);
+      setPositionEntryPrice(Number.isFinite(nextEntry) && nextEntry > 0 ? nextEntry : 0);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [symbol, tradeResult]);
 
   const handleStopLossPriceChange = (nextPrice: number) => {
     setStopLossPrice(nextPrice);
     setStopLossPriceOnSocket(nextPrice);
   };
 
-  const handleModeToggle = () => {
-    const next: AccountMode = accountMode === "live" ? "test" : "live";
-    void patchAccountMode(next);
-  };
-
   const riskPanel = (
     <RiskFirstPanel
-      accountBalance={hud.balance}
+      accountBalance={accountBalanceForRisk}
       riskPercentage={riskPercentage}
       entryPrice={entryPrice}
       stopLossPrice={stopLossPrice}
@@ -163,8 +180,6 @@ export function ChartPanel({
       takerFeeRate={takerFeeRate}
       metrics={metrics}
       warningText={warningText}
-      accountMode={accountMode}
-      onModeToggle={handleModeToggle}
       onRiskPercentageChange={setRiskPercentage}
     />
   );
@@ -184,6 +199,9 @@ export function ChartPanel({
                   : "bg-slate-300"
               }`}
             />
+            <span className="rounded-full bg-rose-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+              Live
+            </span>
             <button
               type="button"
               className={`rounded-full px-2 py-0.5 transition ${
@@ -214,8 +232,8 @@ export function ChartPanel({
             <div
               className={`absolute right-2 top-10 z-20 rounded-lg px-3 py-2 text-[11px] font-medium shadow-sm ring-1 ring-inset ${
                 visibleTradeResult.ok
-                  ? "bg-emerald-50 text-emerald-900 ring-emerald-200"
-                  : "bg-rose-50 text-rose-900 ring-rose-200"
+                  ? "bg-emerald-100 text-emerald-950 ring-emerald-300"
+                  : "bg-rose-100 text-rose-950 ring-rose-300"
               }`}
             >
               <div className="font-semibold uppercase tracking-wide">
@@ -246,7 +264,7 @@ export function ChartPanel({
             vwapPeriod={vwapPeriod}
             emaEnabled={emaEnabled}
             emaPeriod={emaPeriod}
-            entryPrice={0}
+            entryPrice={positionEntryPrice}
             stopLossPrice={stopLossPrice}
             breakEvenPrice={metrics.breakEvenPrice}
             isLong={isLong}

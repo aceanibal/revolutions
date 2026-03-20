@@ -290,6 +290,10 @@ export function Chart({
       const y = event.clientY - rect.top;
       const nextPrice = series.coordinateToPrice(y);
       if (nextPrice && Number.isFinite(nextPrice) && nextPrice > 0) {
+        if (entryPrice > 0) {
+          if (isLong && nextPrice >= entryPrice) return;
+          if (!isLong && nextPrice <= entryPrice) return;
+        }
         onStopLossPriceChange(nextPrice);
       }
     };

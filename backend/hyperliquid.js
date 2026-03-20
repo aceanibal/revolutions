@@ -105,6 +105,7 @@ async function hlPost(mode, body) {
 // ---------------------------------------------------------------------------
 
 const clientCache = new Map();
+const MIN_ORDER_NOTIONAL = 10;
 
 function getModeSecrets(mode = "live") {
   const envVars = mode === "test" ? testEnvVars : liveEnvVars;
@@ -667,6 +668,12 @@ async function executeTrade({
 
   const size = roundDown(Number(positionSize), szDecimals);
   if (!Number.isFinite(size) || size <= 0) throw new Error("Position size must be positive");
+  const notional = size * price;
+  if (!Number.isFinite(notional) || notional < MIN_ORDER_NOTIONAL) {
+    throw new Error(
+      `Order notional ($${notional.toFixed(2)}) is below minimum $${MIN_ORDER_NOTIONAL.toFixed(2)}`
+    );
+  }
   const integerLeverage = Math.max(1, Math.floor(Math.max(1, Number(leverage || 1))));
   const px = slippagePrice(price, Boolean(isLong), szDecimals);
 
@@ -726,6 +733,12 @@ async function placeStopLoss({
   if (!Number.isFinite(safeSize) || safeSize <= 0) throw new Error("Stop-loss size must be positive");
   const triggerPx = Number(triggerPrice || 0);
   if (!Number.isFinite(triggerPx) || triggerPx <= 0) throw new Error("Stop-loss trigger price must be positive");
+  const stopNotional = safeSize * triggerPx;
+  if (!Number.isFinite(stopNotional) || stopNotional < MIN_ORDER_NOTIONAL) {
+    throw new Error(
+      `Stop-loss notional ($${stopNotional.toFixed(2)}) is below minimum $${MIN_ORDER_NOTIONAL.toFixed(2)}`
+    );
+  }
 
   const isBuyToClose = !Boolean(isLong);
   const slippageFrac = 0.03;
@@ -776,6 +789,12 @@ async function closePosition({
 
   const closeSize = roundDown(Number(size || 0), szDecimals);
   if (!Number.isFinite(closeSize) || closeSize <= 0) throw new Error("Close size must be positive");
+  const closeNotional = closeSize * price;
+  if (!Number.isFinite(closeNotional) || closeNotional < MIN_ORDER_NOTIONAL) {
+    throw new Error(
+      `Close notional ($${closeNotional.toFixed(2)}) is below minimum $${MIN_ORDER_NOTIONAL.toFixed(2)}`
+    );
+  }
 
   const isBuyToClose = !Boolean(isLong);
 
@@ -876,6 +895,12 @@ async function executeAzizExit({
   if (!Number.isFinite(entryPx) || entryPx <= 0) throw new Error("Entry price is invalid");
 
   const halfSize = posSize / 2;
+  const halfNotional = halfSize * price;
+  if (!Number.isFinite(halfNotional) || halfNotional < MIN_ORDER_NOTIONAL) {
+    throw new Error(
+      `Aziz exit: 50% close ($${halfNotional.toFixed(2)}) is below minimum $${MIN_ORDER_NOTIONAL.toFixed(2)}. Position is too small to split.`
+    );
+  }
 
   const closeResult = await closePosition({
     symbol: upper,

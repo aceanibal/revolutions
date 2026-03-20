@@ -217,6 +217,9 @@ export function App() {
             <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-700">
               Primary
             </span>
+            <span className="rounded-full bg-rose-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
+              Live
+            </span>
             <button
               type="button"
               className="rounded-full px-1.5 py-0.5 text-indigo-700 hover:bg-indigo-100"

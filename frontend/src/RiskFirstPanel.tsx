@@ -1,4 +1,3 @@
-import type { AccountMode } from "./types";
 import type { RiskFirstMetrics } from "./lib/riskCalculator";
 
 function fmtUsd(v: number | undefined | null): string {
@@ -17,8 +16,6 @@ interface RiskFirstPanelProps {
   takerFeeRate: number;
   metrics: RiskFirstMetrics;
   warningText: string | null;
-  accountMode: AccountMode;
-  onModeToggle: () => void;
   onRiskPercentageChange: (value: number) => void;
 }
 
@@ -32,25 +29,32 @@ export function RiskFirstPanel({
   takerFeeRate,
   metrics,
   warningText,
-  accountMode,
-  onModeToggle,
   onRiskPercentageChange
 }: RiskFirstPanelProps) {
+  const noBalanceWarning =
+    !Number.isFinite(accountBalance) || accountBalance <= 0
+      ? "No account balance — deposit funds or check live account connectivity."
+      : null;
+  const noStopLossWarning =
+    !Number.isFinite(stopLossPrice) || stopLossPrice <= 0
+      ? "Set a stop loss before trading (F9 or drag on chart)."
+      : null;
+  const minNotionalWarning =
+    Number.isFinite(metrics.notionalValue) && metrics.notionalValue > 0 && metrics.notionalValue < 10
+      ? `Position value (${fmtUsd(metrics.notionalValue)}) is below exchange minimum ($10.00).`
+      : null;
+
+  const effectiveWarnings = [warningText, noBalanceWarning, noStopLossWarning, minNotionalWarning].filter(
+    Boolean
+  ) as string[];
+
   return (
     <aside className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-slate-900">Risk-First Position Sizing</h3>
-        <button
-          type="button"
-          onClick={onModeToggle}
-          className={`rounded-full px-3 py-0.5 text-[10px] font-bold uppercase tracking-wider transition ${
-            accountMode === "live"
-              ? "bg-emerald-600 text-white shadow-sm"
-              : "bg-amber-500 text-white shadow-sm"
-          }`}
-        >
-          {accountMode}
-        </button>
+        <span className="rounded-full bg-rose-600 px-3 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white shadow-sm">
+          Live
+        </span>
       </div>
       <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
         <div className="space-y-1">
@@ -67,7 +71,16 @@ export function RiskFirstPanel({
             max={100}
             step={0.1}
             value={riskPercentage}
-            onChange={(e) => onRiskPercentageChange(Number(e.target.value))}
+            onChange={(e) => {
+              const next = Number(e.target.value);
+              if (!Number.isFinite(next)) return;
+              onRiskPercentageChange(next);
+            }}
+            onBlur={(e) => {
+              const raw = Number(e.target.value);
+              const clamped = Number.isFinite(raw) ? Math.min(100, Math.max(0.1, raw)) : 2;
+              onRiskPercentageChange(clamped);
+            }}
             className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 tabular-nums outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300"
           />
         </label>
@@ -138,11 +151,11 @@ export function RiskFirstPanel({
           </div>
         </div>
       </div>
-      {warningText && (
-        <p className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800">
-          {warningText}
+      {effectiveWarnings.map((warning) => (
+        <p key={warning} className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800">
+          {warning}
         </p>
-      )}
+      ))}
     </aside>
   );
 }

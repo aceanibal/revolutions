@@ -96,7 +96,7 @@ export function useSocket(
   const [historyPreloading, setHistoryPreloading] = useState(false);
   const [stopLossProjections, setStopLossProjections] = useState<StopLossProjections | null>(null);
   const [accountSettings, setAccountSettings] = useState<AccountSettings | null>(null);
-  const [accountMode, setAccountMode] = useState<AccountMode>("test");
+  const [accountMode, setAccountMode] = useState<AccountMode>("live");
   const [isLong, setIsLong] = useState(true);
   const [tradeResult, setTradeResult] = useState<TradeResult | null>(null);
   const trackedSymbolsKey = useMemo(() => {
