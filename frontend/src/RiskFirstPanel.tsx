@@ -1,4 +1,5 @@
 import type { RiskFirstMetrics } from "./lib/riskCalculator";
+import type { TradeStateSnapshot } from "./types";
 
 function fmtUsd(v: number | undefined | null): string {
   const n = Number(v ?? 0);
@@ -10,12 +11,14 @@ interface RiskFirstPanelProps {
   accountBalance: number;
   riskPercentage: number;
   entryPrice: number;
-  stopLossPrice: number;
+  controllerStopLossPrice: number;
+  exchangeStopLossPrice: number | null;
+  hasStopMismatch: boolean;
   isLong: boolean;
-  makerFeeRate: number;
   takerFeeRate: number;
   metrics: RiskFirstMetrics;
   warningText: string | null;
+  tradeState: TradeStateSnapshot | null;
   onRiskPercentageChange: (value: number) => void;
 }
 
@@ -23,12 +26,14 @@ export function RiskFirstPanel({
   accountBalance,
   riskPercentage,
   entryPrice,
-  stopLossPrice,
+  controllerStopLossPrice,
+  exchangeStopLossPrice,
+  hasStopMismatch,
   isLong,
-  makerFeeRate,
   takerFeeRate,
   metrics,
   warningText,
+  tradeState,
   onRiskPercentageChange
 }: RiskFirstPanelProps) {
   const noBalanceWarning =
@@ -36,7 +41,7 @@ export function RiskFirstPanel({
       ? "No account balance — deposit funds or check live account connectivity."
       : null;
   const noStopLossWarning =
-    !Number.isFinite(stopLossPrice) || stopLossPrice <= 0
+    !Number.isFinite(controllerStopLossPrice) || controllerStopLossPrice <= 0
       ? "Set a stop loss before trading (F9 or drag on chart)."
       : null;
   const minNotionalWarning =
@@ -44,9 +49,45 @@ export function RiskFirstPanel({
       ? `Position value (${fmtUsd(metrics.notionalValue)}) is below exchange minimum ($10.00).`
       : null;
 
-  const effectiveWarnings = [warningText, noBalanceWarning, noStopLossWarning, minNotionalWarning].filter(
+  const stopMismatchWarning = hasStopMismatch
+    ? "Resting exchange stop differs from your controller stop; sizing and preview use the controller level."
+    : null;
+  const effectiveWarnings = [warningText, noBalanceWarning, noStopLossWarning, minNotionalWarning, stopMismatchWarning].filter(
     Boolean
   ) as string[];
+  const status = tradeState?.status || "FLAT";
+  const controllerStop = Number.isFinite(controllerStopLossPrice) && controllerStopLossPrice > 0 ? controllerStopLossPrice : null;
+  const exchangeStop =
+    status !== "FLAT" && Number.isFinite(Number(exchangeStopLossPrice ?? 0)) && Number(exchangeStopLossPrice ?? 0) > 0
+      ? Number(exchangeStopLossPrice)
+      : null;
+  const statusTone =
+    status === "OPEN"
+      ? "bg-emerald-100 text-emerald-700"
+      : status === "PENDING_OPEN" || status === "PENDING_CLOSE"
+        ? "bg-amber-100 text-amber-700"
+        : status === "ERROR"
+          ? "bg-rose-100 text-rose-700"
+          : "bg-slate-100 text-slate-700";
+  const executionMeta = status === "FLAT" ? null : tradeState?.executionMeta || null;
+  const entryRequested = Number(executionMeta?.entryPxRequested ?? 0);
+  const filledEntry = Number(executionMeta?.entryPxFilled ?? 0);
+  const slippageRequested = Number(executionMeta?.slippageBpsRequested ?? 0);
+  const stopRequested = Number(executionMeta?.stopLossRequested ?? 0);
+  const stopPlaced = Number(executionMeta?.stopLossPlaced ?? 0);
+  const stopOrderRef = tradeState?.stopOrderRef || null;
+  const showStopPlaced = Number.isFinite(stopPlaced) && stopPlaced > 0 && (exchangeStop == null || Math.abs(stopPlaced - exchangeStop) > 1e-6);
+  const hasExecutionContext =
+    status !== "FLAT" &&
+    (Number.isFinite(entryRequested) && entryRequested > 0 ||
+      Number.isFinite(filledEntry) && filledEntry > 0 ||
+      Number.isFinite(slippageRequested) && slippageRequested > 0 ||
+      Number.isFinite(stopRequested) && stopRequested > 0 ||
+      showStopPlaced ||
+      Boolean(stopOrderRef));
+  const projectionSourceText = controllerStop != null
+    ? `Sizing uses controller stop ${controllerStop.toFixed(4)} + live price + taker fees`
+    : "Sizing needs a controller stop from HUD (drag or F9)";
 
   return (
     <aside className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -56,7 +97,7 @@ export function RiskFirstPanel({
           Live
         </span>
       </div>
-      <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
+      <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 lg:grid-cols-5">
         <div className="space-y-1">
           <span className="block text-slate-500">Account Balance</span>
           <p className="w-full rounded-md border border-slate-200 bg-slate-100 px-2 py-1 tabular-nums text-slate-900">
@@ -91,25 +132,23 @@ export function RiskFirstPanel({
           </p>
         </div>
         <div className="space-y-1">
-          <span className="block text-slate-500">Stop Loss</span>
+          <span className="block text-slate-500" title="Controller/HUD stop used for sizing, leverage preview, and fee projection">
+            Stop Loss
+          </span>
           <p className="w-full rounded-md border border-slate-200 bg-slate-100 px-2 py-1 tabular-nums text-slate-900">
-            {stopLossPrice > 0 ? stopLossPrice.toFixed(4) : "—"}
+            {controllerStop != null ? controllerStop.toFixed(4) : "—"}
           </p>
         </div>
         <div className="space-y-1">
-          <span className="block text-slate-500">Maker Fee</span>
-          <p className="w-full rounded-md border border-slate-200 bg-slate-100 px-2 py-1 tabular-nums text-slate-900">
-            {(makerFeeRate * 100).toFixed(4)}%
-          </p>
-        </div>
-        <div className="space-y-1">
-          <span className="block text-slate-500">Taker Fee</span>
+          <span className="block text-slate-500" title="Risk projection assumes taker on entry and stop execution">
+            Taker Fee
+          </span>
           <p className="w-full rounded-md border border-slate-200 bg-slate-100 px-2 py-1 tabular-nums text-slate-900">
             {(takerFeeRate * 100).toFixed(4)}%
           </p>
         </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <span
           className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
             isLong ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
@@ -117,6 +156,81 @@ export function RiskFirstPanel({
         >
           {isLong ? "Long" : "Short"}
         </span>
+        <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusTone}`}>
+          {status}
+        </span>
+      </div>
+
+      <div className="rounded-lg border border-slate-200 bg-white p-2 text-xs">
+        <p className="font-semibold text-slate-700">Active Trade</p>
+      </div>
+      <div className="grid gap-2 rounded-lg border border-slate-200 bg-white p-2 text-xs sm:grid-cols-2 lg:grid-cols-3">
+        <div>
+          <p className="text-slate-500">Tracked Entry</p>
+          <p className="font-semibold tabular-nums text-slate-900">
+            {Number(tradeState?.entryPx ?? 0) > 0 ? Number(tradeState?.entryPx).toFixed(4) : "—"}
+          </p>
+        </div>
+        <div>
+          <p className="text-slate-500">Tracked Size</p>
+          <p className="font-semibold tabular-nums text-slate-900">
+            {Number(tradeState?.size ?? 0) > 0 ? Number(tradeState?.size).toFixed(6) : "—"}
+          </p>
+        </div>
+        <div>
+          <p className="text-slate-500">Stop (from orders)</p>
+          <p className="font-semibold tabular-nums text-slate-900" title="tradeState.stopLossFromPendingOrders — navy dashed chart line">
+            {exchangeStop != null ? exchangeStop.toFixed(4) : "—"}
+          </p>
+        </div>
+      </div>
+
+      {hasExecutionContext ? (
+        <div className="rounded-lg border border-slate-200 bg-white p-2 text-xs">
+          <p className="font-semibold text-slate-700">Execution Context</p>
+          <div className="mt-1 grid grid-cols-2 gap-y-1 tabular-nums">
+            {Number.isFinite(entryRequested) && entryRequested > 0 ? (
+              <>
+                <span className="text-slate-500">Requested Entry</span>
+                <span className="text-right">{entryRequested.toFixed(4)}</span>
+              </>
+            ) : null}
+            {Number.isFinite(filledEntry) && filledEntry > 0 ? (
+              <>
+                <span className="text-slate-500">Filled Entry</span>
+                <span className="text-right">{filledEntry.toFixed(4)}</span>
+              </>
+            ) : null}
+            {Number.isFinite(slippageRequested) && slippageRequested > 0 ? (
+              <>
+                <span className="text-slate-500">Requested Slippage</span>
+                <span className="text-right">{slippageRequested} bps</span>
+              </>
+            ) : null}
+            {Number.isFinite(stopRequested) && stopRequested > 0 ? (
+              <>
+                <span className="text-slate-500">Stop Requested</span>
+                <span className="text-right">{stopRequested.toFixed(4)}</span>
+              </>
+            ) : null}
+            {showStopPlaced ? (
+              <>
+                <span className="text-slate-500">Stop Placed</span>
+                <span className="text-right">{stopPlaced.toFixed(4)}</span>
+              </>
+            ) : null}
+            {stopOrderRef ? (
+              <>
+                <span className="text-slate-500">Stop Order Ref</span>
+                <span className="text-right">{`a:${stopOrderRef.asset} o:${stopOrderRef.oid}`}</span>
+              </>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+      <div className="rounded-lg border border-slate-200 bg-white p-2 text-xs">
+        <p className="font-semibold text-slate-700">Risk Projection</p>
+        <p className="text-[10px] uppercase tracking-wide text-slate-500">{projectionSourceText}</p>
       </div>
       <div className="grid gap-2 sm:grid-cols-3">
         <div className="rounded-lg border border-slate-200 bg-white p-2 text-xs">

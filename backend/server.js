@@ -12,6 +12,7 @@ const {
   fetchUserFills,
   fetchUserFees,
   fetchMeta,
+  fetchOpenOrders,
   normalizeAccountOverview,
   normalizePositions,
   normalizeFills,
@@ -34,6 +35,12 @@ const { connectHyperliquidWs, subscribeToSymbol, unsubscribeFromSymbol } = requi
 const { setupKeyboardController } = require("./controller");
 const { SessionStore } = require("./sessionStore");
 const { detectGapRanges, intervalForTimeframe, upsertCandle } = require("./sessionMath");
+const {
+  createTradeStateStore,
+  inferExchangeStopLossFromPendingOrders,
+  hyperliquidOpenOrderStopTriggerPx,
+  normalizeMode: normalizeTradeMode
+} = require("./tradeState");
 
 const PORT = process.env.PORT || 3000;
 const HYPERLIQUID_WS_URL =
@@ -44,6 +51,9 @@ const ARCHIVE_ON_SHUTDOWN = String(process.env.SESSION_ARCHIVE_ON_SHUTDOWN || ""
   .trim()
   .toLowerCase() === "true";
 const MIN_ORDER_NOTIONAL = 10;
+const EXECUTION_ENTRY_SLIPPAGE_BPS = 200;
+const EXECUTION_STOP_SLIPPAGE_BPS = 300;
+const EXECUTION_TOTAL_SLIPPAGE_BPS = EXECUTION_ENTRY_SLIPPAGE_BPS + EXECUTION_STOP_SLIPPAGE_BPS;
 
 const app = express();
 const server = http.createServer(app);
@@ -84,7 +94,6 @@ const lastPriceBySymbol = new Map(); // symbol -> latest streamed price
 let accountMode = "live";
 const activePositionBySymbol = new Map();
 const isLongBySymbol = new Map(); // symbol -> true(long), false(short)
-const activeStopLossOrderBySymbol = new Map(); // symbol -> { asset, oid }
 let balance = 0;
 let lastPrice = 0;
 
@@ -284,6 +293,229 @@ let cleanupKeyboardController = null;
 let sessionRolloverIntervalId = null;
 
 const sessionStore = new SessionStore();
+const tradeState = createTradeStateStore({
+  onUpdate: (state) => {
+    void persistTradeStateSnapshots([state]);
+    const sym = normalizeSymbol(state.symbol);
+    if (!sym || normalizeTradeMode(state.mode) !== normalizeTradeMode(accountMode)) return;
+    const prim = normalizeSymbol(primarySymbol);
+    if (!activeSymbols.has(sym) && sym !== prim) return;
+    io.emit("tradeState:update", state);
+  }
+});
+
+function logTradeStateDebug(_label, _payload) {
+  /* Optional reconcile tracing (currently disabled). */
+}
+
+function emitTradeStateSnapshot(target, symbol = primarySymbol, mode = accountMode) {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized || !target || typeof target.emit !== "function") return;
+  target.emit("tradeState:snapshot", tradeState.getClientSnapshot(normalized, mode));
+}
+
+async function persistTradeStateSnapshots(states = null) {
+  const snapshots = Array.isArray(states) ? states : tradeState.getAll({ mode: accountMode });
+  if (!snapshots.length) return { saved: 0, skipped: true };
+  try {
+    const sessionId = await sessionStore.getCurrentSessionId();
+    if (!sessionId) return { saved: 0, skipped: true };
+    const saved = await sessionStore.persistTradeStateSnapshots(sessionId, snapshots);
+    return { saved, skipped: false, sessionId };
+  } catch (error) {
+    console.log("[server] Failed to persist trade-state snapshots:", error?.message || error);
+    return { saved: 0, skipped: false, error: error?.message || String(error) };
+  }
+}
+
+function getTrackedStopOrder(symbol, mode = accountMode) {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized) return null;
+  return tradeState.get(normalized, mode).stopOrderRef || null;
+}
+
+async function refreshPendingOrdersForSymbol(symbol, mode = accountMode) {
+  if (!isAccountConfiguredForMode(mode)) return [];
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized) return [];
+  try {
+    const orders = await fetchOpenOrders(mode);
+    const safeJson = (v) => {
+      try {
+        return JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x), 2);
+      } catch {
+        return String(v);
+      }
+    };
+    if (!Array.isArray(orders)) {
+      console.log(
+        "[server] frontendOpenOrders unexpected response shape",
+        `mode=${mode} symbol=${normalized}`,
+        "type=",
+        typeof orders,
+        "payload=",
+        safeJson(orders)
+      );
+    } else if (orders.length > 0) {
+      const pendingOrdersPreview = orders.filter(
+        (order) => String(order?.coin || "").toUpperCase() === normalized
+      );
+      const coins = [
+        ...new Set(orders.map((o) => String(o?.coin || "").toUpperCase()).filter(Boolean))
+      ].join(",");
+      console.log(
+        `[server] frontendOpenOrders summary mode=${mode} reconcileSymbol=${normalized} totalRows=${orders.length} matchedForSymbol=${pendingOrdersPreview.length} coins=${coins}`
+      );
+      orders.forEach((order, i) => {
+        const keys = order && typeof order === "object" ? Object.keys(order).sort().join(",") : "";
+        console.log(`[server] frontendOpenOrders row[${i}] keys: ${keys || "(non-object)"}`);
+      });
+      console.log("[server] frontendOpenOrders FULL_PAYLOAD (every field from API):", safeJson(orders));
+    }
+    const pendingOrders = (Array.isArray(orders) ? orders : []).filter(
+      (order) => String(order?.coin || "").toUpperCase() === normalized
+    );
+    tradeState.setPendingOrders({ symbol: normalized, mode, pendingOrders });
+    return tradeState.get(normalized, mode).pendingOrders;
+  } catch (error) {
+    console.log("[server] refreshPendingOrdersForSymbol error:", error?.message || error);
+    return [];
+  }
+}
+
+async function reconcileTradeStateForSymbol(symbol, mode = accountMode, options = {}) {
+  const normalized = normalizeSymbol(symbol);
+  if (!normalized) return null;
+  const controllerStopLoss = Number.isFinite(options.stopLoss)
+    ? Number(options.stopLoss)
+    : getStopLossPrice(normalized);
+  const pendingOrders = options.pendingOrders || (await refreshPendingOrdersForSymbol(normalized, mode));
+  const inferredStopPlacedLoose = (() => {
+    const rows = Array.isArray(pendingOrders) ? pendingOrders : [];
+    const cand = [];
+    for (const order of rows) {
+      const px = hyperliquidOpenOrderStopTriggerPx(order);
+      if (px == null) continue;
+      const ts = Number(order?.timestamp ?? order?.time ?? 0) || 0;
+      const oid = Number(order?.oid ?? 0) || 0;
+      cand.push({ px, ts, oid });
+    }
+    if (cand.length === 0) return 0;
+    cand.sort((a, b) => {
+      if (b.ts !== a.ts) return b.ts - a.ts;
+      return b.oid - a.oid;
+    });
+    return cand[0].px;
+  })();
+  let position = activePositionBySymbol.get(normalized) || null;
+  const preTradeState = tradeState.get(normalized, mode);
+  const closedAtMs = Number(preTradeState?.executionMeta?.closedAtMs ?? 0);
+  const staleCloseGraceMs = 8000;
+  if (
+    preTradeState?.status === "FLAT" &&
+    preTradeState?.lastAction === "circle" &&
+    Number.isFinite(closedAtMs) &&
+    closedAtMs > 0 &&
+    Date.now() - closedAtMs < staleCloseGraceMs &&
+    position &&
+    Math.abs(Number(position?.szi ?? 0)) > 0
+  ) {
+    console.log("[tradeState] reconcile: treat clearinghouse position as stale after full close", {
+      mode,
+      symbol: normalized,
+      szi: Number(position?.szi ?? 0)
+    });
+    activePositionBySymbol.set(normalized, null);
+    position = null;
+  }
+
+  const posSzi = position ? Number(position?.szi ?? 0) : 0;
+  const posSide =
+    position && Number.isFinite(posSzi) && Math.abs(posSzi) > 0
+      ? posSzi > 0
+        ? "long"
+        : "short"
+      : null;
+  const entryPxForInfer = position ? Number(position?.entryPx ?? 0) : 0;
+  const orderStopPx =
+    posSide && Array.isArray(pendingOrders) && pendingOrders.length > 0
+      ? inferExchangeStopLossFromPendingOrders(pendingOrders, {
+          side: posSide,
+          entryPx: Number.isFinite(entryPxForInfer) && entryPxForInfer > 0 ? entryPxForInfer : null
+        })
+      : null;
+
+  const stopLossFromPendingOrders =
+    orderStopPx != null && Number.isFinite(orderStopPx) && orderStopPx > 0 ? orderStopPx : 0;
+
+  const stopLossForReconcile =
+    stopLossFromPendingOrders > 0 ? stopLossFromPendingOrders : controllerStopLoss;
+
+  const executionMeta = { ...(options.executionMeta || {}) };
+  if (!Number.isFinite(Number(executionMeta.stopLossPlaced)) || Number(executionMeta.stopLossPlaced) <= 0) {
+    if (orderStopPx != null && Number.isFinite(orderStopPx) && orderStopPx > 0) {
+      executionMeta.stopLossPlaced = orderStopPx;
+    } else if (Number.isFinite(inferredStopPlacedLoose) && inferredStopPlacedLoose > 0) {
+      executionMeta.stopLossPlaced = inferredStopPlacedLoose;
+    }
+  }
+
+  const stopOrderRef = getTrackedStopOrder(normalized, mode);
+  logTradeStateDebug("reconcile:input", {
+    mode,
+    symbol: normalized,
+    stopLoss: stopLossForReconcile,
+    controllerStopLoss,
+    orderStopFromOpenOrders: orderStopPx,
+    hasPosition: Boolean(position),
+    position: position
+      ? {
+          szi: Number(position?.szi ?? 0),
+          entryPx: Number(position?.entryPx ?? 0),
+          coin: String(position?.coin || "")
+        }
+      : null,
+    pendingOrdersCount: Array.isArray(pendingOrders) ? pendingOrders.length : 0,
+    stopOrderRef
+  });
+  const next = tradeState.reconcileFromAccountSnapshot({
+    symbol: normalized,
+    mode,
+    position,
+    stopLoss: stopLossForReconcile,
+    stopLossFromPendingOrders,
+    stopOrderRef,
+    pendingOrders,
+    lastAction: options.lastAction || "reconcile",
+    executionMeta
+  });
+  if (
+    (preTradeState?.status === "OPEN" ||
+      preTradeState?.status === "PENDING_OPEN" ||
+      preTradeState?.status === "PENDING_CLOSE") &&
+    next?.status === "FLAT"
+  ) {
+    console.log("[tradeState] exchange shows no position — trade state set to FLAT", {
+      mode,
+      symbol: normalized,
+      lastAction: next?.lastAction || null,
+      hadSize: Number(preTradeState?.size ?? 0) || null
+    });
+  }
+  logTradeStateDebug("reconcile:output", {
+    mode: next.mode,
+    symbol: next.symbol,
+    status: next.status,
+    side: next.side,
+    size: next.size,
+    entryPx: next.entryPx,
+    stopLoss: next.stopLoss,
+    stopLossFromPendingOrders: next.stopLossFromPendingOrders,
+    pendingOrdersCount: Array.isArray(next.pendingOrders) ? next.pendingOrders.length : 0,
+    stopOrderRef: next.stopOrderRef || null
+  });
+  return next;
+}
 
 async function preloadSymbolHistory(symbol, options = {}) {
   const force = Boolean(options.force);
@@ -361,17 +593,25 @@ async function hydrateStartupStreams() {
     for (const symbol of symbols) {
       if (symbol) activeSymbols.add(symbol);
     }
-    if (!primarySymbol && symbols.length > 0) {
+    const restoredPrimary = normalizeSymbol(restored?.primary || "");
+    if (restoredPrimary) {
+      primarySymbol = restoredPrimary;
+      getDirectionForSymbol(primarySymbol);
+    } else if (!primarySymbol && symbols.length > 0) {
       primarySymbol = symbols[0];
       getDirectionForSymbol(primarySymbol);
     }
     if (symbols.length > 0) {
       console.log(
-        `[server] Restored startup streams source=${restored.source} session=${restored.sessionId || "n/a"} symbols=${symbols.join(",")}`
+        `[server] Restored startup streams source=${restored.source} session=${restored.sessionId || "n/a"} symbols=${symbols.join(",")} primary=${primarySymbol || ""}`
       );
     } else {
       console.log("[server] No startup streams restored from prior sessions");
     }
+    void sessionStore.writeActiveStreamsSnapshot({
+      symbols: Array.from(activeSymbols),
+      primary: primarySymbol
+    });
   } catch (error) {
     console.log("Startup stream restore warning:", error?.message || error);
   }
@@ -407,11 +647,19 @@ app.post("/api/change-symbol", async (req, res) => {
   emitHudUpdate();
 
   await preloadSymbolHistory(nextSymbol);
+  void sessionStore.writeActiveStreamsSnapshot({
+    symbols: Array.from(activeSymbols),
+    primary: primarySymbol
+  });
   res.json({ ok: true, symbol: primarySymbol });
 });
 
 // Helper to emit the current streams state to a specific socket or all.
 function emitStreamsUpdate(target) {
+  void sessionStore.writeActiveStreamsSnapshot({
+    symbols: Array.from(activeSymbols),
+    primary: primarySymbol
+  });
   const payload = {
     symbols: Array.from(activeSymbols),
     primary: primarySymbol
@@ -468,6 +716,9 @@ app.delete("/api/streams/:symbol", (req, res) => {
 
   activeSymbols.delete(symbol);
   unsubscribeFromSymbol(symbol);
+  tradeState.deleteKey(symbol, accountMode);
+  activePositionBySymbol.delete(symbol);
+  stopLossBySymbol.delete(symbol);
 
   // Promote a new primary if we removed the current one.
   if (symbol === primarySymbol) {
@@ -541,6 +792,23 @@ async function persistSessionTradesForMode({ sessionId, mode, startedAtMs, ended
   }
 }
 
+async function persistSessionTradeStateForMode({ sessionId, mode }) {
+  try {
+    const snapshots = tradeState.getAll({ mode });
+    if (snapshots.length === 0) {
+      return { mode, saved: 0, skipped: true };
+    }
+    const saved = await sessionStore.persistTradeStateSnapshots(sessionId, snapshots);
+    return { mode, saved, skipped: false };
+  } catch (error) {
+    console.log(
+      `[server] Failed to persist ${mode} trade-state snapshots for session ${sessionId}:`,
+      error?.message || error
+    );
+    return { mode, saved: 0, skipped: false, error: error?.message || String(error) };
+  }
+}
+
 app.post("/api/session/save", async (req, res) => {
   try {
     const requestedSessionId = String(req.body?.sessionId || "").trim();
@@ -548,6 +816,10 @@ app.post("/api/session/save", async (req, res) => {
     if (!sessionId) {
       return res.status(404).json({ ok: false, message: "No active session found to save" });
     }
+    await sessionStore.writeActiveStreamsSnapshot({
+      symbols: Array.from(activeSymbols),
+      primary: primarySymbol
+    });
     const payload = await sessionStore.saveSessionCheckpoint(sessionId, Date.now(), "manual_save");
     if (!payload) {
       return res.status(404).json({ ok: false, message: "Session not found or unavailable for save" });
@@ -558,12 +830,17 @@ app.post("/api/session/save", async (req, res) => {
       persistSessionTradesForMode({ sessionId, mode: "live", startedAtMs, endedAtMs }),
       persistSessionTradesForMode({ sessionId, mode: "test", startedAtMs, endedAtMs })
     ]);
+    const tradeStatePersistence = await Promise.all([
+      persistSessionTradeStateForMode({ sessionId, mode: "live" }),
+      persistSessionTradeStateForMode({ sessionId, mode: "test" })
+    ]);
     const sessionInfo = await sessionStore.getSessionInfo(sessionId);
     return res.json({
       ok: true,
       sessionId,
       sessionInfo,
       tradePersistence,
+      tradeStatePersistence,
       persistence: sessionStore.getPersistenceStatus()
     });
   } catch (error) {
@@ -632,6 +909,25 @@ app.get("/api/sessions/:id/trades", async (req, res) => {
     return res.json({ ok: true, sessionId, trades });
   } catch (error) {
     return res.status(500).json({ ok: false, message: error.message || "Failed to load session trades" });
+  }
+});
+
+app.get("/api/sessions/:id/trade-state", async (req, res) => {
+  const sessionId = String(req.params?.id || "").trim();
+  if (!sessionId) {
+    return res.status(400).json({ ok: false, message: "Missing session id" });
+  }
+  const modeRaw = String(req.query?.mode || "").toLowerCase();
+  const mode = modeRaw === "live" || modeRaw === "test" ? modeRaw : "";
+  const symbol = normalizeSymbol(req.query?.symbol || "");
+  try {
+    const states = await sessionStore.getSessionTradeState(sessionId, {
+      mode: mode || undefined,
+      symbol: symbol || undefined
+    });
+    return res.json({ ok: true, sessionId, mode: mode || null, symbol: symbol || null, states });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error.message || "Failed to load session trade state" });
   }
 });
 
@@ -924,24 +1220,52 @@ function emitHudUpdate() {
   emitStopLossProjections();
 }
 
+function symbolsToReconcileTradeState() {
+  const out = new Set();
+  for (const s of activeSymbols) {
+    const n = normalizeSymbol(s);
+    if (n) out.add(n);
+  }
+  const prim = normalizeSymbol(primarySymbol);
+  if (prim) out.add(prim);
+  return out;
+}
+
+/**
+ * Apply clearinghouse positions to activePositionBySymbol and reconcile TradeStateManager
+ * only for subscribed stream symbols (+ primary). Does not touch stale map keys from
+ * previously removed assets (avoids noisy upserts/logs).
+ */
+async function reconcileTradeStateFromClearinghousePayload(payload, { lastAction = "position_refresh" } = {}) {
+  const positions = normalizePositions(payload);
+  const symbols = symbolsToReconcileTradeState();
+  for (const symbol of symbols) {
+    const pos =
+      positions.find((p) => normalizeSymbol(p.coin) === symbol) || null;
+    activePositionBySymbol.set(symbol, pos);
+    const inferred = inferDirectionFromPosition(pos);
+    if (typeof inferred === "boolean") {
+      setDirectionForSymbol(symbol, inferred);
+    }
+    await reconcileTradeStateForSymbol(symbol, accountMode, { lastAction });
+  }
+}
+
 async function refreshActivePosition() {
   if (!isAccountConfiguredForMode(accountMode)) return;
   try {
+    clearAccountCache(accountMode);
     const payload = await fetchClearinghouseState(accountMode);
-    const positions = normalizePositions(payload);
-    for (const symbol of activeSymbols) {
-      const pos = positions.find((p) => p.coin === symbol) || null;
-      activePositionBySymbol.set(symbol, pos);
-      const inferred = inferDirectionFromPosition(pos);
-      if (typeof inferred === "boolean") {
-        setDirectionForSymbol(symbol, inferred);
-      }
-    }
+    await reconcileTradeStateFromClearinghousePayload(payload, { lastAction: "position_refresh" });
   } catch (err) {
     console.log("[server] refreshActivePosition error:", err?.message || err);
   }
 }
 
+/**
+ * Fetches account balance (perps + spot) and reconciles trade state from the same
+ * clearinghouse snapshot (cached — no extra round trip for positions).
+ */
 async function doFetchBalance({ force = false } = {}) {
   if (!isAccountConfiguredForMode(accountMode)) return null;
   if (force) {
@@ -951,6 +1275,9 @@ async function doFetchBalance({ force = false } = {}) {
     const parsedBalance = await fetchAccountBalance(accountMode);
     if (Number.isFinite(parsedBalance)) {
       balance = Number(parsedBalance);
+      clearAccountCache(accountMode);
+      const payload = await fetchClearinghouseState(accountMode);
+      await reconcileTradeStateFromClearinghousePayload(payload, { lastAction: "balance_sync" });
       console.log("Fetched balance:", { balance, mode: accountMode, force });
       emitHudUpdate();
       return balance;
@@ -1020,9 +1347,14 @@ async function maybeRearmStopLossForPosition(symbol, position) {
     Number.isFinite(stopResult?.oid) &&
     Number(stopResult.oid) > 0
   ) {
-    activeStopLossOrderBySymbol.set(normalized, {
-      asset: Number(stopResult.asset),
-      oid: Number(stopResult.oid)
+    tradeState.setStopOrderRef({
+      symbol: normalized,
+      mode: accountMode,
+      stopOrderRef: {
+        asset: Number(stopResult.asset),
+        oid: Number(stopResult.oid)
+      },
+      stopLossPlaced: stopLossPrice
     });
   }
   return stopResult;
@@ -1062,7 +1394,8 @@ async function executeCrossTrade() {
     emitTradeResult({ ok: false, action: "cross", symbol: "", error: "No primary symbol selected" });
     return;
   }
-  if (getActivePosition(symbol)) {
+  const currentState = tradeState.get(symbol, accountMode);
+  if (currentState.status === "OPEN" || currentState.status === "PENDING_OPEN" || getActivePosition(symbol)) {
     emitTradeResult({ ok: false, action: "cross", symbol, error: "An active trade already exists" });
     return;
   }
@@ -1123,6 +1456,21 @@ async function executeCrossTrade() {
   }
 
   try {
+    tradeState.applyActionStart({
+      symbol,
+      mode: accountMode,
+      action: "cross",
+      payload: {
+        side: isLong ? "long" : "short",
+        requestedSize: preview.positionSizeUnits,
+        requestedNotional: preview.notionalPosition,
+        requestedLeverage: preview.cappedLeverage,
+        requestedEntryPx: lastPrice,
+        requestedStopLoss: stopLossPrice,
+        slippageBpsRequested: EXECUTION_TOTAL_SLIPPAGE_BPS
+      }
+    });
+
     const tradeResult = await executeTrade({
       symbol,
       isLong,
@@ -1144,13 +1492,34 @@ async function executeCrossTrade() {
       Number.isFinite(stopResult?.oid) &&
       Number(stopResult.oid) > 0
     ) {
-      activeStopLossOrderBySymbol.set(symbol, {
-        asset: Number(stopResult.asset),
-        oid: Number(stopResult.oid)
+      tradeState.setStopOrderRef({
+        symbol,
+        mode: accountMode,
+        stopOrderRef: {
+          asset: Number(stopResult.asset),
+          oid: Number(stopResult.oid)
+        },
+        stopLossPlaced: stopLossPrice
       });
     }
 
     await refreshActivePosition();
+    const refreshedPosition = getActivePosition(symbol);
+    await reconcileTradeStateForSymbol(symbol, accountMode, {
+      lastAction: "cross",
+      executionMeta: {
+        entryPxFilled: Number(tradeResult?.avgPx ?? 0) || null,
+        stopLossPlaced: stopLossPrice
+      }
+    });
+    if (!refreshedPosition) {
+      tradeState.applyActionError({
+        symbol,
+        mode: accountMode,
+        action: "cross",
+        error: "Position did not appear after execution"
+      });
+    }
     const refreshedBalance = await doFetchBalance({ force: true });
     if (!Number.isFinite(refreshedBalance)) {
       emitHudUpdate();
@@ -1166,6 +1535,8 @@ async function executeCrossTrade() {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    tradeState.applyActionError({ symbol, mode: accountMode, action: "cross", error: message });
+    await refreshActivePosition();
     emitTradeResult({
       ok: false,
       action: "cross",
@@ -1198,43 +1569,68 @@ async function executeAzizMethod() {
     return;
   }
 
-  const tracked = activeStopLossOrderBySymbol.get(symbol);
-  const result = await executeAzizExit({
-    symbol,
-    price: lastPrice,
-    oldStopOid: tracked?.oid ?? null,
-    oldStopAsset: tracked?.asset ?? null,
-    mode: accountMode
-  });
-
-  await refreshActivePosition();
-  const updated = getActivePosition(symbol);
-  if (updated) {
-    setDirectionForSymbol(symbol, Number(updated.szi) > 0);
-    stopLossBySymbol.set(symbol, result.breakEvenPrice);
-  }
-  if (result.stopLoss?.oid && result.stopLoss?.asset != null) {
-    activeStopLossOrderBySymbol.set(symbol, {
-      asset: Number(result.stopLoss.asset),
-      oid: Number(result.stopLoss.oid)
+  try {
+    tradeState.applyActionStart({ symbol, mode: accountMode, action: "triangle" });
+    const tracked = getTrackedStopOrder(symbol, accountMode);
+    const result = await executeAzizExit({
+      symbol,
+      price: lastPrice,
+      oldStopOid: tracked?.oid ?? null,
+      oldStopAsset: tracked?.asset ?? null,
+      mode: accountMode
     });
-  } else {
-    activeStopLossOrderBySymbol.delete(symbol);
-  }
 
-  const refreshedBalance = await doFetchBalance({ force: true });
-  if (!Number.isFinite(refreshedBalance)) {
-    emitHudUpdate();
+    await refreshActivePosition();
+    const updated = getActivePosition(symbol);
+    if (updated) {
+      setDirectionForSymbol(symbol, Number(updated.szi) > 0);
+      stopLossBySymbol.set(symbol, result.breakEvenPrice);
+    }
+    if (result.stopLoss?.oid && result.stopLoss?.asset != null) {
+      tradeState.setStopOrderRef({
+        symbol,
+        mode: accountMode,
+        stopOrderRef: {
+          asset: Number(result.stopLoss.asset),
+          oid: Number(result.stopLoss.oid)
+        },
+        stopLossPlaced: result.breakEvenPrice
+      });
+    } else {
+      tradeState.clearStopOrderRef({ symbol, mode: accountMode });
+    }
+    await reconcileTradeStateForSymbol(symbol, accountMode, {
+      lastAction: "triangle",
+      executionMeta: {
+        stopLossPlaced: Number(result?.stopLoss?.triggerPrice ?? result.breakEvenPrice) || null
+      }
+    });
+
+    const refreshedBalance = await doFetchBalance({ force: true });
+    if (!Number.isFinite(refreshedBalance)) {
+      emitHudUpdate();
+    }
+    emitTradeResult({
+      ok: true,
+      action: "triangle",
+      symbol,
+      side: result.side,
+      size: result.closedSize,
+      avgPx: result.closedAvgPx,
+      details: "Closed 50% and moved stop loss to break-even"
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    tradeState.applyActionError({ symbol, mode: accountMode, action: "triangle", error: message });
+    await refreshActivePosition();
+    emitTradeResult({
+      ok: false,
+      action: "triangle",
+      symbol,
+      error: message,
+      details: "Aziz method failed before stop-loss replacement completed."
+    });
   }
-  emitTradeResult({
-    ok: true,
-    action: "triangle",
-    symbol,
-    side: result.side,
-    size: result.closedSize,
-    avgPx: result.closedAvgPx,
-    details: "Closed 50% and moved stop loss to break-even"
-  });
 }
 
 async function executeBailout() {
@@ -1265,30 +1661,46 @@ async function executeBailout() {
     return;
   }
 
-  const closeResult = await closePosition({
-    symbol,
-    isLong,
-    size: positionSize,
-    price: lastPrice,
-    mode: accountMode
-  });
-  await cancelAllOrders({ symbol, mode: accountMode });
-  activeStopLossOrderBySymbol.delete(symbol);
+  try {
+    tradeState.applyActionStart({ symbol, mode: accountMode, action: "circle" });
+    const closeResult = await closePosition({
+      symbol,
+      isLong,
+      size: positionSize,
+      price: lastPrice,
+      mode: accountMode
+    });
+    await cancelAllOrders({ symbol, mode: accountMode });
+    tradeState.clearStopOrderRef({ symbol, mode: accountMode });
+    // Emit an immediate local close state even before snapshot reconciliation.
+    tradeState.setClosed({ symbol, mode: accountMode, lastAction: "circle" });
 
-  await refreshActivePosition();
-  const refreshedBalance = await doFetchBalance({ force: true });
-  if (!Number.isFinite(refreshedBalance)) {
-    emitHudUpdate();
+    await refreshActivePosition();
+    await reconcileTradeStateForSymbol(symbol, accountMode, { lastAction: "circle" });
+    const refreshedBalance = await doFetchBalance({ force: true });
+    if (!Number.isFinite(refreshedBalance)) {
+      emitHudUpdate();
+    }
+    emitTradeResult({
+      ok: true,
+      action: "circle",
+      symbol,
+      side: isLong ? "long" : "short",
+      size: closeResult.size,
+      avgPx: closeResult.avgPx,
+      details: "Position closed"
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    tradeState.applyActionError({ symbol, mode: accountMode, action: "circle", error: message });
+    await refreshActivePosition();
+    emitTradeResult({
+      ok: false,
+      action: "circle",
+      symbol,
+      error: message
+    });
   }
-  emitTradeResult({
-    ok: true,
-    action: "circle",
-    symbol,
-    side: isLong ? "long" : "short",
-    size: closeResult.size,
-    avgPx: closeResult.avgPx,
-    details: "Position closed"
-  });
 }
 
 async function executeStopLossUpdate() {
@@ -1315,7 +1727,7 @@ async function executeStopLossUpdate() {
     return;
   }
 
-  const tracked = activeStopLossOrderBySymbol.get(symbol);
+  const tracked = getTrackedStopOrder(symbol, accountMode);
   const stopResult = await updateStopLoss({
     symbol,
     isLong,
@@ -1339,13 +1751,21 @@ async function executeStopLossUpdate() {
     Number.isFinite(stopResult?.oid) &&
     Number(stopResult.oid) > 0
   ) {
-    activeStopLossOrderBySymbol.set(symbol, {
-      asset: Number(stopResult.asset),
-      oid: Number(stopResult.oid)
+    tradeState.setStopOrderRef({
+      symbol,
+      mode: accountMode,
+      stopOrderRef: {
+        asset: Number(stopResult.asset),
+        oid: Number(stopResult.oid)
+      },
+      stopLossPlaced: stopLossPrice
     });
   } else {
-    activeStopLossOrderBySymbol.delete(symbol);
+    tradeState.clearStopOrderRef({ symbol, mode: accountMode });
   }
+  tradeState.setStopLossValue({ symbol, mode: accountMode, stopLoss: stopLossPrice });
+  await refreshPendingOrdersForSymbol(symbol, accountMode);
+  await reconcileTradeStateForSymbol(symbol, accountMode, { lastAction: "updateStopLoss" });
 
   emitTradeResult({
     ok: true,
@@ -1415,6 +1835,7 @@ async function handleControllerAction(action) {
       const snapPrice = getLatestPriceForSymbol(primarySymbol) || lastPrice;
       if (primarySymbol && snapPrice > 0) {
         stopLossBySymbol.set(primarySymbol, snapPrice);
+        tradeState.setStopLossValue({ symbol: primarySymbol, mode: accountMode, stopLoss: snapPrice });
         console.log("stopLoss snapped to price:", snapPrice, "for", primarySymbol);
         emitHudUpdate();
         emitControllerEvent("stopLossSnap");
@@ -1427,6 +1848,7 @@ async function handleControllerAction(action) {
       const current = getStopLossPrice(primarySymbol);
       const next = current + step;
       stopLossBySymbol.set(primarySymbol, next);
+      tradeState.setStopLossValue({ symbol: primarySymbol, mode: accountMode, stopLoss: next });
       emitHudUpdate();
       emitControllerEvent(action);
       return;
@@ -1437,6 +1859,7 @@ async function handleControllerAction(action) {
       const current = getStopLossPrice(primarySymbol);
       const next = Math.max(0, current - step);
       stopLossBySymbol.set(primarySymbol, next);
+      tradeState.setStopLossValue({ symbol: primarySymbol, mode: accountMode, stopLoss: next });
       emitHudUpdate();
       emitControllerEvent(action);
     }
@@ -1444,6 +1867,9 @@ async function handleControllerAction(action) {
     const message = error instanceof Error ? error.message : String(error);
     const symbol = normalizeSymbol(primarySymbol);
     console.log("[server] controller action error:", action, message);
+    if (symbol) {
+      tradeState.applyActionError({ symbol, mode: accountMode, action, error: message });
+    }
     emitTradeResult({
       ok: false,
       action,
@@ -1506,8 +1932,10 @@ io.on("connection", (socket) => {
     stopLossPrice: getStopLossPrice(primarySymbol),
     settings,
     mode: accountMode,
-    isLong: getDirectionForSymbol(primarySymbol)
+    isLong: getDirectionForSymbol(primarySymbol),
+    tradeState: tradeState.getClientSnapshot(primarySymbol, accountMode)
   });
+  emitTradeStateSnapshot(socket, primarySymbol, accountMode);
 
   emitStreamsUpdate(socket);
   void emitSessionUpdate();
@@ -1537,6 +1965,7 @@ io.on("connection", (socket) => {
       emitDirectionUpdate();
       emitHudUpdate();
     }
+    emitTradeStateSnapshot(socket, symbol, accountMode);
   });
 
   socket.on("stopLoss:set", (payload) => {
@@ -1544,6 +1973,7 @@ io.on("connection", (socket) => {
     const price = Number(payload?.stopLossPrice ?? 0);
     if (!symbol || !Number.isFinite(price) || price < 0) return;
     stopLossBySymbol.set(symbol, price);
+    tradeState.setStopLossValue({ symbol, mode: accountMode, stopLoss: price });
     if (symbol === primarySymbol) {
       emitHudUpdate();
     }
@@ -1571,6 +2001,7 @@ io.on("connection", (socket) => {
     emitStreamsUpdate();
     emitDirectionUpdate();
     emitHudUpdate();
+    emitTradeStateSnapshot(socket, primarySymbol, accountMode);
   });
 });
 
@@ -1656,6 +2087,7 @@ async function bootstrapServer() {
         for (const symbol of symbols || []) {
           void preloadSymbolHistory(symbol, { force: true });
         }
+        void refreshActivePosition();
       }
     });
 
@@ -1669,6 +2101,8 @@ async function bootstrapServer() {
 
     void refreshFeeAndMetaCache();
     setInterval(() => void refreshFeeAndMetaCache(), 60_000);
+    void refreshActivePosition();
+    setInterval(() => void refreshActivePosition(), 12_000);
 
     console.log(
       "Keyboard shortcuts active: 3=direction F1=cross F2=triangle F3=circle F4/F5=primary F6/F8=stopLoss F9=snap F10=updateSL"

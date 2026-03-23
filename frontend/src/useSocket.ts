@@ -1,6 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { io, Socket } from "socket.io-client";
-import type { AccountMode, AccountSettings, Candle, GapRange, HudState, SessionInfo, StopLossProjections, Tick, Timeframe, TradeResult } from "./types";
+import type {
+  AccountMode,
+  AccountSettings,
+  Candle,
+  GapRange,
+  HudState,
+  SessionInfo,
+  Tick,
+  Timeframe,
+  TradeResult,
+  TradeStateSnapshot
+} from "./types";
 import {
   fetchCurrentSessionSnapshot,
   fetchSessionSnapshotById
@@ -94,11 +105,29 @@ export function useSocket(
   const [connected, setConnected] = useState(false);
   const [sessionInfo, setSessionInfo] = useState<SessionInfo>(emptySessionInfo);
   const [historyPreloading, setHistoryPreloading] = useState(false);
-  const [stopLossProjections, setStopLossProjections] = useState<StopLossProjections | null>(null);
   const [accountSettings, setAccountSettings] = useState<AccountSettings | null>(null);
   const [accountMode, setAccountMode] = useState<AccountMode>("live");
   const [isLong, setIsLong] = useState(true);
   const [tradeResult, setTradeResult] = useState<TradeResult | null>(null);
+  const [tradeState, setTradeState] = useState<TradeStateSnapshot | null>(null);
+
+  const applyTradeState = (nextState: TradeStateSnapshot | null) => {
+    if (!nextState) {
+      setTradeState(null);
+      return;
+    }
+    setTradeState({
+      ...nextState,
+      stopLossFromPendingOrders: Number(nextState.stopLossFromPendingOrders ?? 0) || 0,
+      executionMeta: nextState.executionMeta ? { ...nextState.executionMeta } : nextState.executionMeta,
+      pendingOrders: Array.isArray(nextState.pendingOrders) ? [...nextState.pendingOrders] : nextState.pendingOrders
+    });
+    if (nextState.mode === "live" || nextState.mode === "test") {
+      setAccountMode(nextState.mode);
+    }
+    if (nextState.side === "long") setIsLong(true);
+    if (nextState.side === "short") setIsLong(false);
+  };
   const trackedSymbolsKey = useMemo(() => {
     const set = new Set<string>();
     for (const symbol of [selectedSymbol, ...trackedSymbols]) {
@@ -110,6 +139,11 @@ export function useSocket(
 
   useEffect(() => {
     selectedSymbolRef.current = selectedSymbol.toUpperCase();
+  }, [selectedSymbol]);
+
+  /** Avoid showing LIT trade rows while the chart is on XRP until the matching snapshot arrives. */
+  useEffect(() => {
+    setTradeState(null);
   }, [selectedSymbol]);
 
   useEffect(() => {
@@ -158,6 +192,7 @@ export function useSocket(
 
     socket.on("connect", () => {
       setConnected(true);
+      socket.emit("symbol:subscribe", { symbol: selectedSymbolRef.current });
     });
     socket.on("disconnect", () => {
       setConnected(false);
@@ -184,6 +219,60 @@ export function useSocket(
       if (typeof payload.isLong === "boolean") {
         setIsLong(payload.isLong);
       }
+      if (payload.tradeState) {
+        applyTradeState(payload.tradeState as TradeStateSnapshot);
+      }
+    });
+
+    socket.on("tradeState:snapshot", (payload: any) => {
+      if (!payload) return;
+      const symbol = String(payload.symbol ?? "").toUpperCase();
+      if (symbol && symbol !== selectedSymbolRef.current) return;
+      applyTradeState(payload as TradeStateSnapshot);
+    });
+
+    socket.on("tradeState:update", (payload: any) => {
+      if (!payload) return;
+      const symbol = String(payload.symbol ?? "").toUpperCase();
+      if (symbol && symbol !== selectedSymbolRef.current) return;
+      applyTradeState(payload as TradeStateSnapshot);
+    });
+
+    socket.on("hudUpdate", (payload: any) => {
+      if (!payload) return;
+      setHud((prev) => ({
+        ...prev,
+        stopLossPrice: Number(payload.stopLossPrice ?? prev.stopLossPrice),
+        balance: Number(payload.balance ?? prev.balance),
+        positionSize: Number(payload.positionSize ?? prev.positionSize)
+      }));
+    });
+
+    socket.on("direction:update", (payload: any) => {
+      const symbol = String(payload?.symbol ?? "").toUpperCase();
+      if (symbol && symbol !== selectedSymbolRef.current) return;
+      if (typeof payload?.isLong === "boolean") {
+        setIsLong(payload.isLong);
+      }
+    });
+
+    socket.on("mode:update", (payload: any) => {
+      const mode = payload?.mode;
+      if (mode === "live" || mode === "test") {
+        setAccountMode(mode);
+        socket.emit("symbol:subscribe", { symbol: selectedSymbolRef.current });
+      }
+    });
+
+    socket.on("settings:update", (payload: any) => {
+      if (!payload || typeof payload !== "object") return;
+      setAccountSettings(payload as AccountSettings);
+      if (payload.riskPercent !== undefined) {
+        setHud((prev) => ({
+          ...prev,
+          riskPercent: Number(payload.riskPercent ?? prev.riskPercent)
+        }));
+      }
     });
 
     socket.on("session:update", (payload: SessionInfo) => {
@@ -207,50 +296,23 @@ export function useSocket(
       }
     });
 
-    socket.on("hudUpdate", (payload: any) => {
-      setHud((prev) => ({
-        ...prev,
-        balance: payload.balance !== undefined ? Number(payload.balance ?? 0) : prev.balance,
-        stopLossPrice:
-          payload.stopLossPrice !== undefined
-            ? Number(payload.stopLossPrice ?? 0)
-            : prev.stopLossPrice,
-        positionSize:
-          payload.positionSize !== undefined
-            ? Number(payload.positionSize ?? prev.positionSize)
-            : prev.positionSize
-      }));
-    });
-
-    socket.on("stopLoss:projections", (payload: any) => {
-      if (!payload) return;
-      setStopLossProjections(payload as StopLossProjections);
-    });
-
-    socket.on("settings:update", (payload: any) => {
-      if (!payload) return;
-      setAccountSettings(payload as AccountSettings);
-    });
-
-    socket.on("mode:update", (payload: any) => {
-      if (payload?.mode === "live" || payload?.mode === "test") {
-        setAccountMode(payload.mode);
-      }
-    });
-
-    socket.on("direction:update", (payload: any) => {
-      if (!payload) return;
-      const sym = String(payload.symbol ?? "").toUpperCase();
-      if (sym === selectedSymbolRef.current || !sym) {
-        setIsLong(Boolean(payload.isLong));
-      }
-    });
-
     socket.on("trade:result", (payload: any) => {
       if (!payload) return;
       const sym = String(payload.symbol ?? "").toUpperCase();
       if (sym && sym !== selectedSymbolRef.current) return;
       setTradeResult(payload as TradeResult);
+    });
+
+    socket.on("controllerEvent", (payload: any) => {
+      const button = String(payload?.button ?? "");
+      if (
+        button === "updateStopLoss" ||
+        button === "toggleDirection" ||
+        button === "primaryPrev" ||
+        button === "primaryNext"
+      ) {
+        socket.emit("symbol:subscribe", { symbol: selectedSymbolRef.current });
+      }
     });
 
     socket.on("tick", (tickPayload: any) => {
@@ -287,6 +349,12 @@ export function useSocket(
     };
   }, [liveMode]);
 
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!socket || !socket.connected) return;
+    socket.emit("symbol:subscribe", { symbol: selectedSymbolRef.current });
+  }, [trackedSymbolsKey, liveMode]);
+
   const selectedCandles = useMemo(() => {
     if (timeframe === "5m") return candles5m;
     return candles1m;
@@ -317,11 +385,11 @@ export function useSocket(
     historyPreloading,
     connected,
     sessionInfo,
-    stopLossProjections,
     accountSettings,
     accountMode,
     isLong,
     tradeResult,
+    tradeState,
     setStopLossPrice
   };
 }

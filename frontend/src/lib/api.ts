@@ -12,6 +12,7 @@ import type {
   SavedSession,
   SessionInfo,
   SessionTrade,
+  TradeStateSnapshot,
   Timeframe
 } from "../types";
 
@@ -523,6 +524,27 @@ export async function fetchPersistenceStatus(): Promise<PersistenceStatus | null
     };
   } catch {
     return null;
+  }
+}
+
+export async function fetchTradeState(params: {
+  symbol?: string;
+  mode?: AccountMode;
+  refresh?: boolean;
+} = {}): Promise<TradeStateSnapshot[]> {
+  try {
+    const search = new URLSearchParams();
+    if (params.symbol) search.set("symbol", String(params.symbol).toUpperCase());
+    if (params.mode) search.set("mode", params.mode);
+    if (params.refresh) search.set("refresh", "true");
+    const qs = search.toString();
+    const res = await fetch(`${BACKEND_BASE_URL}/api/trade-state${qs ? `?${qs}` : ""}`);
+    if (!res.ok) return [];
+    const payload: any = await res.json();
+    if (!payload?.ok || !Array.isArray(payload.states)) return [];
+    return payload.states as TradeStateSnapshot[];
+  } catch {
+    return [];
   }
 }
 

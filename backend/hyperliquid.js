@@ -196,9 +196,14 @@ async function fetchMeta(mode = "live") {
   return payload;
 }
 
+/**
+ * Use `frontendOpenOrders` (not bare `openOrders`): the minimal openOrders response often omits
+ * triggerPx / triggerCondition / orderType — the UI shows e.g. "Price below 1.431" while only limitPx is present on openOrders.
+ * @see https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint
+ */
 async function fetchOpenOrders(mode = "live") {
   const { account } = getConfig(mode);
-  const payload = await hlPost(mode, { type: "openOrders", user: account });
+  const payload = await hlPost(mode, { type: "frontendOpenOrders", user: account });
   return Array.isArray(payload) ? payload : [];
 }
 
@@ -620,6 +625,16 @@ function parseFirstOrderStatus(orderResponse) {
       totalSz: null
     };
   }
+  if (first?.waitingForTrigger) {
+    const waiting = first.waitingForTrigger || {};
+    return {
+      kind: "waitingForTrigger",
+      raw: first,
+      oid: Number(waiting.oid ?? waiting.order?.oid ?? 0) || null,
+      avgPx: null,
+      totalSz: Number(waiting.totalSz ?? waiting.order?.sz ?? 0) || null
+    };
+  }
   return { kind: "unknown", raw: first, oid: null, avgPx: null, totalSz: null };
 }
 
@@ -854,10 +869,22 @@ async function updateStopLoss({
     try {
       cancelResult = await cancelOrderById({ asset: oldAsset, oid: oldOid, mode });
     } catch {
-      cancelResult = await cancelAllOrders({ symbol: upper, mode });
+      // Preserve the newly placed stop if we need a broader cleanup fallback.
+      cancelResult = await cancelAllOrders({
+        symbol: upper,
+        mode,
+        excludeOids: [Number(stopResult.oid)]
+      });
     }
   } else {
-    cancelResult = await cancelAllOrders({ symbol: upper, mode });
+    // We cannot reliably identify the previous stop order, so avoid blanket
+    // cancellation that could remove the newly placed protective stop.
+    cancelResult = {
+      canceledCount: 0,
+      result: null,
+      skipped: true,
+      reason: "no-previous-stop-reference"
+    };
   }
 
   return {
@@ -948,9 +975,7 @@ async function executeAzizExit({
 }
 
 async function getOpenOrders({ mode = "live" } = {}) {
-  const { info, account } = getOrCreateClients(mode);
-  const orders = await info.openOrders({ user: account });
-  return Array.isArray(orders) ? orders : [];
+  return fetchOpenOrders(mode);
 }
 
 async function cancelOrderById({ asset, oid, mode = "live" }) {
@@ -964,12 +989,18 @@ async function cancelOrderById({ asset, oid, mode = "live" }) {
   return { canceled: true, result };
 }
 
-async function cancelAllOrders({ symbol, mode = "live" }) {
+async function cancelAllOrders({ symbol, mode = "live", excludeOids = [] }) {
   const { exchange } = getOrCreateClients(mode);
   const { asset, symbol: upper } = await resolveAsset(symbol, mode);
+  const blocked = new Set(
+    (Array.isArray(excludeOids) ? excludeOids : [])
+      .map((v) => Number(v))
+      .filter((v) => Number.isFinite(v) && v > 0)
+  );
   const openOrders = await getOpenOrders({ mode });
   const cancels = openOrders
     .filter((order) => String(order?.coin || "").toUpperCase() === upper)
+    .filter((order) => !blocked.has(Number(order?.oid || 0)))
     .map((order) => ({ a: asset, o: Number(order?.oid || 0) }))
     .filter((entry) => Number.isFinite(entry.o) && entry.o > 0);
 

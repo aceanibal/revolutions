@@ -49,22 +49,22 @@ export function ChartPanel({
     connected,
     sessionInfo,
     gaps,
-    stopLossProjections,
+    accountMode,
     isLong,
     tradeResult,
+    tradeState,
     setStopLossPrice: setStopLossPriceOnSocket
   } = useSocket(symbol, trackedSymbols, selectedSessionId);
   const [riskPercentage, setRiskPercentage] = useState(2);
   const [stopLossPrice, setStopLossPrice] = useState(0);
   const [visibleTradeResult, setVisibleTradeResult] = useState<typeof tradeResult>(null);
-  const [makerFeeRate, setMakerFeeRate] = useState(0.0001);
   const [takerFeeRate, setTakerFeeRate] = useState(0.00035);
   const [positionEntryPrice, setPositionEntryPrice] = useState(0);
   const [liveAccountBalance, setLiveAccountBalance] = useState(0);
   const [leveragePreview, setLeveragePreview] = useState<LeveragePreview | null>(null);
   const maxExchangeLeverage = 50;
 
-  const entryPrice = hud.price;
+  const riskEntryPrice = hud.price;
 
   const effectiveTimeframe = timeframe ?? "1m";
   const latestTimeSec = useMemo(() => {
@@ -97,8 +97,36 @@ export function ChartPanel({
     onHistoryPreloadingChange?.(historyPreloading);
   }, [historyPreloading, onHistoryPreloadingChange]);
 
-  const slPrice = stopLossProjections?.stopLossPrice ?? hud.stopLossPrice;
+  const slPrice = Number(hud.stopLossPrice ?? 0) > 0 ? Number(hud.stopLossPrice ?? 0) : 0;
+  const activeTradeStatus = tradeState?.status || "FLAT";
+  const hasActiveTrade =
+    activeTradeStatus === "OPEN" || activeTradeStatus === "PENDING_OPEN" || activeTradeStatus === "PENDING_CLOSE";
+  const activeTradeIsLong = tradeState?.side ? tradeState.side === "long" : isLong;
   const accountBalanceForRisk = liveAccountBalance;
+
+  // Navy dashed chart line: exchange stop inferred from pending orders only (not HUD tradeState.stopLoss).
+  const chartActiveStopPrice = useMemo(() => {
+    if (!hasActiveTrade) return null;
+    const fromOrders = Number(tradeState?.stopLossFromPendingOrders ?? 0);
+    return Number.isFinite(fromOrders) && fromOrders > 0 ? fromOrders : null;
+  }, [hasActiveTrade, tradeState?.stopLossFromPendingOrders]);
+  const activeEntryPrice = hasActiveTrade
+    ? Number(tradeState?.entryPx ?? 0) > 0
+      ? Number(tradeState?.entryPx ?? 0)
+      : Number(tradeState?.executionMeta?.entryPxFilled ?? 0) > 0
+        ? Number(tradeState?.executionMeta?.entryPxFilled ?? 0)
+        : 0
+    : 0;
+  // Product rule: risk/sizing always uses the controller/HUD stop.
+  const riskStopLossPrice = slPrice;
+  const exchangeStopLossPrice = chartActiveStopPrice;
+  const hasStopMismatch =
+    hasActiveTrade &&
+    riskStopLossPrice > 0 &&
+    Number.isFinite(Number(exchangeStopLossPrice ?? 0)) &&
+    Number(exchangeStopLossPrice ?? 0) > 0 &&
+    Math.abs(Number(exchangeStopLossPrice) - riskStopLossPrice) > 1e-6;
+
   const metrics = useMemo<RiskFirstMetrics>(() => {
     const preview = leveragePreview;
     if (!preview) {
@@ -116,20 +144,21 @@ export function ChartPanel({
         maxExchangeLeverage
       };
     }
-    const distance = Math.abs(entryPrice - stopLossPrice);
+    const slForRisk = riskStopLossPrice > 0 ? riskStopLossPrice : stopLossPrice;
+    const distance = Math.abs(riskEntryPrice - slForRisk);
     const notional = Number(preview.notionalPosition || 0);
     const size = Number(preview.positionSizeUnits || 0);
     const effectiveMaxLev = Number(preview.exchangeMaxLeverage || maxExchangeLeverage);
     const entryFee = notional * Math.max(0, takerFeeRate);
-    const exitFee = size * Math.max(0, stopLossPrice) * Math.max(0, takerFeeRate);
+    const exitFee = size * Math.max(0, slForRisk) * Math.max(0, takerFeeRate);
     const totalFees = entryFee + exitFee;
     const breakEvenPrice =
-      entryPrice > 0
-        ? isLong
-          ? entryPrice *
+      riskEntryPrice > 0
+        ? activeTradeIsLong
+          ? riskEntryPrice *
             ((1 + takerFeeRate + ENTRY_SLIPPAGE_FRAC) /
               Math.max(1e-12, 1 - takerFeeRate - EXIT_SLIPPAGE_FRAC))
-          : entryPrice *
+          : riskEntryPrice *
             ((1 - takerFeeRate - ENTRY_SLIPPAGE_FRAC) /
               (1 + takerFeeRate + EXIT_SLIPPAGE_FRAC))
         : 0;
@@ -146,9 +175,19 @@ export function ChartPanel({
       leverageTooHigh: Number(preview.recommendedLeverage || 0) > effectiveMaxLev,
       maxExchangeLeverage: effectiveMaxLev
     };
-  }, [leveragePreview, entryPrice, stopLossPrice, takerFeeRate, isLong]);
+  }, [leveragePreview, riskEntryPrice, riskStopLossPrice, stopLossPrice, takerFeeRate, activeTradeIsLong]);
   const warningText = leveragePreview?.warning || null;
 
+  const chartEntryPrice =
+    hasActiveTrade
+      ? activeEntryPrice || positionEntryPrice
+      : positionEntryPrice;
+
+  /**
+   * Draggable (solid) SL line = HUD only (`hud.stopLossPrice` / socket).
+   * Book stop is the navy dashed line (`stopLossFromPendingOrders`) — do not drive the solid line from
+   * `riskStopLossPrice` or it resets on every tradeState:update and feels stuck.
+   */
   useEffect(() => {
     if (slPrice >= 0) {
       setStopLossPrice(slPrice);
@@ -165,10 +204,9 @@ export function ChartPanel({
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [fees, settings] = await Promise.all([fetchAccountFees("live"), fetchAccountSettings()]);
+      const [fees, settings] = await Promise.all([fetchAccountFees(accountMode), fetchAccountSettings()]);
       if (cancelled) return;
       if (fees) {
-        setMakerFeeRate(Math.max(0, Number(fees.userAddRate ?? 0)));
         setTakerFeeRate(Math.max(0, Number(fees.userCrossRate ?? 0)));
       }
       if (settings?.riskPercent && Number.isFinite(settings.riskPercent)) {
@@ -178,7 +216,7 @@ export function ChartPanel({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [accountMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -187,29 +225,36 @@ export function ChartPanel({
         setPositionEntryPrice(0);
         return;
       }
-      const overview = await fetchAccountOverview("live");
+      if (hasActiveTrade && activeEntryPrice > 0) {
+        setPositionEntryPrice(activeEntryPrice);
+      }
+      const overview = await fetchAccountOverview(accountMode);
       if (cancelled) return;
       const nextBalance = Number(overview?.overview?.accountValue ?? 0);
       setLiveAccountBalance(Number.isFinite(nextBalance) && nextBalance > 0 ? nextBalance : 0);
       const position = overview?.positions?.find((p) => String(p.coin || "").toUpperCase() === symbol.toUpperCase());
       const nextEntry = Number(position?.entryPx ?? 0);
-      setPositionEntryPrice(Number.isFinite(nextEntry) && nextEntry > 0 ? nextEntry : 0);
+      if (!hasActiveTrade && Number.isFinite(nextEntry) && nextEntry > 0) {
+        setPositionEntryPrice(nextEntry);
+      } else if (!hasActiveTrade) {
+        setPositionEntryPrice(0);
+      }
     })();
     return () => {
       cancelled = true;
     };
-  }, [symbol, tradeResult]);
+  }, [symbol, tradeResult, tradeState, accountMode, activeEntryPrice, hasActiveTrade]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (!symbol || entryPrice <= 0 || stopLossPrice <= 0 || accountBalanceForRisk <= 0) {
+      if (!symbol || riskEntryPrice <= 0 || riskStopLossPrice <= 0 || accountBalanceForRisk <= 0) {
         setLeveragePreview(null);
         return;
       }
-      const stopLossDistancePct = isLong
-        ? ((entryPrice - stopLossPrice) / entryPrice) * 100
-        : ((stopLossPrice - entryPrice) / entryPrice) * 100;
+      const stopLossDistancePct = activeTradeIsLong
+        ? ((riskEntryPrice - riskStopLossPrice) / riskEntryPrice) * 100
+        : ((riskStopLossPrice - riskEntryPrice) / riskEntryPrice) * 100;
       if (!Number.isFinite(stopLossDistancePct) || stopLossDistancePct <= 0) {
         setLeveragePreview(null);
         return;
@@ -219,7 +264,7 @@ export function ChartPanel({
         stopLossDistancePct,
         riskBudgetPct: riskPercentage,
         slippageBps: EFFECTIVE_SLIPPAGE_BPS,
-        mode: "live"
+        mode: accountMode
       });
       if (cancelled) return;
       setLeveragePreview(preview);
@@ -227,7 +272,7 @@ export function ChartPanel({
     return () => {
       cancelled = true;
     };
-  }, [symbol, entryPrice, stopLossPrice, isLong, riskPercentage, accountBalanceForRisk]);
+  }, [symbol, riskEntryPrice, riskStopLossPrice, activeTradeIsLong, riskPercentage, accountBalanceForRisk, accountMode]);
 
   const handleStopLossPriceChange = (nextPrice: number) => {
     setStopLossPrice(nextPrice);
@@ -238,13 +283,15 @@ export function ChartPanel({
     <RiskFirstPanel
       accountBalance={accountBalanceForRisk}
       riskPercentage={riskPercentage}
-      entryPrice={entryPrice}
-      stopLossPrice={stopLossPrice}
-      isLong={isLong}
-      makerFeeRate={makerFeeRate}
+      entryPrice={riskEntryPrice}
+      controllerStopLossPrice={riskStopLossPrice}
+      exchangeStopLossPrice={exchangeStopLossPrice}
+      hasStopMismatch={hasStopMismatch}
+      isLong={activeTradeIsLong}
       takerFeeRate={takerFeeRate}
       metrics={metrics}
       warningText={warningText}
+      tradeState={tradeState}
       onRiskPercentageChange={setRiskPercentage}
     />
   );
@@ -329,10 +376,11 @@ export function ChartPanel({
             vwapPeriod={vwapPeriod}
             emaEnabled={emaEnabled}
             emaPeriod={emaPeriod}
-            entryPrice={positionEntryPrice}
+            entryPrice={chartEntryPrice}
             stopLossPrice={stopLossPrice}
+            stopPlacedPrice={chartActiveStopPrice}
             breakEvenPrice={metrics.breakEvenPrice}
-            isLong={isLong}
+            isLong={activeTradeIsLong}
             enableStopLossDrag
             onStopLossPriceChange={handleStopLossPriceChange}
             onCrosshairTimeChange={setHoveredTimeSec}

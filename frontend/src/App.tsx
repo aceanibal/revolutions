@@ -390,7 +390,11 @@ export function App() {
 
         {activeTab === "report" && (
           <div className="h-[calc(100vh-5.5rem)] overflow-auto">
-            <ReportPanel snapshotMode={snapshotMode} />
+            <ReportPanel
+              snapshotMode={snapshotMode}
+              onSubscribeAsset={handleSubscribeAsset}
+              subscribedAssets={subscribedAssets}
+            />
           </div>
         )}
 

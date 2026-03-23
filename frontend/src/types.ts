@@ -185,3 +185,59 @@ export interface TradeResult {
   ts: number;
 }
 
+export type TradeLifecycleStatus = "FLAT" | "PENDING_OPEN" | "OPEN" | "PENDING_CLOSE" | "ERROR";
+
+export interface TradeExecutionMeta {
+  entryPxRequested: number | null;
+  entryPxFilled: number | null;
+  slippageBpsRequested: number | null;
+  requestedNotional: number | null;
+  requestedSize: number | null;
+  requestedLeverage: number | null;
+  stopLossRequested: number | null;
+  stopLossPlaced: number | null;
+  openedAtMs: number | null;
+  closedAtMs: number | null;
+}
+
+export interface TradeOrderRef {
+  asset: number;
+  oid: number;
+}
+
+export interface TradePendingOrder {
+  coin: string;
+  oid: number | null;
+  side: string;
+  sz: number;
+  /** Exchange ms; used server-side to pick latest when several stops qualify. */
+  timestamp?: number;
+  triggerPx: number | null;
+  limitPx: number | null;
+  /** Hyperliquid copy e.g. "Price above 0.94425" — used server-side when triggerPx is absent. */
+  triggerCondition?: string;
+  isTrigger: boolean;
+  reduceOnly: boolean;
+  /** From Hyperliquid `b` / side A|B when present — used server-side to match position stop orders. */
+  isBuy?: boolean | null;
+}
+
+export interface TradeStateSnapshot {
+  symbol: string;
+  mode: AccountMode;
+  status: TradeLifecycleStatus;
+  side: "long" | "short" | null;
+  size: number;
+  entryPx: number;
+  stopLoss: number;
+  /** Inferred from resting exchange orders (reduce-only / trigger); preferred over HUD `stopLoss` when set. */
+  stopLossFromPendingOrders: number;
+  stopOrderRef: TradeOrderRef | null;
+  pendingOrders: TradePendingOrder[];
+  executionMeta: TradeExecutionMeta;
+  updatedAt: number;
+  lastAction: string | null;
+  error: string | null;
+  position?: AccountPosition | null;
+}
+

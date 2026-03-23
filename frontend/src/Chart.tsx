@@ -21,6 +21,8 @@ interface ChartProps {
   emaPeriod?: number;
   entryPrice?: number;
   stopLossPrice?: number;
+  /** Pending-order / exchange-inferred stop (navy dashed). Null hides the line. */
+  stopPlacedPrice?: number | null;
   breakEvenPrice?: number;
   isLong?: boolean;
   enableStopLossDrag?: boolean;
@@ -50,6 +52,7 @@ export function Chart({
   emaPeriod = 9,
   entryPrice = 0,
   stopLossPrice = 0,
+  stopPlacedPrice = null,
   breakEvenPrice = 0,
   isLong = true,
   enableStopLossDrag = false,
@@ -70,6 +73,7 @@ export function Chart({
   const vwapSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const emaSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const stopLossLineRef = useRef<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null>(null);
+  const stopPlacedLineRef = useRef<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null>(null);
   const breakEvenLineRef = useRef<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null>(null);
   const entryLineRef = useRef<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null>(null);
   const draggingStopLossRef = useRef(false);
@@ -290,10 +294,6 @@ export function Chart({
       const y = event.clientY - rect.top;
       const nextPrice = series.coordinateToPrice(y);
       if (nextPrice && Number.isFinite(nextPrice) && nextPrice > 0) {
-        if (entryPrice > 0) {
-          if (isLong && nextPrice >= entryPrice) return;
-          if (!isLong && nextPrice <= entryPrice) return;
-        }
         onStopLossPriceChange(nextPrice);
       }
     };
@@ -317,15 +317,14 @@ export function Chart({
   useEffect(() => {
     const series = seriesRef.current;
     if (!series) return;
-    const overlapThreshold = entryPrice > 0 ? entryPrice * 0.000001 : 0.000001;
-    const entryOverlapsStopLoss =
-      entryPrice > 0 &&
-      stopLossPrice > 0 &&
-      Math.abs(entryPrice - stopLossPrice) <= overlapThreshold;
 
     if (stopLossLineRef.current) {
       series.removePriceLine(stopLossLineRef.current);
       stopLossLineRef.current = null;
+    }
+    if (stopPlacedLineRef.current) {
+      series.removePriceLine(stopPlacedLineRef.current);
+      stopPlacedLineRef.current = null;
     }
     if (breakEvenLineRef.current) {
       series.removePriceLine(breakEvenLineRef.current);
@@ -336,14 +335,31 @@ export function Chart({
       entryLineRef.current = null;
     }
 
-    if (entryPrice > 0 && !entryOverlapsStopLoss) {
+    if (entryPrice > 0) {
       entryLineRef.current = series.createPriceLine({
         price: entryPrice,
-        color: "rgba(139, 92, 246, 0.95)",
+        color: "rgba(76, 29, 149, 0.95)",
         lineWidth: 2,
-        lineStyle: 0,
+        lineStyle: 2,
         axisLabelVisible: true,
         title: "Entry Px"
+      });
+    }
+
+    const placedPx =
+      stopPlacedPrice !== null && Number.isFinite(stopPlacedPrice) && stopPlacedPrice > 0
+        ? stopPlacedPrice
+        : null;
+
+    // Navy dashed: stopLossFromPendingOrders (exchange book) — draw before draggable HUD SL so SL stays on top.
+    if (placedPx !== null) {
+      stopPlacedLineRef.current = series.createPriceLine({
+        price: placedPx,
+        color: "rgba(30, 64, 175, 0.95)",
+        lineWidth: 2,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: `SL (orders) ${placedPx.toFixed(4)}`
       });
     }
 
@@ -354,7 +370,7 @@ export function Chart({
         lineWidth: 2,
         lineStyle: 0,
         axisLabelVisible: true,
-        title: entryOverlapsStopLoss ? "SL / Entry" : "SL"
+        title: "SL"
       };
       stopLossLineRef.current = series.createPriceLine(slLineOpts);
     }
@@ -369,7 +385,7 @@ export function Chart({
         title: "Break-even"
       });
     }
-  }, [entryPrice, stopLossPrice, breakEvenPrice, isLong]);
+  }, [entryPrice, stopLossPrice, stopPlacedPrice, breakEvenPrice, isLong]);
 
   return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 }

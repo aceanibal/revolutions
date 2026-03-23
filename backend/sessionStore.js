@@ -169,6 +169,11 @@ class SessionStore {
     return `session:${sessionId}:historyLoaded:${symbol}:${timeframe}`;
   }
 
+  sessionTradeStateKey(sessionId, mode, symbol) {
+    const normalizedMode = String(mode || "").toLowerCase() === "test" ? "test" : "live";
+    return `session:${sessionId}:tradeState:${normalizedMode}:${normalizeSymbol(symbol)}`;
+  }
+
   async ensureActiveSession(nowMs = Date.now()) {
     const { windowId, startMs, endMs } = this.currentWindow(nowMs);
     if (!this.redis) {
@@ -583,30 +588,101 @@ class SessionStore {
     return this.redis.get(`session:active:${windowId}`);
   }
 
+  /**
+   * Persist which symbols are actively streamed + primary chart symbol (for restore after save/restart).
+   */
+  async writeActiveStreamsSnapshot({ symbols = [], primary = "" } = {}) {
+    if (!this.redis) return { ok: false, reason: "no_redis" };
+    const sessionId = await this.getCurrentSessionId();
+    if (!sessionId) return { ok: false, reason: "no_session" };
+    const norm = Array.from(new Set((symbols || []).map(normalizeSymbol).filter(Boolean)));
+    const prim = normalizeSymbol(primary) || norm[0] || "";
+    const payload = JSON.stringify({ symbols: norm, primary: prim });
+    const metaKey = this.sessionMetaKey(sessionId);
+    await this.redis.hset(metaKey, "activeStreamsJson", payload);
+    await this.redis.expire(metaKey, this.sameDayTtlSeconds);
+    return { ok: true, sessionId };
+  }
+
   async getStartupSymbols() {
     const normalizeUnique = (values) =>
       Array.from(new Set((values || []).map(normalizeSymbol).filter(Boolean)));
 
     const currentSessionId = await this.getCurrentSessionId();
     if (currentSessionId && this.redis) {
+      const meta = await this.redis.hgetall(this.sessionMetaKey(currentSessionId));
+      const rawMeta = meta?.activeStreamsJson;
+      if (rawMeta) {
+        try {
+          const parsed = JSON.parse(rawMeta);
+          const syms = normalizeUnique(parsed.symbols);
+          const primary = normalizeSymbol(parsed.primary || "") || syms[0] || "";
+          if (syms.length > 0) {
+            return {
+              symbols: syms,
+              primary,
+              source: "redis_active_streams",
+              sessionId: currentSessionId
+            };
+          }
+        } catch {
+          /* fall through */
+        }
+      }
       const redisSymbols = normalizeUnique(await this.redis.smembers(this.sessionSymbolsKey(currentSessionId)));
       if (redisSymbols.length > 0) {
-        return { symbols: redisSymbols, source: "redis", sessionId: currentSessionId };
+        return {
+          symbols: redisSymbols,
+          primary: redisSymbols[0] || "",
+          source: "redis",
+          sessionId: currentSessionId
+        };
       }
     }
 
     if (!this.sqlite) {
-      return { symbols: [], source: "none", sessionId: null };
+      return { symbols: [], primary: "", source: "none", sessionId: null };
     }
 
-    const latestRow = this.sqlite
-      .prepare(
-        "SELECT id FROM sessions ORDER BY COALESCE(last_saved_at_ms, ended_at_ms, started_at_ms) DESC LIMIT 1"
-      )
-      .get();
+    let latestRow = null;
+    try {
+      latestRow = this.sqlite
+        .prepare(
+          "SELECT id, active_streams_json FROM sessions ORDER BY COALESCE(last_saved_at_ms, ended_at_ms, started_at_ms) DESC LIMIT 1"
+        )
+        .get();
+    } catch {
+      latestRow = this.sqlite
+        .prepare(
+          "SELECT id FROM sessions ORDER BY COALESCE(last_saved_at_ms, ended_at_ms, started_at_ms) DESC LIMIT 1"
+        )
+        .get();
+    }
     const latestSessionId = latestRow?.id ? String(latestRow.id) : null;
     if (!latestSessionId) {
-      return { symbols: [], source: "none", sessionId: null };
+      return { symbols: [], primary: "", source: "none", sessionId: null };
+    }
+
+    const sqlMetaRaw =
+      latestRow && Object.prototype.hasOwnProperty.call(latestRow, "active_streams_json") && latestRow.active_streams_json
+        ? String(latestRow.active_streams_json)
+        : "";
+    if (sqlMetaRaw) {
+      try {
+        const parsed = JSON.parse(sqlMetaRaw);
+        const syms = normalizeUnique(parsed.symbols);
+        const primary = normalizeSymbol(parsed.primary || "") || syms[0] || "";
+        if (syms.length > 0) {
+          return {
+            symbols: syms,
+            primary,
+            source: "sql_active_streams",
+            sessionId: latestSessionId
+          };
+        }
+      } catch {
+        /* fall through */
+      }
     }
 
     const rows = this.sqlite
@@ -625,10 +701,15 @@ class SessionStore {
       .all(latestSessionId, latestSessionId);
     const sqlSymbols = normalizeUnique(rows.map((row) => row.symbol));
     if (sqlSymbols.length > 0) {
-      return { symbols: sqlSymbols, source: "sql", sessionId: latestSessionId };
+      return {
+        symbols: sqlSymbols,
+        primary: sqlSymbols[0] || "",
+        source: "sql",
+        sessionId: latestSessionId
+      };
     }
 
-    return { symbols: [], source: "none", sessionId: latestSessionId };
+    return { symbols: [], primary: "", source: "none", sessionId: latestSessionId };
   }
 
   async getCurrentSessionSnapshot(symbol, timeframe = "1m") {
@@ -864,6 +945,194 @@ class SessionStore {
     }
   }
 
+  async persistTradeStateSnapshots(sessionId, snapshots = []) {
+    if (!sessionId || !Array.isArray(snapshots) || snapshots.length === 0) return 0;
+    const normalizedSessionId = String(sessionId).trim();
+    if (!normalizedSessionId) return 0;
+
+    const normalizedRows = snapshots
+      .map((snapshot) => {
+        const symbol = normalizeSymbol(snapshot?.symbol);
+        if (!symbol) return null;
+        const mode = String(snapshot?.mode || "").toLowerCase() === "test" ? "test" : "live";
+        return {
+          sessionId: normalizedSessionId,
+          mode,
+          symbol,
+          status: String(snapshot?.status || "FLAT"),
+          side: String(snapshot?.side || ""),
+          size: Number(snapshot?.size ?? 0) || 0,
+          entryPx: Number(snapshot?.entryPx ?? 0) || 0,
+          stopLoss: Number(snapshot?.stopLoss ?? 0) || 0,
+          stopLossFromPendingOrders: Number(snapshot?.stopLossFromPendingOrders ?? 0) || 0,
+          stopOrderRefJson: JSON.stringify(snapshot?.stopOrderRef || null),
+          pendingOrdersJson: JSON.stringify(Array.isArray(snapshot?.pendingOrders) ? snapshot.pendingOrders : []),
+          executionMetaJson: JSON.stringify(snapshot?.executionMeta || {}),
+          lastAction: String(snapshot?.lastAction || ""),
+          error: String(snapshot?.error || ""),
+          updatedAtMs: Number(snapshot?.updatedAt || Date.now()) || Date.now(),
+          rawJson: JSON.stringify(snapshot || {})
+        };
+      })
+      .filter(Boolean);
+
+    if (normalizedRows.length === 0) return 0;
+
+    if (this.redis) {
+      const pipeline = this.redis.multi();
+      for (const row of normalizedRows) {
+        const key = this.sessionTradeStateKey(row.sessionId, row.mode, row.symbol);
+        pipeline.set(key, row.rawJson, "EX", this.sameDayTtlSeconds);
+      }
+      await pipeline.exec();
+    }
+
+    if (!this.sqlite) return normalizedRows.length;
+
+    const upsert = this.sqlite.prepare(
+      `
+        INSERT INTO session_trade_state (
+          session_id,
+          mode,
+          symbol,
+          status,
+          side,
+          size,
+          entry_px,
+          stop_loss,
+          stop_loss_from_pending_orders,
+          stop_order_ref_json,
+          pending_orders_json,
+          execution_meta_json,
+          last_action,
+          error,
+          updated_at_ms
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id, mode, symbol) DO UPDATE SET
+          status = excluded.status,
+          side = excluded.side,
+          size = excluded.size,
+          entry_px = excluded.entry_px,
+          stop_loss = excluded.stop_loss,
+          stop_loss_from_pending_orders = excluded.stop_loss_from_pending_orders,
+          stop_order_ref_json = excluded.stop_order_ref_json,
+          pending_orders_json = excluded.pending_orders_json,
+          execution_meta_json = excluded.execution_meta_json,
+          last_action = excluded.last_action,
+          error = excluded.error,
+          updated_at_ms = excluded.updated_at_ms
+      `
+    );
+
+    let saved = 0;
+    this.sqlite.exec("BEGIN");
+    try {
+      for (const row of normalizedRows) {
+        const result = upsert.run(
+          row.sessionId,
+          row.mode,
+          row.symbol,
+          row.status,
+          row.side,
+          row.size,
+          row.entryPx,
+          row.stopLoss,
+          row.stopLossFromPendingOrders,
+          row.stopOrderRefJson,
+          row.pendingOrdersJson,
+          row.executionMetaJson,
+          row.lastAction,
+          row.error,
+          row.updatedAtMs
+        );
+        saved += Number(result?.changes || 0);
+      }
+      this.sqlite.exec("COMMIT");
+      return saved;
+    } catch (error) {
+      this.sqlite.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  async getSessionTradeState(sessionId, options = {}) {
+    if (!this.sqlite || !sessionId) return [];
+    const normalizedSessionId = String(sessionId).trim();
+    if (!normalizedSessionId) return [];
+
+    const symbol = normalizeSymbol(options?.symbol || "");
+    const modeRaw = String(options?.mode || "").toLowerCase();
+    const mode = modeRaw === "test" || modeRaw === "live" ? modeRaw : "";
+
+    const hasMode = Boolean(mode);
+    const hasSymbol = Boolean(symbol);
+    let rows = [];
+    if (hasMode && hasSymbol) {
+      rows = this.sqlite
+        .prepare(
+          `
+            SELECT *
+            FROM session_trade_state
+            WHERE session_id = ? AND mode = ? AND symbol = ?
+            ORDER BY updated_at_ms DESC
+          `
+        )
+        .all(normalizedSessionId, mode, symbol);
+    } else if (hasMode) {
+      rows = this.sqlite
+        .prepare(
+          `
+            SELECT *
+            FROM session_trade_state
+            WHERE session_id = ? AND mode = ?
+            ORDER BY updated_at_ms DESC, symbol ASC
+          `
+        )
+        .all(normalizedSessionId, mode);
+    } else if (hasSymbol) {
+      rows = this.sqlite
+        .prepare(
+          `
+            SELECT *
+            FROM session_trade_state
+            WHERE session_id = ? AND symbol = ?
+            ORDER BY updated_at_ms DESC
+          `
+        )
+        .all(normalizedSessionId, symbol);
+    } else {
+      rows = this.sqlite
+        .prepare(
+          `
+            SELECT *
+            FROM session_trade_state
+            WHERE session_id = ?
+            ORDER BY updated_at_ms DESC, symbol ASC
+          `
+        )
+        .all(normalizedSessionId);
+    }
+
+    return rows.map((row) => ({
+      sessionId: String(row.session_id || ""),
+      mode: String(row.mode || "live"),
+      symbol: String(row.symbol || ""),
+      status: String(row.status || "FLAT"),
+      side: row.side ? String(row.side) : null,
+      size: Number(row.size || 0),
+      entryPx: Number(row.entry_px || 0),
+      stopLoss: Number(row.stop_loss || 0),
+      stopLossFromPendingOrders: Number(row.stop_loss_from_pending_orders ?? 0) || 0,
+      stopOrderRef: parseSafeJson(row.stop_order_ref_json || "null", null),
+      pendingOrders: parseSafeJson(row.pending_orders_json || "[]", []),
+      executionMeta: parseSafeJson(row.execution_meta_json || "{}", {}),
+      lastAction: String(row.last_action || ""),
+      error: row.error ? String(row.error) : null,
+      updatedAt: Number(row.updated_at_ms || 0)
+    }));
+  }
+
   async getSessionTrades(sessionId) {
     if (!this.sqlite || !sessionId) return [];
     const normalizedSessionId = String(sessionId).trim();
@@ -1021,7 +1290,17 @@ class SessionStore {
       "INSERT OR IGNORE INTO session_candles (session_id, symbol, timeframe, bucket_start_ms, open, high, low, close, volume, source, is_gap_fill) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
     const upsertSession = this.sqlite.prepare(
-      "INSERT INTO sessions (id, market_window_start, market_window_end, started_at_ms, ended_at_ms, status, break_reason, asset_count, tick_count, candle_count, last_saved_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET ended_at_ms=excluded.ended_at_ms, status=excluded.status, break_reason=excluded.break_reason, asset_count=excluded.asset_count, tick_count=excluded.tick_count, candle_count=excluded.candle_count, last_saved_at_ms=excluded.last_saved_at_ms"
+      `INSERT INTO sessions (id, market_window_start, market_window_end, started_at_ms, ended_at_ms, status, break_reason, asset_count, tick_count, candle_count, last_saved_at_ms, active_streams_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         ended_at_ms=excluded.ended_at_ms,
+         status=excluded.status,
+         break_reason=excluded.break_reason,
+         asset_count=excluded.asset_count,
+         tick_count=excluded.tick_count,
+         candle_count=excluded.candle_count,
+         last_saved_at_ms=excluded.last_saved_at_ms,
+         active_streams_json=excluded.active_streams_json`
     );
 
     const tickRows = [];
@@ -1077,7 +1356,8 @@ class SessionStore {
       assetCount: symbols.length,
       tickCount,
       candleCount,
-      lastSavedAtMs: savedAtMs
+      lastSavedAtMs: savedAtMs,
+      activeStreamsJson: String(effectiveMeta.activeStreamsJson || "")
     };
 
     this.sqlite.exec("BEGIN");
@@ -1111,7 +1391,8 @@ class SessionStore {
         sessionPayload.assetCount,
         sessionPayload.tickCount,
         sessionPayload.candleCount,
-        sessionPayload.lastSavedAtMs
+        sessionPayload.lastSavedAtMs,
+        sessionPayload.activeStreamsJson
       );
       this.sqlite.exec("COMMIT");
       this.lastSqlSaveAtMs = sessionPayload.lastSavedAtMs;
@@ -1223,14 +1504,42 @@ class SessionStore {
         PRIMARY KEY (session_id, mode, time_ms, coin, side, px, sz, oid, tid)
       );
 
+      CREATE TABLE IF NOT EXISTS session_trade_state (
+        session_id TEXT NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'live',
+        symbol TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'FLAT',
+        side TEXT NOT NULL DEFAULT '',
+        size REAL NOT NULL DEFAULT 0,
+        entry_px REAL NOT NULL DEFAULT 0,
+        stop_loss REAL NOT NULL DEFAULT 0,
+        stop_loss_from_pending_orders REAL NOT NULL DEFAULT 0,
+        stop_order_ref_json TEXT NOT NULL DEFAULT '',
+        pending_orders_json TEXT NOT NULL DEFAULT '[]',
+        execution_meta_json TEXT NOT NULL DEFAULT '{}',
+        last_action TEXT NOT NULL DEFAULT '',
+        error TEXT NOT NULL DEFAULT '',
+        updated_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (session_id, mode, symbol)
+      );
+
       CREATE INDEX IF NOT EXISTS idx_sessions_started_at_ms ON sessions (started_at_ms);
       CREATE INDEX IF NOT EXISTS idx_session_ticks_lookup ON session_ticks (session_id, symbol, ts_ms);
       CREATE INDEX IF NOT EXISTS idx_session_candles_lookup ON session_candles (session_id, symbol, timeframe, bucket_start_ms);
       CREATE INDEX IF NOT EXISTS idx_session_notes_updated_at_ms ON session_notes (updated_at_ms);
       CREATE INDEX IF NOT EXISTS idx_session_trades_lookup ON session_trades (session_id);
+      CREATE INDEX IF NOT EXISTS idx_session_trade_state_lookup ON session_trade_state (session_id, mode, symbol);
     `);
     try {
       this.sqlite.exec("ALTER TABLE sessions ADD COLUMN last_saved_at_ms INTEGER;");
+    } catch {}
+    try {
+      this.sqlite.exec("ALTER TABLE sessions ADD COLUMN active_streams_json TEXT;");
+    } catch {}
+    try {
+      this.sqlite.exec(
+        "ALTER TABLE session_trade_state ADD COLUMN stop_loss_from_pending_orders REAL NOT NULL DEFAULT 0;"
+      );
     } catch {}
   }
 }

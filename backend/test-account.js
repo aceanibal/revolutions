@@ -291,7 +291,9 @@ async function testSettings() {
 
 async function testExecuteTrade(price) {
   const minNotional = 10;
-  const minSize = Math.ceil((minNotional / (price || 1)) * 10000) / 10000;
+  const assetInfo = await hl.resolveAsset(SYMBOL, MODE);
+  const sizeFactor = 10 ** Math.max(0, Number(assetInfo?.szDecimals ?? 0));
+  const minSize = Math.ceil((minNotional / (price || 1)) * sizeFactor) / sizeFactor;
   log(`Trade test: open tiny ${SYMBOL} LONG on testnet (${minSize} units ≈ $${(minSize * price).toFixed(2)})`);
   if (!price) {
     fail("executeTrade", new Error("No price available"));
@@ -326,6 +328,7 @@ async function testClosePosition(price) {
     return;
   }
   try {
+    hl.clearAccountCache(MODE);
     const payload = await hl.fetchClearinghouseState(MODE);
     const positions = hl.normalizePositions(payload);
     const pos = positions.find(p => p.coin === SYMBOL);
@@ -336,11 +339,15 @@ async function testClosePosition(price) {
     }
     const isLong = pos.szi > 0;
     const size = Math.abs(pos.szi);
+    let latestPrice = price;
+    try {
+      latestPrice = await hl.fetchMidPrice(SYMBOL, MODE);
+    } catch { /* fallback to provided price */ }
     const result = await hl.closePosition({
       symbol: SYMBOL,
       isLong,
       size,
-      price,
+      price: latestPrice,
       mode: MODE
     });
     console.log(`  Status  : ${result.status}`);
@@ -348,6 +355,19 @@ async function testClosePosition(price) {
     console.log(`  Avg Px  : ${result.avgPx}`);
     pass("closePosition");
   } catch (err) {
+    const message = err?.message || String(err);
+    if (message.includes("Reduce only order would increase position")) {
+      // This can happen if a trigger stop closed the remainder just before this close call.
+      hl.clearAccountCache(MODE);
+      const payload = await hl.fetchClearinghouseState(MODE);
+      const positions = hl.normalizePositions(payload);
+      const pos = positions.find(p => p.coin === SYMBOL);
+      if (!pos) {
+        console.log("  (position was already closed by stop-loss — skipping)");
+        pass("closePosition (already closed)");
+        return;
+      }
+    }
     fail("closePosition", err);
   }
 }
@@ -495,7 +515,9 @@ async function testCancelOrderById(stopResult) {
 
 async function testExecuteAzizOpen(price) {
   const minNotional = 10;
-  const minSize = Math.ceil((minNotional / (price || 1)) * 10000) / 10000;
+  const assetInfo = await hl.resolveAsset(SYMBOL, MODE);
+  const sizeFactor = 10 ** Math.max(0, Number(assetInfo?.szDecimals ?? 0));
+  const minSize = Math.ceil((minNotional / (price || 1)) * sizeFactor) / sizeFactor;
   const azizSize = minSize * 3;
   log(`Aziz setup: open ${SYMBOL} LONG (${azizSize} units ≈ $${(azizSize * price).toFixed(2)}, so 50% ≈ $${(azizSize * price * 0.5).toFixed(2)})`);
   if (!price) {
