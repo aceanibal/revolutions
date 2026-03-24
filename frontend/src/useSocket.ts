@@ -16,6 +16,7 @@ import {
   fetchCurrentSessionSnapshot,
   fetchSessionSnapshotById
 } from "./lib/api";
+import { aggregate5mCandlesTo15m, aggregate5mGapsTo15m } from "./chart/logic/aggregate15m";
 
 function floorToInterval(tsMs: number, intervalMs: number): number {
   return Math.floor(tsMs / intervalMs) * intervalMs;
@@ -119,6 +120,7 @@ export function useSocket(
     setTradeState({
       ...nextState,
       stopLossFromPendingOrders: Number(nextState.stopLossFromPendingOrders ?? 0) || 0,
+      takeProfitFromPendingOrders: Number(nextState.takeProfitFromPendingOrders ?? 0) || 0,
       executionMeta: nextState.executionMeta ? { ...nextState.executionMeta } : nextState.executionMeta,
       pendingOrders: Array.isArray(nextState.pendingOrders) ? [...nextState.pendingOrders] : nextState.pendingOrders
     });
@@ -356,11 +358,15 @@ export function useSocket(
   }, [trackedSymbolsKey, liveMode]);
 
   const selectedCandles = useMemo(() => {
+    const candles15m = aggregate5mCandlesTo15m(candles5m);
+    if (timeframe === "15m") return candles15m;
     if (timeframe === "5m") return candles5m;
     return candles1m;
   }, [timeframe, candles1m, candles5m]);
 
   const selectedGaps = useMemo(() => {
+    const gaps15m = aggregate5mGapsTo15m(gaps5m);
+    if (timeframe === "15m") return gaps15m;
     if (timeframe === "5m") return gaps5m;
     return gaps1m;
   }, [timeframe, gaps1m, gaps5m]);

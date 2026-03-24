@@ -45,11 +45,13 @@ export function StudyPanel() {
   const [timeframe, setTimeframe] = useState<Timeframe>("1m");
   const [candlesByTimeframe, setCandlesByTimeframe] = useState<Record<Timeframe, Candle[]>>({
     "1m": [],
-    "5m": []
+    "5m": [],
+    "15m": []
   });
   const [gapsByTimeframe, setGapsByTimeframe] = useState<Record<Timeframe, GapRange[]>>({
     "1m": [],
-    "5m": []
+    "5m": [],
+    "15m": []
   });
   const [loadingSnapshot, setLoadingSnapshot] = useState(false);
   const [notes, setNotes] = useState("");
@@ -115,8 +117,8 @@ export function StudyPanel() {
 
   useEffect(() => {
     if (!selectedSessionId || !selectedSymbol) {
-      setCandlesByTimeframe({ "1m": [], "5m": [] });
-      setGapsByTimeframe({ "1m": [], "5m": [] });
+      setCandlesByTimeframe({ "1m": [], "5m": [], "15m": [] });
+      setGapsByTimeframe({ "1m": [], "5m": [], "15m": [] });
       return;
     }
     let cancelled = false;
@@ -125,16 +127,18 @@ export function StudyPanel() {
       const snapshot = await fetchSessionSnapshotById(selectedSessionId, selectedSymbol);
       if (cancelled) return;
       if (!snapshot) {
-        setCandlesByTimeframe({ "1m": [], "5m": [] });
-        setGapsByTimeframe({ "1m": [], "5m": [] });
+        setCandlesByTimeframe({ "1m": [], "5m": [], "15m": [] });
+        setGapsByTimeframe({ "1m": [], "5m": [], "15m": [] });
       } else {
         setCandlesByTimeframe({
           "1m": snapshot.candlesByTimeframe["1m"] || [],
-          "5m": snapshot.candlesByTimeframe["5m"] || []
+          "5m": snapshot.candlesByTimeframe["5m"] || [],
+          "15m": snapshot.candlesByTimeframe["15m"] || []
         });
         setGapsByTimeframe({
           "1m": snapshot.gapsByTimeframe["1m"] || [],
-          "5m": snapshot.gapsByTimeframe["5m"] || []
+          "5m": snapshot.gapsByTimeframe["5m"] || [],
+          "15m": snapshot.gapsByTimeframe["15m"] || []
         });
       }
       setLoadingSnapshot(false);

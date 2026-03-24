@@ -18,6 +18,12 @@ function nowMs() {
   return Date.now();
 }
 
+function tradeManagerVerbose() {
+  return String(process.env.TRADE_MANAGER_VERBOSE || "")
+    .trim()
+    .toLowerCase() === "true";
+}
+
 function defaultExecutionMeta() {
   return {
     entryPxRequested: null,
@@ -184,23 +190,25 @@ function inferExchangeStopLossFromPendingOrders(pendingOrders, { side, entryPx =
   if (tuples.length === 0) tuples = collectTuples(false);
 
   if (tuples.length === 0) {
-    console.log("[tradeState] inferExchangeStopLossFromPendingOrders: no candidate", {
-      side,
-      entryPx,
-      orderCount: rows.length,
-      orders: rows.map((o) => ({
-        coin: o.coin,
-        oid: o.oid,
-        timestamp: o.timestamp || null,
-        triggerPx: o.triggerPx,
-        limitPx: o.limitPx,
-        triggerCondition: o.triggerCondition || null,
-        isTrigger: o.isTrigger,
-        reduceOnly: o.reduceOnly,
-        isBuy: o.isBuy,
-        priceUsed: triggerPrice(o)
-      }))
-    });
+    if (tradeManagerVerbose()) {
+      console.log("[tradeState] inferExchangeStopLossFromPendingOrders: no candidate", {
+        side,
+        entryPx,
+        orderCount: rows.length,
+        orders: rows.map((o) => ({
+          coin: o.coin,
+          oid: o.oid,
+          timestamp: o.timestamp || null,
+          triggerPx: o.triggerPx,
+          limitPx: o.limitPx,
+          triggerCondition: o.triggerCondition || null,
+          isTrigger: o.isTrigger,
+          reduceOnly: o.reduceOnly,
+          isBuy: o.isBuy,
+          priceUsed: triggerPrice(o)
+        }))
+      });
+    }
     return null;
   }
 
@@ -216,6 +224,89 @@ function inferExchangeStopLossFromPendingOrders(pendingOrders, { side, entryPx =
     }
   }
   if (pool.length === 0) pool = tuples;
+
+  pool.sort((a, b) => {
+    const tb = Number(b.timestamp) || 0;
+    const ta = Number(a.timestamp) || 0;
+    if (tb !== ta) return tb - ta;
+    const ob = Number(b.oid) || 0;
+    const oa = Number(a.oid) || 0;
+    return ob - oa;
+  });
+  return pool[0].px;
+}
+
+/**
+ * Exchange take-profit for an open position: reduce-only trigger that closes in the
+ * favorable direction (long: trigger above entry, short: trigger below entry).
+ */
+function inferExchangeTakeProfitFromPendingOrders(pendingOrders, { side, entryPx = null } = {}) {
+  if (side !== "long" && side !== "short") return null;
+  const rows = normalizePendingOrders(Array.isArray(pendingOrders) ? pendingOrders : []);
+  if (rows.length === 0) return null;
+
+  const entry = entryPx != null ? Number(entryPx) : NaN;
+  if (!Number.isFinite(entry) || entry <= 0) return null;
+
+  const entryEps = 1e-8;
+
+  const triggerPrice = (o) => {
+    const trig = Number(o.triggerPx ?? 0);
+    const lim = Number(o.limitPx ?? 0);
+    const trigOk = Number.isFinite(trig) && trig > 0;
+    const limOk = Number.isFinite(lim) && lim > 0;
+    if (trigOk) return trig;
+    if (limOk && (o.isTrigger || o.reduceOnly)) return lim;
+    return null;
+  };
+
+  const closesPosition = (o) => {
+    if (typeof o.isBuy === "boolean") {
+      if (side === "long") return o.isBuy === false;
+      return o.isBuy === true;
+    }
+    if (!o.reduceOnly) return false;
+    const px = triggerPrice(o);
+    if (px == null || px <= 0) return false;
+    if (side === "long") return px < entry + entryEps;
+    return px >= entry - entryEps;
+  };
+
+  const collectTuples = (requireReduceOnly) => {
+    const out = [];
+    for (const o of rows) {
+      if (requireReduceOnly && !o.reduceOnly) continue;
+      if (!requireReduceOnly && !o.reduceOnly) {
+        const tr = Number(o.triggerPx ?? 0);
+        if (!(o.isTrigger || (Number.isFinite(tr) && tr > 0))) continue;
+      }
+      const px = triggerPrice(o);
+      if (px == null || px <= 0) continue;
+      if (!closesPosition(o)) continue;
+      out.push({
+        px,
+        sz: Number(o.sz ?? 0) || 0,
+        oid: o.oid,
+        timestamp: Number(o.timestamp ?? 0) || 0
+      });
+    }
+    return out;
+  };
+
+  let tuples = collectTuples(true);
+  if (tuples.length === 0) tuples = collectTuples(false);
+  if (tuples.length === 0) return null;
+
+  /** Favorable side of entry only — separates TP from SL among close orders. */
+  let pool = tuples;
+  if (side === "long") {
+    const above = tuples.filter((t) => t.px > entry - entryEps);
+    if (above.length > 0) pool = above;
+  } else {
+    const below = tuples.filter((t) => t.px < entry + entryEps);
+    if (below.length > 0) pool = below;
+  }
+  if (pool.length === 0) return null;
 
   pool.sort((a, b) => {
     const tb = Number(b.timestamp) || 0;
@@ -249,6 +340,8 @@ function createBaseState(symbol, mode) {
     stopLoss: 0,
     /** Inferred from resting reduce-only / trigger orders (see inferExchangeStopLossFromPendingOrders). */
     stopLossFromPendingOrders: 0,
+    /** Inferred TP trigger from pending orders (see inferExchangeTakeProfitFromPendingOrders). */
+    takeProfitFromPendingOrders: 0,
     stopOrderRef: null,
     pendingOrders: [],
     executionMeta: defaultExecutionMeta(),
@@ -271,6 +364,7 @@ function toClientTradeState(state) {
   const out = cloneState(state);
   out.stopLoss = Number(out.stopLoss ?? 0) || 0;
   out.stopLossFromPendingOrders = Number(out.stopLossFromPendingOrders ?? 0) || 0;
+  out.takeProfitFromPendingOrders = Number(out.takeProfitFromPendingOrders ?? 0) || 0;
   return out;
 }
 
@@ -285,6 +379,7 @@ function summarizeState(state) {
     entryPx: Number(state.entryPx ?? 0) || 0,
     stopLoss: Number(state.stopLoss ?? 0) || 0,
     stopLossFromPendingOrders: Number(state.stopLossFromPendingOrders ?? 0) || 0,
+    takeProfitFromPendingOrders: Number(state.takeProfitFromPendingOrders ?? 0) || 0,
     pendingOrders: Array.isArray(state.pendingOrders) ? state.pendingOrders.length : 0,
     stopOrderRef: state.stopOrderRef || null,
     lastAction: state.lastAction || null,
@@ -331,6 +426,7 @@ class TradeStateManager {
   }
 
   log(label, payload = undefined) {
+    if (!tradeManagerVerbose()) return;
     if (payload === undefined) {
       console.log(`[tradeState.manager] ${label}`);
       return;
@@ -378,6 +474,10 @@ class TradeStateManager {
         patch.stopLossFromPendingOrders === undefined
           ? prev.stopLossFromPendingOrders
           : Number(patch.stopLossFromPendingOrders ?? 0) || 0,
+      takeProfitFromPendingOrders:
+        patch.takeProfitFromPendingOrders === undefined
+          ? prev.takeProfitFromPendingOrders
+          : Number(patch.takeProfitFromPendingOrders ?? 0) || 0,
       stopOrderRef:
         patch.stopOrderRef === undefined ? prev.stopOrderRef : normalizeStopOrderRef(patch.stopOrderRef),
       pendingOrders:
@@ -392,7 +492,10 @@ class TradeStateManager {
       updatedAt: nowMs()
     };
     this.byKey.set(key, next);
-    if (shouldLogTradePositionContext(next) || shouldLogTradePositionContext(prev)) {
+    if (
+      tradeManagerVerbose() &&
+      (shouldLogTradePositionContext(next) || shouldLogTradePositionContext(prev))
+    ) {
       this.log("upsert", {
         key,
         patchKeys: Object.keys(patch || {}),
@@ -480,6 +583,7 @@ class TradeStateManager {
         position: payload.position,
         stopLoss: payload.stopLoss ?? null,
         stopLossFromPendingOrders: payload.stopLossFromPendingOrders,
+        takeProfitFromPendingOrders: payload.takeProfitFromPendingOrders,
         stopOrderRef: payload.stopOrderRef ?? null,
         pendingOrders: payload.pendingOrders ?? null,
         lastAction: normalizedAction || "action_success",
@@ -519,6 +623,7 @@ class TradeStateManager {
     entryPx,
     stopLoss = null,
     stopLossFromPendingOrders = 0,
+    takeProfitFromPendingOrders = 0,
     stopOrderRef = null,
     pendingOrders = null,
     lastAction = "open",
@@ -531,6 +636,7 @@ class TradeStateManager {
       entryPx: Number(entryPx ?? 0) || 0,
       stopLoss: Number(stopLoss ?? 0) || 0,
       stopLossFromPendingOrders: Number(stopLossFromPendingOrders ?? 0) || 0,
+      takeProfitFromPendingOrders: Number(takeProfitFromPendingOrders ?? 0) || 0,
       stopOrderRef,
       pendingOrders: pendingOrders ?? undefined,
       lastAction,
@@ -558,6 +664,7 @@ class TradeStateManager {
       size: 0,
       entryPx: 0,
       stopLossFromPendingOrders: 0,
+      takeProfitFromPendingOrders: 0,
       stopOrderRef: null,
       pendingOrders: [],
       lastAction,
@@ -608,7 +715,8 @@ class TradeStateManager {
     pendingOrders,
     stopOrderRef = undefined,
     stopLoss = undefined,
-    stopLossFromPendingOrders = undefined
+    stopLossFromPendingOrders = undefined,
+    takeProfitFromPendingOrders = undefined
   }) {
     return this.upsert(symbol, mode, {
       pendingOrders: pendingOrders ?? [],
@@ -616,6 +724,9 @@ class TradeStateManager {
       stopLoss,
       ...(stopLossFromPendingOrders !== undefined
         ? { stopLossFromPendingOrders: Number(stopLossFromPendingOrders ?? 0) || 0 }
+        : {}),
+      ...(takeProfitFromPendingOrders !== undefined
+        ? { takeProfitFromPendingOrders: Number(takeProfitFromPendingOrders ?? 0) || 0 }
         : {})
     });
   }
@@ -626,6 +737,7 @@ class TradeStateManager {
     position = null,
     stopLoss = null,
     stopLossFromPendingOrders: stopLossFromPendingOrdersOpt = undefined,
+    takeProfitFromPendingOrders: takeProfitFromPendingOrdersOpt = undefined,
     stopOrderRef = null,
     pendingOrders = null,
     lastAction = "reconcile",
@@ -639,7 +751,7 @@ class TradeStateManager {
       (Number.isFinite(posSize) && posSize > 0) ||
       (Array.isArray(pendingOrders) && pendingOrders.length > 0) ||
       shouldLogTradePositionContext(prev);
-    if (logReconcileIn) {
+    if (tradeManagerVerbose() && logReconcileIn) {
       this.log("reconcileFromPositionSnapshot:in", {
         mode: normalizeMode(mode),
         symbol: normalizedSymbol,
@@ -669,6 +781,7 @@ class TradeStateManager {
         entryPx: 0,
         stopLoss: Number(stopLoss ?? 0) || 0,
         stopLossFromPendingOrders: 0,
+        takeProfitFromPendingOrders: 0,
         stopOrderRef,
         pendingOrders: pendingOrders ?? [],
         lastAction,
@@ -692,6 +805,21 @@ class TradeStateManager {
       Number(stopLossFromPendingOrders) > 0
         ? Number(stopLossFromPendingOrders)
         : 0;
+
+    let takeProfitFromPendingOrders = takeProfitFromPendingOrdersOpt;
+    if (takeProfitFromPendingOrders === undefined) {
+      takeProfitFromPendingOrders = inferExchangeTakeProfitFromPendingOrders(pendingOrders ?? [], {
+        side,
+        entryPx: Number.isFinite(entryPx) && entryPx > 0 ? entryPx : null
+      });
+    }
+    const takeProfitFromOrdersNum =
+      takeProfitFromPendingOrders != null &&
+      Number.isFinite(Number(takeProfitFromPendingOrders)) &&
+      Number(takeProfitFromPendingOrders) > 0
+        ? Number(takeProfitFromPendingOrders)
+        : 0;
+
     return this.setOpen({
       symbol: normalizedSymbol,
       mode,
@@ -700,6 +828,7 @@ class TradeStateManager {
       entryPx,
       stopLoss,
       stopLossFromPendingOrders: stopLossFromOrdersNum,
+      takeProfitFromPendingOrders: takeProfitFromOrdersNum,
       stopOrderRef,
       pendingOrders,
       lastAction,
@@ -713,6 +842,7 @@ class TradeStateManager {
     position = null,
     stopLoss = null,
     stopLossFromPendingOrders = undefined,
+    takeProfitFromPendingOrders = undefined,
     stopOrderRef = null,
     pendingOrders = null,
     lastAction = "reconcile",
@@ -724,6 +854,7 @@ class TradeStateManager {
       position,
       stopLoss,
       stopLossFromPendingOrders,
+      takeProfitFromPendingOrders,
       stopOrderRef,
       pendingOrders,
       lastAction,
@@ -742,6 +873,7 @@ module.exports = {
   normalizeMode,
   normalizeSymbol,
   inferExchangeStopLossFromPendingOrders,
+  inferExchangeTakeProfitFromPendingOrders,
   hyperliquidOpenOrderStopTriggerPx,
   toClientTradeState
 };

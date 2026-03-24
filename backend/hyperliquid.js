@@ -476,6 +476,7 @@ const SETTINGS_PATH = path.join(__dirname, "account-settings.json");
 
 const DEFAULT_SETTINGS = {
   riskPercent: 2,
+  takeProfitPercent: 2,
   slippageBps: 10,
   stopLossStep: 0.5
 };
@@ -509,6 +510,10 @@ function patchSettings(partial) {
   if (partial.riskPercent !== undefined) {
     const v = Number(partial.riskPercent);
     if (Number.isFinite(v) && v > 0 && v <= 100) next.riskPercent = v;
+  }
+  if (partial.takeProfitPercent !== undefined) {
+    const v = Number(partial.takeProfitPercent);
+    if (Number.isFinite(v) && v > 0 && v <= 100) next.takeProfitPercent = v;
   }
   if (partial.slippageBps !== undefined) {
     const v = Number(partial.slippageBps);
@@ -636,6 +641,52 @@ function parseFirstOrderStatus(orderResponse) {
     };
   }
   return { kind: "unknown", raw: first, oid: null, avgPx: null, totalSz: null };
+}
+
+function parseOrderStatusAt(orderResponse, index) {
+  const statuses = orderResponse?.response?.data?.statuses;
+  if (!Array.isArray(statuses) || statuses.length === 0) {
+    throw new Error("Exchange returned empty order status");
+  }
+  const entry = statuses[index];
+  if (entry === undefined) {
+    throw new Error(`Exchange returned no order status at index ${index}`);
+  }
+  if (typeof entry === "string") {
+    return { kind: entry, raw: entry, oid: null, avgPx: null, totalSz: null };
+  }
+  if (entry?.error) {
+    throw new Error(entry.error);
+  }
+  if (entry?.filled) {
+    return {
+      kind: "filled",
+      raw: entry,
+      oid: Number(entry.filled.oid ?? 0) || null,
+      avgPx: Number(entry.filled.avgPx ?? 0) || null,
+      totalSz: Number(entry.filled.totalSz ?? 0) || null
+    };
+  }
+  if (entry?.resting) {
+    return {
+      kind: "resting",
+      raw: entry,
+      oid: Number(entry.resting.oid ?? 0) || null,
+      avgPx: null,
+      totalSz: null
+    };
+  }
+  if (entry?.waitingForTrigger) {
+    const waiting = entry.waitingForTrigger || {};
+    return {
+      kind: "waitingForTrigger",
+      raw: entry,
+      oid: Number(waiting.oid ?? waiting.order?.oid ?? 0) || null,
+      avgPx: null,
+      totalSz: Number(waiting.totalSz ?? waiting.order?.sz ?? 0) || null
+    };
+  }
+  return { kind: "unknown", raw: entry, oid: null, avgPx: null, totalSz: null };
 }
 
 async function resolveAsset(symbol, mode = "live") {
@@ -791,6 +842,156 @@ async function placeStopLoss({
   };
 }
 
+async function placeTakeProfit({
+  symbol,
+  isLong,
+  size,
+  triggerPrice,
+  mode = "live"
+}) {
+  const { exchange } = getOrCreateClients(mode);
+  const { asset, szDecimals } = await resolveAsset(symbol, mode);
+
+  const safeSize = roundDown(Number(size || 0), szDecimals);
+  if (!Number.isFinite(safeSize) || safeSize <= 0) throw new Error("Take-profit size must be positive");
+  const triggerPx = Number(triggerPrice || 0);
+  if (!Number.isFinite(triggerPx) || triggerPx <= 0) throw new Error("Take-profit trigger price must be positive");
+  const tpNotional = safeSize * triggerPx;
+  if (!Number.isFinite(tpNotional) || tpNotional < MIN_ORDER_NOTIONAL) {
+    throw new Error(
+      `Take-profit notional ($${tpNotional.toFixed(2)}) is below minimum $${MIN_ORDER_NOTIONAL.toFixed(2)}`
+    );
+  }
+
+  const isBuyToClose = !Boolean(isLong);
+  const slippageFrac = 0.03;
+  const limitPx = isBuyToClose
+    ? triggerPx * (1 + slippageFrac)
+    : triggerPx * (1 - slippageFrac);
+
+  const orderResponse = await exchange.order({
+    orders: [
+      {
+        a: asset,
+        b: isBuyToClose,
+        p: formatPrice(limitPx, szDecimals, "perp"),
+        s: formatSize(safeSize, szDecimals),
+        r: true,
+        t: {
+          trigger: {
+            isMarket: true,
+            triggerPx: formatPrice(triggerPx, szDecimals, "perp"),
+            tpsl: "tp"
+          }
+        }
+      }
+    ],
+    grouping: "positionTpsl"
+  });
+
+  const status = parseFirstOrderStatus(orderResponse);
+  return {
+    symbol: String(symbol || "").toUpperCase(),
+    asset,
+    oid: status.oid,
+    status: status.kind,
+    raw: orderResponse
+  };
+}
+
+async function placeBracketOrders({
+  symbol,
+  isLong,
+  size,
+  stopLossTriggerPrice,
+  takeProfitTriggerPrice,
+  mode = "live"
+}) {
+  const { exchange } = getOrCreateClients(mode);
+  const { asset, szDecimals } = await resolveAsset(symbol, mode);
+
+  const safeSize = roundDown(Number(size || 0), szDecimals);
+  if (!Number.isFinite(safeSize) || safeSize <= 0) throw new Error("Bracket size must be positive");
+
+  const stopTriggerPx = Number(stopLossTriggerPrice || 0);
+  if (!Number.isFinite(stopTriggerPx) || stopTriggerPx <= 0) throw new Error("Stop-loss trigger price must be positive");
+  const stopNotional = safeSize * stopTriggerPx;
+  if (!Number.isFinite(stopNotional) || stopNotional < MIN_ORDER_NOTIONAL) {
+    throw new Error(
+      `Stop-loss notional ($${stopNotional.toFixed(2)}) is below minimum $${MIN_ORDER_NOTIONAL.toFixed(2)}`
+    );
+  }
+
+  const tpTriggerPx = Number(takeProfitTriggerPrice || 0);
+  if (!Number.isFinite(tpTriggerPx) || tpTriggerPx <= 0) throw new Error("Take-profit trigger price must be positive");
+  const tpNotional = safeSize * tpTriggerPx;
+  if (!Number.isFinite(tpNotional) || tpNotional < MIN_ORDER_NOTIONAL) {
+    throw new Error(
+      `Take-profit notional ($${tpNotional.toFixed(2)}) is below minimum $${MIN_ORDER_NOTIONAL.toFixed(2)}`
+    );
+  }
+
+  const isBuyToClose = !Boolean(isLong);
+  const slippageFrac = 0.03;
+  const stopLimitPx = isBuyToClose
+    ? stopTriggerPx * (1 + slippageFrac)
+    : stopTriggerPx * (1 - slippageFrac);
+  const tpLimitPx = isBuyToClose
+    ? tpTriggerPx * (1 + slippageFrac)
+    : tpTriggerPx * (1 - slippageFrac);
+
+  const orderResponse = await exchange.order({
+    orders: [
+      {
+        a: asset,
+        b: isBuyToClose,
+        p: formatPrice(stopLimitPx, szDecimals, "perp"),
+        s: formatSize(safeSize, szDecimals),
+        r: true,
+        t: {
+          trigger: {
+            isMarket: true,
+            triggerPx: formatPrice(stopTriggerPx, szDecimals, "perp"),
+            tpsl: "sl"
+          }
+        }
+      },
+      {
+        a: asset,
+        b: isBuyToClose,
+        p: formatPrice(tpLimitPx, szDecimals, "perp"),
+        s: formatSize(safeSize, szDecimals),
+        r: true,
+        t: {
+          trigger: {
+            isMarket: true,
+            triggerPx: formatPrice(tpTriggerPx, szDecimals, "perp"),
+            tpsl: "tp"
+          }
+        }
+      }
+    ],
+    grouping: "positionTpsl"
+  });
+
+  const stopStatus = parseOrderStatusAt(orderResponse, 0);
+  const takeProfitStatus = parseOrderStatusAt(orderResponse, 1);
+
+  return {
+    symbol: String(symbol || "").toUpperCase(),
+    asset,
+    stopLoss: {
+      oid: stopStatus.oid,
+      status: stopStatus.kind
+    },
+    takeProfit: {
+      oid: takeProfitStatus.oid,
+      status: takeProfitStatus.kind
+    },
+    raw: orderResponse
+  };
+}
+
 async function closePosition({
   symbol,
   isLong,
@@ -804,12 +1005,6 @@ async function closePosition({
 
   const closeSize = roundDown(Number(size || 0), szDecimals);
   if (!Number.isFinite(closeSize) || closeSize <= 0) throw new Error("Close size must be positive");
-  const closeNotional = closeSize * price;
-  if (!Number.isFinite(closeNotional) || closeNotional < MIN_ORDER_NOTIONAL) {
-    throw new Error(
-      `Close notional ($${closeNotional.toFixed(2)}) is below minimum $${MIN_ORDER_NOTIONAL.toFixed(2)}`
-    );
-  }
 
   const isBuyToClose = !Boolean(isLong);
 
@@ -922,12 +1117,6 @@ async function executeAzizExit({
   if (!Number.isFinite(entryPx) || entryPx <= 0) throw new Error("Entry price is invalid");
 
   const halfSize = posSize / 2;
-  const halfNotional = halfSize * price;
-  if (!Number.isFinite(halfNotional) || halfNotional < MIN_ORDER_NOTIONAL) {
-    throw new Error(
-      `Aziz exit: 50% close ($${halfNotional.toFixed(2)}) is below minimum $${MIN_ORDER_NOTIONAL.toFixed(2)}. Position is too small to split.`
-    );
-  }
 
   const closeResult = await closePosition({
     symbol: upper,
@@ -1054,6 +1243,8 @@ module.exports = {
   resolveAssetIndex,
   executeTrade,
   placeStopLoss,
+  placeTakeProfit,
+  placeBracketOrders,
   updateStopLoss,
   executeAzizExit,
   closePosition,

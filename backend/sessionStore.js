@@ -965,6 +965,7 @@ class SessionStore {
           entryPx: Number(snapshot?.entryPx ?? 0) || 0,
           stopLoss: Number(snapshot?.stopLoss ?? 0) || 0,
           stopLossFromPendingOrders: Number(snapshot?.stopLossFromPendingOrders ?? 0) || 0,
+          takeProfitFromPendingOrders: Number(snapshot?.takeProfitFromPendingOrders ?? 0) || 0,
           stopOrderRefJson: JSON.stringify(snapshot?.stopOrderRef || null),
           pendingOrdersJson: JSON.stringify(Array.isArray(snapshot?.pendingOrders) ? snapshot.pendingOrders : []),
           executionMetaJson: JSON.stringify(snapshot?.executionMeta || {}),
@@ -1001,6 +1002,7 @@ class SessionStore {
           entry_px,
           stop_loss,
           stop_loss_from_pending_orders,
+          take_profit_from_pending_orders,
           stop_order_ref_json,
           pending_orders_json,
           execution_meta_json,
@@ -1008,7 +1010,7 @@ class SessionStore {
           error,
           updated_at_ms
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id, mode, symbol) DO UPDATE SET
           status = excluded.status,
           side = excluded.side,
@@ -1016,6 +1018,7 @@ class SessionStore {
           entry_px = excluded.entry_px,
           stop_loss = excluded.stop_loss,
           stop_loss_from_pending_orders = excluded.stop_loss_from_pending_orders,
+          take_profit_from_pending_orders = excluded.take_profit_from_pending_orders,
           stop_order_ref_json = excluded.stop_order_ref_json,
           pending_orders_json = excluded.pending_orders_json,
           execution_meta_json = excluded.execution_meta_json,
@@ -1039,6 +1042,7 @@ class SessionStore {
           row.entryPx,
           row.stopLoss,
           row.stopLossFromPendingOrders,
+          row.takeProfitFromPendingOrders,
           row.stopOrderRefJson,
           row.pendingOrdersJson,
           row.executionMetaJson,
@@ -1124,6 +1128,7 @@ class SessionStore {
       entryPx: Number(row.entry_px || 0),
       stopLoss: Number(row.stop_loss || 0),
       stopLossFromPendingOrders: Number(row.stop_loss_from_pending_orders ?? 0) || 0,
+      takeProfitFromPendingOrders: Number(row.take_profit_from_pending_orders ?? 0) || 0,
       stopOrderRef: parseSafeJson(row.stop_order_ref_json || "null", null),
       pendingOrders: parseSafeJson(row.pending_orders_json || "[]", []),
       executionMeta: parseSafeJson(row.execution_meta_json || "{}", {}),
@@ -1514,6 +1519,7 @@ class SessionStore {
         entry_px REAL NOT NULL DEFAULT 0,
         stop_loss REAL NOT NULL DEFAULT 0,
         stop_loss_from_pending_orders REAL NOT NULL DEFAULT 0,
+        take_profit_from_pending_orders REAL NOT NULL DEFAULT 0,
         stop_order_ref_json TEXT NOT NULL DEFAULT '',
         pending_orders_json TEXT NOT NULL DEFAULT '[]',
         execution_meta_json TEXT NOT NULL DEFAULT '{}',
@@ -1539,6 +1545,11 @@ class SessionStore {
     try {
       this.sqlite.exec(
         "ALTER TABLE session_trade_state ADD COLUMN stop_loss_from_pending_orders REAL NOT NULL DEFAULT 0;"
+      );
+    } catch {}
+    try {
+      this.sqlite.exec(
+        "ALTER TABLE session_trade_state ADD COLUMN take_profit_from_pending_orders REAL NOT NULL DEFAULT 0;"
       );
     } catch {}
   }

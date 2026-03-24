@@ -29,6 +29,8 @@ function intervalToMs(interval: Timeframe): number {
       return 60_000;
     case "5m":
       return 5 * 60_000;
+    case "15m":
+      return 15 * 60_000;
     default:
       return 60_000;
   }
@@ -301,11 +303,13 @@ export async function fetchCurrentSessionSnapshot(symbol: string): Promise<Sessi
       symbol: String(payload.symbol || symbol).toUpperCase(),
       candlesByTimeframe: {
         "1m": one as Candle[],
-        "5m": five as Candle[]
+        "5m": five as Candle[],
+        "15m": []
       },
       gapsByTimeframe: {
         "1m": Array.isArray(payload?.gapsByTimeframe?.["1m"]) ? payload.gapsByTimeframe["1m"] : [],
-        "5m": Array.isArray(payload?.gapsByTimeframe?.["5m"]) ? payload.gapsByTimeframe["5m"] : []
+        "5m": Array.isArray(payload?.gapsByTimeframe?.["5m"]) ? payload.gapsByTimeframe["5m"] : [],
+        "15m": []
       }
     };
   } catch {
@@ -352,11 +356,13 @@ export async function fetchSessionSnapshotById(
           : [],
         "5m": Array.isArray(payload?.candlesByTimeframe?.["5m"])
           ? payload.candlesByTimeframe["5m"]
-          : []
+          : [],
+        "15m": []
       },
       gapsByTimeframe: {
         "1m": Array.isArray(payload?.gapsByTimeframe?.["1m"]) ? payload.gapsByTimeframe["1m"] : [],
-        "5m": Array.isArray(payload?.gapsByTimeframe?.["5m"]) ? payload.gapsByTimeframe["5m"] : []
+        "5m": Array.isArray(payload?.gapsByTimeframe?.["5m"]) ? payload.gapsByTimeframe["5m"] : [],
+        "15m": []
       }
     };
   } catch {

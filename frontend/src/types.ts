@@ -1,4 +1,4 @@
-export type Timeframe = "1m" | "5m";
+export type Timeframe = "1m" | "5m" | "15m";
 
 export interface HudState {
   symbol: string;
@@ -169,6 +169,7 @@ export interface StopLossProjections {
 
 export interface AccountSettings {
   riskPercent: number;
+  takeProfitPercent: number;
   slippageBps: number;
   stopLossStep: number;
 }
@@ -232,6 +233,8 @@ export interface TradeStateSnapshot {
   stopLoss: number;
   /** Inferred from resting exchange orders (reduce-only / trigger); preferred over HUD `stopLoss` when set. */
   stopLossFromPendingOrders: number;
+  /** Inferred TP trigger from resting reduce-only trigger orders (e.g. Take Profit Market). */
+  takeProfitFromPendingOrders: number;
   stopOrderRef: TradeOrderRef | null;
   pendingOrders: TradePendingOrder[];
   executionMeta: TradeExecutionMeta;

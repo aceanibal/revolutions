@@ -277,6 +277,18 @@ function SettingsForm() {
           />
         </label>
         <label className="space-y-0.5">
+          <span className="block text-[10px] font-medium text-slate-500">Take Profit %</span>
+          <input
+            type="number"
+            min={0.1}
+            max={100}
+            step={0.1}
+            value={draft.takeProfitPercent ?? settings.takeProfitPercent}
+            onChange={(e) => setDraft((d) => ({ ...d, takeProfitPercent: Number(e.target.value) }))}
+            className="w-20 rounded-md border border-slate-200 px-2 py-1 text-xs tabular-nums outline-none focus:border-indigo-300 focus:ring-1 focus:ring-indigo-300"
+          />
+        </label>
+        <label className="space-y-0.5">
           <span className="block text-[10px] font-medium text-slate-500">
             SL Step k (multiplies ATR)
           </span>

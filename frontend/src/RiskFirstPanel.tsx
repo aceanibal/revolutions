@@ -10,31 +10,45 @@ function fmtUsd(v: number | undefined | null): string {
 interface RiskFirstPanelProps {
   accountBalance: number;
   riskPercentage: number;
+  takeProfitPercentage: number;
+  takeProfitPrice: number | null;
   entryPrice: number;
   controllerStopLossPrice: number;
   exchangeStopLossPrice: number | null;
+  exchangeTakeProfitPrice: number | null;
   hasStopMismatch: boolean;
   isLong: boolean;
   takerFeeRate: number;
   metrics: RiskFirstMetrics;
   warningText: string | null;
   tradeState: TradeStateSnapshot | null;
+  saveState: "idle" | "saving" | "saved" | "error";
+  saveMessage: string | null;
   onRiskPercentageChange: (value: number) => void;
+  onTakeProfitPercentageChange: (value: number) => void;
+  onSaveSettings: () => void;
 }
 
 export function RiskFirstPanel({
   accountBalance,
   riskPercentage,
+  takeProfitPercentage,
+  takeProfitPrice,
   entryPrice,
   controllerStopLossPrice,
   exchangeStopLossPrice,
+  exchangeTakeProfitPrice,
   hasStopMismatch,
   isLong,
   takerFeeRate,
   metrics,
   warningText,
   tradeState,
-  onRiskPercentageChange
+  saveState,
+  saveMessage,
+  onRiskPercentageChange,
+  onTakeProfitPercentageChange,
+  onSaveSettings
 }: RiskFirstPanelProps) {
   const noBalanceWarning =
     !Number.isFinite(accountBalance) || accountBalance <= 0
@@ -60,6 +74,12 @@ export function RiskFirstPanel({
   const exchangeStop =
     status !== "FLAT" && Number.isFinite(Number(exchangeStopLossPrice ?? 0)) && Number(exchangeStopLossPrice ?? 0) > 0
       ? Number(exchangeStopLossPrice)
+      : null;
+  const exchangeTp =
+    status !== "FLAT" &&
+    Number.isFinite(Number(exchangeTakeProfitPrice ?? 0)) &&
+    Number(exchangeTakeProfitPrice ?? 0) > 0
+      ? Number(exchangeTakeProfitPrice)
       : null;
   const statusTone =
     status === "OPEN"
@@ -97,7 +117,7 @@ export function RiskFirstPanel({
           Live
         </span>
       </div>
-      <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
         <div className="space-y-1">
           <span className="block text-slate-500">Account Balance</span>
           <p className="w-full rounded-md border border-slate-200 bg-slate-100 px-2 py-1 tabular-nums text-slate-900">
@@ -121,6 +141,27 @@ export function RiskFirstPanel({
               const raw = Number(e.target.value);
               const clamped = Number.isFinite(raw) ? Math.min(100, Math.max(0.1, raw)) : 2;
               onRiskPercentageChange(clamped);
+            }}
+            className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 tabular-nums outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300"
+          />
+        </label>
+        <label className="space-y-1">
+          <span className="block text-slate-500">Take Profit %</span>
+          <input
+            type="number"
+            min={0.1}
+            max={100}
+            step={0.1}
+            value={takeProfitPercentage}
+            onChange={(e) => {
+              const next = Number(e.target.value);
+              if (!Number.isFinite(next)) return;
+              onTakeProfitPercentageChange(next);
+            }}
+            onBlur={(e) => {
+              const raw = Number(e.target.value);
+              const clamped = Number.isFinite(raw) ? Math.min(100, Math.max(0.1, raw)) : 2;
+              onTakeProfitPercentageChange(clamped);
             }}
             className="w-full rounded-md border border-slate-300 bg-white px-2 py-1 tabular-nums outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-300"
           />
@@ -149,6 +190,19 @@ export function RiskFirstPanel({
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={onSaveSettings}
+          disabled={saveState === "saving"}
+          className="rounded-md bg-slate-900 px-3 py-1 text-xs font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {saveState === "saving" ? "Saving..." : "Save"}
+        </button>
+        {saveMessage ? (
+          <span className={`text-xs ${saveState === "error" ? "text-rose-700" : "text-slate-600"}`}>{saveMessage}</span>
+        ) : null}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
         <span
           className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
             isLong ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
@@ -164,7 +218,7 @@ export function RiskFirstPanel({
       <div className="rounded-lg border border-slate-200 bg-white p-2 text-xs">
         <p className="font-semibold text-slate-700">Active Trade</p>
       </div>
-      <div className="grid gap-2 rounded-lg border border-slate-200 bg-white p-2 text-xs sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-2 rounded-lg border border-slate-200 bg-white p-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
         <div>
           <p className="text-slate-500">Tracked Entry</p>
           <p className="font-semibold tabular-nums text-slate-900">
@@ -181,6 +235,15 @@ export function RiskFirstPanel({
           <p className="text-slate-500">Stop (from orders)</p>
           <p className="font-semibold tabular-nums text-slate-900" title="tradeState.stopLossFromPendingOrders — navy dashed chart line">
             {exchangeStop != null ? exchangeStop.toFixed(4) : "—"}
+          </p>
+        </div>
+        <div>
+          <p className="text-slate-500">Take profit (from orders)</p>
+          <p
+            className="font-semibold tabular-nums text-emerald-800"
+            title="tradeState.takeProfitFromPendingOrders — emerald dashed chart line"
+          >
+            {exchangeTp != null ? exchangeTp.toFixed(4) : "—"}
           </p>
         </div>
       </div>
@@ -262,6 +325,10 @@ export function RiskFirstPanel({
           <div className="mt-1 flex items-center justify-between">
             <span className="text-slate-500">Notional</span>
             <span>{fmtUsd(metrics.notionalValue)}</span>
+          </div>
+          <div className="mt-1 flex items-center justify-between">
+            <span className="text-slate-500">Take-Profit Target</span>
+            <span>{takeProfitPrice && takeProfitPrice > 0 ? takeProfitPrice.toFixed(4) : "—"}</span>
           </div>
         </div>
       </div>

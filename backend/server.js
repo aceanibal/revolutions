@@ -25,6 +25,7 @@ const {
   patchSettings,
   executeTrade,
   placeStopLoss,
+  placeBracketOrders,
   updateStopLoss,
   executeAzizExit,
   closePosition,
@@ -38,6 +39,7 @@ const { detectGapRanges, intervalForTimeframe, upsertCandle } = require("./sessi
 const {
   createTradeStateStore,
   inferExchangeStopLossFromPendingOrders,
+  inferExchangeTakeProfitFromPendingOrders,
   hyperliquidOpenOrderStopTriggerPx,
   normalizeMode: normalizeTradeMode
 } = require("./tradeState");
@@ -54,6 +56,10 @@ const MIN_ORDER_NOTIONAL = 10;
 const EXECUTION_ENTRY_SLIPPAGE_BPS = 200;
 const EXECUTION_STOP_SLIPPAGE_BPS = 300;
 const EXECUTION_TOTAL_SLIPPAGE_BPS = EXECUTION_ENTRY_SLIPPAGE_BPS + EXECUTION_STOP_SLIPPAGE_BPS;
+const TRADE_MANAGER_VERBOSE =
+  String(process.env.TRADE_MANAGER_VERBOSE || "")
+    .trim()
+    .toLowerCase() === "true";
 
 const app = express();
 const server = http.createServer(app);
@@ -308,6 +314,15 @@ function logTradeStateDebug(_label, _payload) {
   /* Optional reconcile tracing (currently disabled). */
 }
 
+function logTradeManager(message, payload = undefined) {
+  if (!TRADE_MANAGER_VERBOSE) return;
+  if (payload === undefined) {
+    console.log(`[trade-manager] ${message}`);
+    return;
+  }
+  console.log(`[trade-manager] ${message}`, payload);
+}
+
 function emitTradeStateSnapshot(target, symbol = primarySymbol, mode = accountMode) {
   const normalized = normalizeSymbol(symbol);
   if (!normalized || !target || typeof target.emit !== "function") return;
@@ -340,14 +355,14 @@ async function refreshPendingOrdersForSymbol(symbol, mode = accountMode) {
   if (!normalized) return [];
   try {
     const orders = await fetchOpenOrders(mode);
-    const safeJson = (v) => {
-      try {
-        return JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x), 2);
-      } catch {
-        return String(v);
-      }
-    };
-    if (!Array.isArray(orders)) {
+    if (TRADE_MANAGER_VERBOSE && !Array.isArray(orders)) {
+      const safeJson = (v) => {
+        try {
+          return JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x), 2);
+        } catch {
+          return String(v);
+        }
+      };
       console.log(
         "[server] frontendOpenOrders unexpected response shape",
         `mode=${mode} symbol=${normalized}`,
@@ -356,21 +371,6 @@ async function refreshPendingOrdersForSymbol(symbol, mode = accountMode) {
         "payload=",
         safeJson(orders)
       );
-    } else if (orders.length > 0) {
-      const pendingOrdersPreview = orders.filter(
-        (order) => String(order?.coin || "").toUpperCase() === normalized
-      );
-      const coins = [
-        ...new Set(orders.map((o) => String(o?.coin || "").toUpperCase()).filter(Boolean))
-      ].join(",");
-      console.log(
-        `[server] frontendOpenOrders summary mode=${mode} reconcileSymbol=${normalized} totalRows=${orders.length} matchedForSymbol=${pendingOrdersPreview.length} coins=${coins}`
-      );
-      orders.forEach((order, i) => {
-        const keys = order && typeof order === "object" ? Object.keys(order).sort().join(",") : "";
-        console.log(`[server] frontendOpenOrders row[${i}] keys: ${keys || "(non-object)"}`);
-      });
-      console.log("[server] frontendOpenOrders FULL_PAYLOAD (every field from API):", safeJson(orders));
     }
     const pendingOrders = (Array.isArray(orders) ? orders : []).filter(
       (order) => String(order?.coin || "").toUpperCase() === normalized
@@ -378,7 +378,9 @@ async function refreshPendingOrdersForSymbol(symbol, mode = accountMode) {
     tradeState.setPendingOrders({ symbol: normalized, mode, pendingOrders });
     return tradeState.get(normalized, mode).pendingOrders;
   } catch (error) {
-    console.log("[server] refreshPendingOrdersForSymbol error:", error?.message || error);
+    if (TRADE_MANAGER_VERBOSE) {
+      console.log("[server] refreshPendingOrdersForSymbol error:", error?.message || error);
+    }
     return [];
   }
 }
@@ -420,11 +422,13 @@ async function reconcileTradeStateForSymbol(symbol, mode = accountMode, options 
     position &&
     Math.abs(Number(position?.szi ?? 0)) > 0
   ) {
-    console.log("[tradeState] reconcile: treat clearinghouse position as stale after full close", {
-      mode,
-      symbol: normalized,
-      szi: Number(position?.szi ?? 0)
-    });
+    if (TRADE_MANAGER_VERBOSE) {
+      console.log("[tradeState] reconcile: treat clearinghouse position as stale after full close", {
+        mode,
+        symbol: normalized,
+        szi: Number(position?.szi ?? 0)
+      });
+    }
     activePositionBySymbol.set(normalized, null);
     position = null;
   }
@@ -445,8 +449,19 @@ async function reconcileTradeStateForSymbol(symbol, mode = accountMode, options 
         })
       : null;
 
+  const orderTpPx =
+    posSide && Array.isArray(pendingOrders) && pendingOrders.length > 0
+      ? inferExchangeTakeProfitFromPendingOrders(pendingOrders, {
+          side: posSide,
+          entryPx: Number.isFinite(entryPxForInfer) && entryPxForInfer > 0 ? entryPxForInfer : null
+        })
+      : null;
+
   const stopLossFromPendingOrders =
     orderStopPx != null && Number.isFinite(orderStopPx) && orderStopPx > 0 ? orderStopPx : 0;
+
+  const takeProfitFromPendingOrders =
+    orderTpPx != null && Number.isFinite(orderTpPx) && orderTpPx > 0 ? orderTpPx : 0;
 
   const stopLossForReconcile =
     stopLossFromPendingOrders > 0 ? stopLossFromPendingOrders : controllerStopLoss;
@@ -484,6 +499,7 @@ async function reconcileTradeStateForSymbol(symbol, mode = accountMode, options 
     position,
     stopLoss: stopLossForReconcile,
     stopLossFromPendingOrders,
+    takeProfitFromPendingOrders,
     stopOrderRef,
     pendingOrders,
     lastAction: options.lastAction || "reconcile",
@@ -495,12 +511,14 @@ async function reconcileTradeStateForSymbol(symbol, mode = accountMode, options 
       preTradeState?.status === "PENDING_CLOSE") &&
     next?.status === "FLAT"
   ) {
-    console.log("[tradeState] exchange shows no position — trade state set to FLAT", {
-      mode,
-      symbol: normalized,
-      lastAction: next?.lastAction || null,
-      hadSize: Number(preTradeState?.size ?? 0) || null
-    });
+    if (TRADE_MANAGER_VERBOSE) {
+      console.log("[tradeState] exchange shows no position — trade state set to FLAT", {
+        mode,
+        symbol: normalized,
+        lastAction: next?.lastAction || null,
+        hadSize: Number(preTradeState?.size ?? 0) || null
+      });
+    }
   }
   logTradeStateDebug("reconcile:output", {
     mode: next.mode,
@@ -511,6 +529,7 @@ async function reconcileTradeStateForSymbol(symbol, mode = accountMode, options 
     entryPx: next.entryPx,
     stopLoss: next.stopLoss,
     stopLossFromPendingOrders: next.stopLossFromPendingOrders,
+    takeProfitFromPendingOrders: next.takeProfitFromPendingOrders,
     pendingOrdersCount: Array.isArray(next.pendingOrders) ? next.pendingOrders.length : 0,
     stopOrderRef: next.stopOrderRef || null
   });
@@ -1480,13 +1499,54 @@ async function executeCrossTrade() {
       mode: accountMode
     });
 
-    const stopResult = await placeStopLoss({
+    const entryPriceForTp = Number(tradeResult?.avgPx ?? lastPrice);
+    const riskDistance = Math.abs(entryPriceForTp - stopLossPrice);
+    const riskPercent = Number(settings?.riskPercent ?? 2);
+    const takeProfitPercent = Number(settings?.takeProfitPercent ?? 2);
+    const rrMultiple =
+      Number.isFinite(riskPercent) && riskPercent > 0
+        ? takeProfitPercent / riskPercent
+        : 0;
+    const takeProfitPrice =
+      Number.isFinite(riskDistance) && riskDistance > 0 && Number.isFinite(rrMultiple) && rrMultiple > 0
+        ? isLong
+          ? entryPriceForTp + riskDistance * rrMultiple
+          : entryPriceForTp - riskDistance * rrMultiple
+        : 0;
+    logTradeManager("cross: computed bracket", {
+      mode: accountMode,
+      symbol,
+      side: isLong ? "long" : "short",
+      entryPrice: entryPriceForTp,
+      stopLossPrice,
+      takeProfitPrice,
+      riskPercent,
+      takeProfitPercent,
+      rrMultiple,
+      positionSize: tradeResult.size
+    });
+    if (!Number.isFinite(takeProfitPrice) || takeProfitPrice <= 0) {
+      throw new Error("Calculated take-profit trigger is invalid");
+    }
+    const bracketResult = await placeBracketOrders({
       symbol,
       isLong,
       size: tradeResult.size,
-      triggerPrice: stopLossPrice,
+      stopLossTriggerPrice: stopLossPrice,
+      takeProfitTriggerPrice: takeProfitPrice,
       mode: accountMode
     });
+    logTradeManager("cross: bracket placement response", {
+      mode: accountMode,
+      symbol,
+      stopLoss: bracketResult?.stopLoss || null,
+      takeProfit: bracketResult?.takeProfit || null
+    });
+    const stopResult = {
+      asset: bracketResult?.asset,
+      oid: bracketResult?.stopLoss?.oid,
+      status: bracketResult?.stopLoss?.status
+    };
     if (
       Number.isFinite(stopResult?.asset) &&
       Number.isFinite(stopResult?.oid) &&
@@ -1531,7 +1591,7 @@ async function executeCrossTrade() {
       side: isLong ? "long" : "short",
       size: tradeResult.size,
       avgPx: tradeResult.avgPx,
-      details: "Trade opened and stop loss placed"
+      details: "Trade opened with stop loss and take profit placed"
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1542,7 +1602,7 @@ async function executeCrossTrade() {
       action: "cross",
       symbol,
       error: message,
-      details: "Trade open/stop placement failed — verify position and set stop loss manually if needed."
+      details: "Trade open/SL/TP placement failed — verify position and protective orders manually if needed."
     });
   }
 }
@@ -1556,16 +1616,6 @@ async function executeAzizMethod() {
   }
   if (!Number.isFinite(lastPrice) || lastPrice <= 0) {
     emitTradeResult({ ok: false, action: "triangle", symbol, error: "Live price is unavailable" });
-    return;
-  }
-  const halfNotional = (Math.abs(Number(position?.szi ?? 0)) * lastPrice) / 2;
-  if (!Number.isFinite(halfNotional) || halfNotional < MIN_ORDER_NOTIONAL) {
-    emitTradeResult({
-      ok: false,
-      action: "triangle",
-      symbol,
-      error: `Position too small for Aziz exit (50% = $${Number(halfNotional || 0).toFixed(2)}, minimum $${MIN_ORDER_NOTIONAL.toFixed(2)})`
-    });
     return;
   }
 
@@ -1650,16 +1700,6 @@ async function executeBailout() {
     emitTradeResult({ ok: false, action: "circle", symbol, error: "Live price is unavailable" });
     return;
   }
-  const closeNotional = positionSize * lastPrice;
-  if (!Number.isFinite(closeNotional) || closeNotional < MIN_ORDER_NOTIONAL) {
-    emitTradeResult({
-      ok: false,
-      action: "circle",
-      symbol,
-      error: `Close value ($${Number(closeNotional || 0).toFixed(2)}) is below minimum $${MIN_ORDER_NOTIONAL.toFixed(2)}`
-    });
-    return;
-  }
 
   try {
     tradeState.applyActionStart({ symbol, mode: accountMode, action: "circle" });
@@ -1737,15 +1777,17 @@ async function executeStopLossUpdate() {
     oldAsset: tracked?.asset ?? null,
     mode: accountMode
   });
-  console.log("[server] stop-loss update placed", {
-    mode: accountMode,
-    symbol,
-    requestedTrigger: stopLossPrice,
-    positionSize,
-    exchangeAsset: Number(stopResult?.asset ?? 0),
-    exchangeOid: Number(stopResult?.oid ?? 0),
-    exchangeStatus: String(stopResult?.status ?? "unknown")
-  });
+  if (TRADE_MANAGER_VERBOSE) {
+    console.log("[server] stop-loss update placed", {
+      mode: accountMode,
+      symbol,
+      requestedTrigger: stopLossPrice,
+      positionSize,
+      exchangeAsset: Number(stopResult?.asset ?? 0),
+      exchangeOid: Number(stopResult?.oid ?? 0),
+      exchangeStatus: String(stopResult?.status ?? "unknown")
+    });
+  }
   if (
     Number.isFinite(stopResult?.asset) &&
     Number.isFinite(stopResult?.oid) &&

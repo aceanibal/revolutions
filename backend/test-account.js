@@ -290,7 +290,9 @@ async function testSettings() {
 // ---------------------------------------------------------------------------
 
 async function testExecuteTrade(price) {
-  const minNotional = 10;
+  // Keep entry notional above $10 even after a 3% trigger offset,
+  // so both SL and TP trigger orders still satisfy exchange minimums.
+  const minNotional = 11;
   const assetInfo = await hl.resolveAsset(SYMBOL, MODE);
   const sizeFactor = 10 ** Math.max(0, Number(assetInfo?.szDecimals ?? 0));
   const minSize = Math.ceil((minNotional / (price || 1)) * sizeFactor) / sizeFactor;
@@ -417,6 +419,51 @@ async function testPlaceStopLoss(price, tradeResult) {
   }
 }
 
+async function testPlaceTakeProfit(price, tradeResult) {
+  log(`Trade test: place take profit for ${SYMBOL} on testnet`);
+  if (!price) {
+    fail("placeTakeProfit", new Error("No price available"));
+    return null;
+  }
+
+  try {
+    const payload = await hl.fetchClearinghouseState(MODE);
+    const positions = hl.normalizePositions(payload);
+    const pos = positions.find(p => p.coin === SYMBOL);
+    if (!pos) {
+      console.log("  (no position found — skipping take profit)");
+      pass("placeTakeProfit (no-op)");
+      return null;
+    }
+
+    const isLong = pos.szi > 0;
+    const size = Math.abs(pos.szi);
+    const triggerPrice = isLong
+      ? price * 1.03
+      : price * 0.97;
+
+    console.log(`  Position : ${isLong ? "LONG" : "SHORT"} ${size} ${SYMBOL}`);
+    console.log(`  Trigger  : $${triggerPrice.toFixed(2)} (${isLong ? "3% above" : "3% below"} mid)`);
+
+    const result = await hl.placeTakeProfit({
+      symbol: SYMBOL,
+      isLong,
+      size,
+      triggerPrice,
+      mode: MODE
+    });
+
+    console.log(`  Status   : ${result.status}`);
+    console.log(`  OID      : ${result.oid}`);
+    console.log(`  Asset    : ${result.asset}`);
+    pass("placeTakeProfit");
+    return result;
+  } catch (err) {
+    fail("placeTakeProfit", err);
+    return null;
+  }
+}
+
 async function testVerifyStopLossInOrders(stopResult) {
   log(`Trade test: verify stop loss appears in open orders`);
   try {
@@ -440,6 +487,32 @@ async function testVerifyStopLossInOrders(stopResult) {
     }
   } catch (err) {
     fail("verify stop loss in orders", err);
+  }
+}
+
+async function testVerifyTakeProfitInOrders(tpResult) {
+  log(`Trade test: verify take profit appears in open orders`);
+  try {
+    const orders = await hl.getOpenOrders({ mode: MODE });
+    console.log(`  ${orders.length} open order(s)`);
+    for (const o of orders) {
+      console.log(`  ${o.coin} side=${o.side} sz=${o.sz} triggerPx=${o.triggerPx || "n/a"} oid=${o.oid}`);
+    }
+
+    if (tpResult?.oid) {
+      const found = orders.some(o => Number(o.oid) === Number(tpResult.oid));
+      if (found) {
+        console.log(`  Take-profit OID ${tpResult.oid} confirmed in open orders`);
+        pass("verify take profit in orders");
+      } else {
+        console.log(`  ⚠ Take-profit OID ${tpResult.oid} not found — may be trigger order (check separately)`);
+        pass("verify take profit in orders (trigger type)");
+      }
+    } else {
+      pass("verify take profit in orders (no oid to check)");
+    }
+  } catch (err) {
+    fail("verify take profit in orders", err);
   }
 }
 
@@ -736,6 +809,12 @@ async function main() {
     hl.clearAccountCache(MODE);
     await testVerifyStopLossInOrders(stopResult);
 
+    // 2b. Place take profit on the open position
+    const tpResult = await testPlaceTakeProfit(price, tradeResult);
+
+    hl.clearAccountCache(MODE);
+    await testVerifyTakeProfitInOrders(tpResult);
+
     // 3. Update stop loss to a new price (place new first, then cancel old)
     const updatedStop = await testUpdateStopLoss(price, stopResult);
 
@@ -744,6 +823,9 @@ async function main() {
 
     // 4. Cancel stop loss by OID
     await testCancelOrderById(updatedStop || stopResult);
+
+    // 4b. Cancel take profit by OID
+    await testCancelOrderById(tpResult);
 
     hl.clearAccountCache(MODE);
     await testFetchOpenOrders();

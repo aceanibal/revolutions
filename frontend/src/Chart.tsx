@@ -23,7 +23,10 @@ interface ChartProps {
   stopLossPrice?: number;
   /** Pending-order / exchange-inferred stop (navy dashed). Null hides the line. */
   stopPlacedPrice?: number | null;
+  /** Pending-order / exchange-inferred take profit (emerald dashed). Null hides the line. */
+  takeProfitPlacedPrice?: number | null;
   breakEvenPrice?: number;
+  signedR?: number | null;
   isLong?: boolean;
   enableStopLossDrag?: boolean;
   onStopLossPriceChange?: (nextPrice: number) => void;
@@ -53,7 +56,9 @@ export function Chart({
   entryPrice = 0,
   stopLossPrice = 0,
   stopPlacedPrice = null,
+  takeProfitPlacedPrice = null,
   breakEvenPrice = 0,
+  signedR = null,
   isLong = true,
   enableStopLossDrag = false,
   onStopLossPriceChange,
@@ -74,6 +79,7 @@ export function Chart({
   const emaSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const stopLossLineRef = useRef<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null>(null);
   const stopPlacedLineRef = useRef<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null>(null);
+  const takeProfitPlacedLineRef = useRef<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null>(null);
   const breakEvenLineRef = useRef<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null>(null);
   const entryLineRef = useRef<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null>(null);
   const draggingStopLossRef = useRef(false);
@@ -326,6 +332,10 @@ export function Chart({
       series.removePriceLine(stopPlacedLineRef.current);
       stopPlacedLineRef.current = null;
     }
+    if (takeProfitPlacedLineRef.current) {
+      series.removePriceLine(takeProfitPlacedLineRef.current);
+      takeProfitPlacedLineRef.current = null;
+    }
     if (breakEvenLineRef.current) {
       series.removePriceLine(breakEvenLineRef.current);
       breakEvenLineRef.current = null;
@@ -363,6 +373,23 @@ export function Chart({
       });
     }
 
+    const tpPlacedPx =
+      takeProfitPlacedPrice !== null &&
+      Number.isFinite(takeProfitPlacedPrice) &&
+      takeProfitPlacedPrice > 0
+        ? takeProfitPlacedPrice
+        : null;
+    if (tpPlacedPx !== null) {
+      takeProfitPlacedLineRef.current = series.createPriceLine({
+        price: tpPlacedPx,
+        color: "rgba(5, 150, 105, 0.95)",
+        lineWidth: 2,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: `TP (orders) ${tpPlacedPx.toFixed(4)}`
+      });
+    }
+
     if (stopLossPrice > 0) {
       const slLineOpts: CreatePriceLineOptions = {
         price: stopLossPrice,
@@ -385,8 +412,29 @@ export function Chart({
         title: "Break-even"
       });
     }
-  }, [entryPrice, stopLossPrice, stopPlacedPrice, breakEvenPrice, isLong]);
+  }, [entryPrice, stopLossPrice, stopPlacedPrice, takeProfitPlacedPrice, breakEvenPrice, isLong]);
 
-  return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
+  const hasSignedR = signedR !== null && signedR !== undefined && Number.isFinite(signedR);
+  const signedRValue = Number(signedR ?? 0);
+  const signedRPercent = signedRValue * 100;
+  const signedRLabel = `${signedRPercent >= 0 ? "+" : ""}${signedRPercent.toFixed(1)}%`;
+
+  return (
+    <div className="relative h-full w-full">
+      <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+      {hasSignedR && (
+        <div
+          className={`pointer-events-none absolute left-2 top-12 z-20 rounded-full px-4 py-2 text-base font-bold ring-1 ring-inset backdrop-blur ${
+            signedRValue >= 0
+              ? "bg-emerald-50/90 text-emerald-800 ring-emerald-200"
+              : "bg-rose-50/90 text-rose-800 ring-rose-200"
+          }`}
+          aria-label="Signed R"
+        >
+          {signedRLabel}
+        </div>
+      )}
+    </div>
+  );
 }
 
