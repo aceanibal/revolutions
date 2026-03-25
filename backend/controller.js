@@ -57,6 +57,7 @@ function setupKeyboardController({ onAction, onShutdownRequested }) {
   });
 
   const REPEAT_ACTIONS = new Set(["dpadUp", "dpadDown"]);
+  const QUIET_ACTIONS = new Set(["dpadUp", "dpadDown", "stopLossSnap", "updateStopLoss"]);
   const REPEAT_INITIAL_MS = 300;
   const REPEAT_INTERVAL_MS = 80;
 
@@ -86,7 +87,9 @@ function setupKeyboardController({ onAction, onShutdownRequested }) {
         if (repeatAction === action && repeatTimer) {
           return;
         }
-        console.log(`[keyboard] action=${action} keys=${candidates.join(",")}`);
+        if (!QUIET_ACTIONS.has(action)) {
+          console.log(`[keyboard] action=${action} keys=${candidates.join(",")}`);
+        }
         onAction(action);
         stopRepeat();
         repeatAction = action;
@@ -102,7 +105,9 @@ function setupKeyboardController({ onAction, onShutdownRequested }) {
     if (!isDown) return;
 
     if (action) {
-      console.log(`[keyboard] action=${action} keys=${candidates.join(",")}`);
+      if (!QUIET_ACTIONS.has(action)) {
+        console.log(`[keyboard] action=${action} keys=${candidates.join(",")}`);
+      }
       onAction(action);
       return;
     }

@@ -60,6 +60,18 @@ const TRADE_MANAGER_VERBOSE =
   String(process.env.TRADE_MANAGER_VERBOSE || "")
     .trim()
     .toLowerCase() === "true";
+const POSITION_REFRESH_COOLDOWN_MS = Math.max(
+  1000,
+  Number.parseInt(process.env.POSITION_REFRESH_COOLDOWN_MS || "15000", 10) || 15000
+);
+const PRELOAD_NON_FORCE_COOLDOWN_MS = Math.max(
+  1000,
+  Number.parseInt(process.env.PRELOAD_NON_FORCE_COOLDOWN_MS || "10000", 10) || 10000
+);
+const WS_STALE_THRESHOLD_MS = Math.max(
+  5000,
+  Number.parseInt(process.env.WS_STALE_THRESHOLD_MS || "20000", 10) || 20000
+);
 
 const app = express();
 const server = http.createServer(app);
@@ -97,6 +109,7 @@ let primarySymbol = DEFAULT_SYMBOL;
 const activeSymbols = new Set();
 const stopLossBySymbol = new Map(); // symbol -> price
 const lastPriceBySymbol = new Map(); // symbol -> latest streamed price
+const lastPriceAtBySymbol = new Map(); // symbol -> latest WS price ts
 let accountMode = "live";
 const activePositionBySymbol = new Map();
 const isLongBySymbol = new Map(); // symbol -> true(long), false(short)
@@ -297,6 +310,18 @@ function emitDirectionUpdate(target, symbol = primarySymbol) {
 let seenFirstDataForSymbol = new Set();
 let cleanupKeyboardController = null;
 let sessionRolloverIntervalId = null;
+let lastWsConnectedAt = 0;
+let lastWsMessageAt = 0;
+let refreshActivePositionInFlight = null;
+const lastRefreshActivePositionAtByMode = new Map();
+const preloadHistoryInFlightBySymbol = new Map();
+const lastPreloadAtBySymbol = new Map();
+const runtimeCounters = {
+  restFallbackTriggered: 0,
+  restFallbackSkippedCooldown: 0,
+  preloadCoalesced: 0,
+  refreshCoalesced: 0
+};
 
 const sessionStore = new SessionStore();
 const tradeState = createTradeStateStore({
@@ -321,6 +346,15 @@ function logTradeManager(message, payload = undefined) {
     return;
   }
   console.log(`[trade-manager] ${message}`, payload);
+}
+
+function wsStateAgeMs(now = Date.now()) {
+  if (!Number.isFinite(lastWsMessageAt) || lastWsMessageAt <= 0) return Infinity;
+  return Math.max(0, now - lastWsMessageAt);
+}
+
+function wsIsHealthy(now = Date.now()) {
+  return wsStateAgeMs(now) <= WS_STALE_THRESHOLD_MS;
 }
 
 function emitTradeStateSnapshot(target, symbol = primarySymbol, mode = accountMode) {
@@ -540,31 +574,55 @@ async function preloadSymbolHistory(symbol, options = {}) {
   const force = Boolean(options.force);
   const normalized = normalizeSymbol(symbol);
   if (!normalized) return;
-  console.log(`[server] preloadSymbolHistory start symbol=${normalized} force=${force}`);
-  try {
-    const result = await sessionStore.preloadHistoricalForSymbol(normalized, { force });
-    if (result?.sessionInfo) {
-      io.emit("session:update", result.sessionInfo);
-    }
-    if (!result?.sessionId) {
-      console.log(
-        `[server] preloadSymbolHistory skipped symbol=${normalized} reason=${
-          result?.reason || "no-active-persisted-session"
-        }`
-      );
-    }
-    console.log(
-      `[server] preloadSymbolHistory done symbol=${normalized} session=${result?.sessionId || "n/a"}`
-    );
-    if (result?.sessionId) {
-      io.emit("session:snapshot:ready", {
-        symbol: normalized,
-        sessionId: result.sessionId
-      });
-    }
-  } catch (error) {
-    console.log("History preload warning:", error?.message || error);
+  const now = Date.now();
+  const inFlight = preloadHistoryInFlightBySymbol.get(normalized);
+  if (inFlight) {
+    runtimeCounters.preloadCoalesced += 1;
+    return inFlight;
   }
+
+  if (!force) {
+    const last = Number(lastPreloadAtBySymbol.get(normalized) || 0);
+    if (last > 0 && now - last < PRELOAD_NON_FORCE_COOLDOWN_MS) {
+      return null;
+    }
+  }
+
+  const runner = (async () => {
+    console.log(`[server] preloadSymbolHistory start symbol=${normalized} force=${force}`);
+    try {
+      const result = await sessionStore.preloadHistoricalForSymbol(normalized, { force });
+      if (result?.sessionInfo) {
+        io.emit("session:update", result.sessionInfo);
+      }
+      if (!result?.sessionId) {
+        console.log(
+          `[server] preloadSymbolHistory skipped symbol=${normalized} reason=${
+            result?.reason || "no-active-persisted-session"
+          }`
+        );
+      }
+      console.log(
+        `[server] preloadSymbolHistory done symbol=${normalized} session=${result?.sessionId || "n/a"}`
+      );
+      if (result?.sessionId) {
+        io.emit("session:snapshot:ready", {
+          symbol: normalized,
+          sessionId: result.sessionId
+        });
+      }
+      lastPreloadAtBySymbol.set(normalized, Date.now());
+      return result;
+    } catch (error) {
+      console.log("History preload warning:", error?.message || error);
+      return null;
+    } finally {
+      preloadHistoryInFlightBySymbol.delete(normalized);
+    }
+  })();
+
+  preloadHistoryInFlightBySymbol.set(normalized, runner);
+  return runner;
 }
 
 async function buildDirectHistorySnapshot(symbol) {
@@ -1152,7 +1210,7 @@ app.patch("/api/account/mode", (req, res) => {
   accountMode = next;
   console.log("[server] Account mode changed to:", accountMode);
   io.emit("mode:update", { mode: accountMode });
-  void doFetchBalance({ force: true });
+  void doFetchBalance({ force: false });
   void refreshFeeAndMetaCache();
   res.json({ ok: true, mode: accountMode });
 });
@@ -1270,15 +1328,58 @@ async function reconcileTradeStateFromClearinghousePayload(payload, { lastAction
   }
 }
 
-async function refreshActivePosition() {
-  if (!isAccountConfiguredForMode(accountMode)) return;
-  try {
-    clearAccountCache(accountMode);
-    const payload = await fetchClearinghouseState(accountMode);
-    await reconcileTradeStateFromClearinghousePayload(payload, { lastAction: "position_refresh" });
-  } catch (err) {
-    console.log("[server] refreshActivePosition error:", err?.message || err);
+async function refreshActivePosition(options = {}) {
+  if (!isAccountConfiguredForMode(accountMode)) return null;
+
+  const reason = String(options.reason || "unspecified");
+  const force = Boolean(options.force);
+  const allowWhenWsHealthy = Boolean(options.allowWhenWsHealthy);
+  const now = Date.now();
+  const mode = accountMode;
+
+  if (refreshActivePositionInFlight) {
+    runtimeCounters.refreshCoalesced += 1;
+    return refreshActivePositionInFlight;
   }
+
+  if (!force) {
+    if (!allowWhenWsHealthy && wsIsHealthy(now)) {
+      runtimeCounters.restFallbackSkippedCooldown += 1;
+      return null;
+    }
+    const lastRefreshAt = Number(lastRefreshActivePositionAtByMode.get(mode) || 0);
+    if (lastRefreshAt > 0 && now - lastRefreshAt < POSITION_REFRESH_COOLDOWN_MS) {
+      runtimeCounters.restFallbackSkippedCooldown += 1;
+      return null;
+    }
+  }
+
+  refreshActivePositionInFlight = (async () => {
+    try {
+      if (force) {
+        clearAccountCache(mode);
+      }
+      const payload = await fetchClearinghouseState(mode);
+      await reconcileTradeStateFromClearinghousePayload(payload, { lastAction: "position_refresh" });
+      lastRefreshActivePositionAtByMode.set(mode, Date.now());
+      runtimeCounters.restFallbackTriggered += 1;
+      console.log("[server] refreshActivePosition fallback success", {
+        reason,
+        mode,
+        force,
+        wsAgeMs: wsStateAgeMs(),
+        wsConnectedAgeMs: lastWsConnectedAt > 0 ? Math.max(0, Date.now() - lastWsConnectedAt) : null
+      });
+      return payload;
+    } catch (err) {
+      console.log("[server] refreshActivePosition error:", err?.message || err);
+      return null;
+    } finally {
+      refreshActivePositionInFlight = null;
+    }
+  })();
+
+  return refreshActivePositionInFlight;
 }
 
 /**
@@ -1563,7 +1664,7 @@ async function executeCrossTrade() {
       });
     }
 
-    await refreshActivePosition();
+    await refreshActivePosition({ reason: "execute_cross_post_trade" });
     const refreshedPosition = getActivePosition(symbol);
     await reconcileTradeStateForSymbol(symbol, accountMode, {
       lastAction: "cross",
@@ -1580,7 +1681,7 @@ async function executeCrossTrade() {
         error: "Position did not appear after execution"
       });
     }
-    const refreshedBalance = await doFetchBalance({ force: true });
+    const refreshedBalance = await doFetchBalance({ force: false });
     if (!Number.isFinite(refreshedBalance)) {
       emitHudUpdate();
     }
@@ -1596,7 +1697,7 @@ async function executeCrossTrade() {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     tradeState.applyActionError({ symbol, mode: accountMode, action: "cross", error: message });
-    await refreshActivePosition();
+    await refreshActivePosition({ reason: "execute_cross_error" });
     emitTradeResult({
       ok: false,
       action: "cross",
@@ -1630,7 +1731,7 @@ async function executeAzizMethod() {
       mode: accountMode
     });
 
-    await refreshActivePosition();
+    await refreshActivePosition({ reason: "execute_aziz_post_trade" });
     const updated = getActivePosition(symbol);
     if (updated) {
       setDirectionForSymbol(symbol, Number(updated.szi) > 0);
@@ -1656,7 +1757,7 @@ async function executeAzizMethod() {
       }
     });
 
-    const refreshedBalance = await doFetchBalance({ force: true });
+    const refreshedBalance = await doFetchBalance({ force: false });
     if (!Number.isFinite(refreshedBalance)) {
       emitHudUpdate();
     }
@@ -1672,7 +1773,7 @@ async function executeAzizMethod() {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     tradeState.applyActionError({ symbol, mode: accountMode, action: "triangle", error: message });
-    await refreshActivePosition();
+    await refreshActivePosition({ reason: "execute_aziz_error" });
     emitTradeResult({
       ok: false,
       action: "triangle",
@@ -1715,9 +1816,9 @@ async function executeBailout() {
     // Emit an immediate local close state even before snapshot reconciliation.
     tradeState.setClosed({ symbol, mode: accountMode, lastAction: "circle" });
 
-    await refreshActivePosition();
+    await refreshActivePosition({ reason: "execute_bailout_post_trade" });
     await reconcileTradeStateForSymbol(symbol, accountMode, { lastAction: "circle" });
-    const refreshedBalance = await doFetchBalance({ force: true });
+    const refreshedBalance = await doFetchBalance({ force: false });
     if (!Number.isFinite(refreshedBalance)) {
       emitHudUpdate();
     }
@@ -1733,7 +1834,7 @@ async function executeBailout() {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     tradeState.applyActionError({ symbol, mode: accountMode, action: "circle", error: message });
-    await refreshActivePosition();
+    await refreshActivePosition({ reason: "execute_bailout_error" });
     emitTradeResult({
       ok: false,
       action: "circle",
@@ -1878,7 +1979,6 @@ async function handleControllerAction(action) {
       if (primarySymbol && snapPrice > 0) {
         stopLossBySymbol.set(primarySymbol, snapPrice);
         tradeState.setStopLossValue({ symbol: primarySymbol, mode: accountMode, stopLoss: snapPrice });
-        console.log("stopLoss snapped to price:", snapPrice, "for", primarySymbol);
         emitHudUpdate();
         emitControllerEvent("stopLossSnap");
       }
@@ -2071,9 +2171,11 @@ async function bootstrapServer() {
       getActiveSymbols: () => Array.from(activeSymbols),
       seenFirstDataForSymbol,
       onPriceUpdate: ({ symbol, price }) => {
+        lastWsMessageAt = Date.now();
         const normalized = normalizeSymbol(symbol);
         if (normalized && Number.isFinite(price) && price > 0) {
           lastPriceBySymbol.set(normalized, price);
+          lastPriceAtBySymbol.set(normalized, lastWsMessageAt);
         }
         // Only HUD/position sizing are tied to the primary symbol.
         if (symbol === primarySymbol) {
@@ -2101,6 +2203,11 @@ async function bootstrapServer() {
           .catch(() => {});
       },
       onTick: (trade) => {
+        lastWsMessageAt = Date.now();
+        const normalized = normalizeSymbol(trade.symbol);
+        if (normalized) {
+          lastPriceAtBySymbol.set(normalized, lastWsMessageAt);
+        }
         updateAtrForTick(trade.symbol, {
           price: trade.price,
           ts: trade.ts,
@@ -2124,27 +2231,36 @@ async function bootstrapServer() {
           .catch(() => {});
       },
       onConnected: (symbols) => {
-        // Reconnects after temporary internet loss should refresh history and patch
-        // missing bars into the existing day session instead of creating a new one.
+        lastWsConnectedAt = Date.now();
+        // Reconnect recovery stays websocket-first: no force HTTP fan-out.
         for (const symbol of symbols || []) {
-          void preloadSymbolHistory(symbol, { force: true });
+          const normalized = normalizeSymbol(symbol);
+          const lastSymbolPriceAt = Number(lastPriceAtBySymbol.get(normalized) || 0);
+          const symbolStreamStale =
+            !lastSymbolPriceAt || Date.now() - lastSymbolPriceAt > WS_STALE_THRESHOLD_MS;
+          if (symbolStreamStale) {
+            void preloadSymbolHistory(symbol, { force: false });
+          }
         }
-        void refreshActivePosition();
+        // If market feed is stale after reconnect, allow one guarded fallback.
+        void refreshActivePosition({
+          reason: "ws_reconnect_stale_guard",
+          force: false,
+          allowWhenWsHealthy: false
+        });
       }
     });
 
     if (isAccountConfiguredForMode(accountMode)) {
-      void doFetchBalance({ force: true });
+      void doFetchBalance({ force: false });
     } else {
       console.log(
         `[server] Account balance fetch disabled for ${accountMode} mode: no wallet configured`
       );
     }
-
     void refreshFeeAndMetaCache();
-    setInterval(() => void refreshFeeAndMetaCache(), 60_000);
-    void refreshActivePosition();
-    setInterval(() => void refreshActivePosition(), 12_000);
+
+    console.log("[server] Hyperliquid polling disabled: account refresh is websocket-first with guarded fallback.");
 
     console.log(
       "Keyboard shortcuts active: 3=direction F1=cross F2=triangle F3=circle F4/F5=primary F6/F8=stopLoss F9=snap F10=updateSL"
