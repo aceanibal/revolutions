@@ -4,8 +4,11 @@ const fs = require("fs");
 const path = require("path");
 const { DateTime } = require("luxon");
 const { upsertCandle, sortedCandlesFromMap, detectGapRanges, intervalForTimeframe } = require("./sessionMath");
+const { resolvePerpCoinForInfoApi } = require("./hyperliquid");
 
 const TIMEFRAMES = ["1m", "5m"];
+const HYPERLIQUID_CANDLE_PAGE_LIMIT = 500;
+const HYPERLIQUID_CANDLE_MAX_AVAILABLE = 5000;
 
 function parseHHMM(value, fallback) {
   const raw = String(value || fallback || "").trim();
@@ -70,6 +73,10 @@ class SessionStore {
       "https://api.hyperliquid.xyz/info";
     this.lastSqlSaveAtMs = null;
     this.lastSqlSavedSessionId = null;
+  }
+
+  inferHyperliquidMode() {
+    return String(this.hyperliquidInfoUrl || "").includes("testnet") ? "test" : "live";
   }
 
   async init() {
@@ -252,29 +259,27 @@ class SessionStore {
     return { sessionId, tick, sessionInfo };
   }
 
-  async fetchHistoricalCandles(symbol, timeframe) {
+  /**
+   * Fetches candle history from Hyperliquid info API.
+   * The endpoint is paginated: up to 500 rows per response, with up to 5000 recent candles available.
+   * On network/HTTP/parse failure returns { ok: false, candles: [] } so callers do not treat
+   * an error the same as a legitimately empty snapshot (avoids marking history "loaded" with no data).
+   */
+  async fetchHistoricalCandles(symbol, timeframe, options = {}) {
     const upper = normalizeSymbol(symbol);
-    if (!upper) return [];
+    if (!upper) return { ok: false, candles: [] };
 
-    try {
-      const response = await fetch(this.hyperliquidInfoUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "candleSnapshot",
-          req: {
-            coin: upper,
-            interval: timeframe,
-            startTime: 0
-          }
-        })
-      });
+    const infoCoin = await resolvePerpCoinForInfoApi(upper, this.inferHyperliquidMode());
+    const intervalMs = intervalForTimeframe(timeframe);
+    const startTimeMsRaw = Number(options.startTimeMs);
+    const startTimeMs = Number.isFinite(startTimeMsRaw) ? Math.max(0, Math.floor(startTimeMsRaw)) : 0;
+    const endTimeMsRaw = Number(options.endTimeMs);
+    const endTimeMs = Number.isFinite(endTimeMsRaw) ? Math.floor(endTimeMsRaw) : Date.now();
+    if (endTimeMs <= startTimeMs) {
+      return { ok: true, candles: [] };
+    }
 
-      if (!response.ok) {
-        return [];
-      }
-
-      const payload = await response.json();
+    const normalizeCandlesArray = (payload) => {
       const candlesArray = Array.isArray(payload) ? payload : payload?.candles ?? [];
       return candlesArray
         .map((c) => {
@@ -291,12 +296,66 @@ class SessionStore {
         })
         .filter((c) => c !== null)
         .sort((a, b) => a.timeMs - b.timeMs);
+    };
+
+    try {
+      const byTimeMs = new Map();
+      let requestStartMs = startTimeMs;
+      let totalRows = 0;
+
+      while (requestStartMs <= endTimeMs && totalRows < HYPERLIQUID_CANDLE_MAX_AVAILABLE) {
+        const response = await fetch(this.hyperliquidInfoUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "candleSnapshot",
+            req: {
+              coin: infoCoin,
+              interval: timeframe,
+              startTime: requestStartMs,
+              endTime: endTimeMs
+            }
+          })
+        });
+
+        if (!response.ok) {
+          return { ok: false, candles: [] };
+        }
+
+        const payload = await response.json();
+        const pageCandles = normalizeCandlesArray(payload);
+        if (pageCandles.length === 0) break;
+
+        for (const candle of pageCandles) {
+          if (candle.timeMs < startTimeMs || candle.timeMs > endTimeMs) continue;
+          byTimeMs.set(candle.timeMs, candle);
+        }
+
+        totalRows += pageCandles.length;
+        if (pageCandles.length < HYPERLIQUID_CANDLE_PAGE_LIMIT) break;
+
+        const lastTimeMs = Number(pageCandles[pageCandles.length - 1]?.timeMs);
+        if (!Number.isFinite(lastTimeMs)) break;
+        const nextStartMs = lastTimeMs + intervalMs;
+        if (!Number.isFinite(nextStartMs) || nextStartMs <= requestStartMs) break;
+        requestStartMs = nextStartMs;
+      }
+
+      const candles = Array.from(byTimeMs.values()).sort((a, b) => a.timeMs - b.timeMs);
+      return { ok: true, candles };
     } catch {
-      return [];
+      return { ok: false, candles: [] };
     }
   }
 
-  mergeHistoryCandle(existing, incoming, bucketStart, sourceOverride = null, isGapFillFlag = false) {
+  mergeHistoryCandle(
+    existing,
+    incoming,
+    bucketStart,
+    sourceOverride = null,
+    isGapFillFlag = false,
+    reconcileClosedLive = false
+  ) {
     if (!existing) {
       return {
         timeMs: bucketStart,
@@ -307,6 +366,22 @@ class SessionStore {
         volume: incoming.volume,
         source: sourceOverride || "history",
         isGapFill: isGapFillFlag
+      };
+    }
+
+    // Mark-price ticks create a "live" bucket every minute for liquid names (e.g. BTC). For bars that
+    // are fully in the past, REST history is authoritative; without this we skip the API row entirely
+    // and can keep sparse or wrong OHLC vs exchange candles.
+    if (reconcileClosedLive) {
+      return {
+        timeMs: bucketStart,
+        open: incoming.open,
+        high: incoming.high,
+        low: incoming.low,
+        close: incoming.close,
+        volume: Math.max(Number(existing.volume ?? 0), Number(incoming.volume ?? 0)),
+        source: "mixed",
+        isGapFill: isGapFillFlag || Boolean(existing.isGapFill)
       };
     }
 
@@ -333,6 +408,9 @@ class SessionStore {
 
     const sessionId = await this.ensureActiveSession(Date.now());
     if (!sessionId) return null;
+    const sessionMeta = await this.redis.hgetall(this.sessionMetaKey(sessionId));
+    const historyStartMs = Number(sessionMeta?.marketWindowStartMs || 0) || 0;
+    const historyEndMs = Date.now();
 
     console.log(
       `[sessionStore] Preload start symbol=${upper} session=${sessionId} force=${force}`
@@ -350,16 +428,35 @@ class SessionStore {
     // A single API fetch per timeframe is classified by position relative to live data.
     const phaseCounts = {};
     for (const timeframe of TIMEFRAMES) {
-      phaseCounts[timeframe] = await this.preloadHistoricalTimeframe(sessionId, upper, timeframe, {
-        force
+      const phase = await this.preloadHistoricalTimeframe(sessionId, upper, timeframe, {
+        force,
+        historyStartMs,
+        historyEndMs
       });
+      phaseCounts[timeframe] = phase;
+      if (phase.skippedEntirely) {
+        const repaired = await this.reconcileClosedLiveFromApi(sessionId, upper, timeframe, {
+          startTimeMs: historyStartMs,
+          endTimeMs: historyEndMs
+        });
+        const gapFilledAfterSkip = await this.fillGapRanges(sessionId, upper, timeframe, {
+          startTimeMs: historyStartMs,
+          endTimeMs: historyEndMs
+        });
+        phaseCounts[timeframe] = { ...phase, reconcileAfterSkip: repaired, gapFilledAfterSkip };
+      }
     }
 
     const sessionInfo = await this.getSessionInfo(sessionId);
-    const summary = TIMEFRAMES.map(
-      (tf) =>
-        `${tf}=[gap=${phaseCounts[tf].gapFill} hist=${phaseCounts[tf].history} skipLive=${phaseCounts[tf].skippedLive}]`
-    ).join(" ");
+    const summary = TIMEFRAMES.map((tf) => {
+      const p = phaseCounts[tf];
+      const extra =
+        typeof p.reconcileAfterSkip === "number" && p.reconcileAfterSkip > 0
+          ? ` reconcileSkip=${p.reconcileAfterSkip}`
+          : "";
+      const gapAfterSkip = typeof p.gapFilledAfterSkip === "number" ? p.gapFilledAfterSkip : 0;
+      return `${tf}=[gap=${p.gapFill} hist=${p.history} skipLive=${p.skippedLive} reconciled=${p.reconciledClosedLive ?? 0} gapRepair=${p.gapRepaired ?? 0} gapSkip=${gapAfterSkip}${extra}]`;
+    }).join(" ");
     console.log(
       `[sessionStore] Preload complete symbol=${upper} session=${sessionId} ${summary}`
     );
@@ -368,22 +465,56 @@ class SessionStore {
 
   async preloadHistoricalTimeframe(sessionId, symbol, timeframe, options = {}) {
     const force = Boolean(options.force);
+    const historyStartMs = Number(options.historyStartMs);
+    const historyEndMs = Number(options.historyEndMs);
     const loadedKey = this.historyLoadedKey(sessionId, symbol, timeframe);
+    const candlesKey = this.sessionCandlesKey(sessionId, symbol, timeframe);
     const alreadyLoaded = await this.redis.get(loadedKey);
     if (alreadyLoaded === "1" && !force) {
+      const storedCount = await this.redis.hlen(candlesKey);
+      if (storedCount > 0) {
+        console.log(
+          `[sessionStore] Preload skip ${symbol} ${timeframe} (already loaded)`
+        );
+        return {
+          gapFill: 0,
+          history: 0,
+          skippedLive: 0,
+          reconciledClosedLive: 0,
+          skippedEntirely: true
+        };
+      }
+      await this.redis.del(loadedKey);
       console.log(
-        `[sessionStore] Preload skip ${symbol} ${timeframe} (already loaded)`
+        `[sessionStore] Preload retry ${symbol} ${timeframe} (historyLoaded set but no candles; refetching)`
       );
-      return { gapFill: 0, history: 0, skippedLive: 0 };
     }
 
-    const history = await this.fetchHistoricalCandles(symbol, timeframe);
+    const { ok: historyOk, candles: history } = await this.fetchHistoricalCandles(symbol, timeframe, {
+      startTimeMs: Number.isFinite(historyStartMs) ? historyStartMs : 0,
+      endTimeMs: Number.isFinite(historyEndMs) ? historyEndMs : Date.now()
+    });
     console.log(
-      `[sessionStore] Fetched ${history.length} API candles for ${symbol} ${timeframe}`
+      `[sessionStore] Fetched ${history.length} API candles for ${symbol} ${timeframe} ok=${historyOk}`
     );
+    if (!historyOk) {
+      return {
+        gapFill: 0,
+        history: 0,
+        skippedLive: 0,
+        reconciledClosedLive: 0,
+        skippedEntirely: false
+      };
+    }
     if (history.length === 0) {
       await this.redis.set(loadedKey, "1", "EX", this.sameDayTtlSeconds);
-      return { gapFill: 0, history: 0, skippedLive: 0 };
+      return {
+        gapFill: 0,
+        history: 0,
+        skippedLive: 0,
+        reconciledClosedLive: 0,
+        skippedEntirely: false
+      };
     }
 
     const intervalMs = intervalForTimeframe(timeframe);
@@ -414,13 +545,21 @@ class SessionStore {
     let gapFillCount = 0;
     let historyCount = 0;
     let skippedLiveCount = 0;
+    let reconciledClosedLiveCount = 0;
     let pipelineOps = 0;
+    const nowMs = Date.now();
 
     for (const candle of history) {
       const bucketStart = Math.floor(candle.timeMs / intervalMs) * intervalMs;
       const existing = existingBuckets.get(bucketStart);
+      const bucketEndMs = bucketStart + intervalMs;
+      const isClosedBucket = bucketEndMs <= nowMs;
 
-      if (existing && (existing.source === "live" || existing.source === "mixed")) {
+      if (
+        existing &&
+        (existing.source === "live" || existing.source === "mixed") &&
+        !isClosedBucket
+      ) {
         skippedLiveCount++;
         continue;
       }
@@ -428,8 +567,16 @@ class SessionStore {
       const isGapFill = bucketStart > liveMinMs && bucketStart < liveMaxMs;
       const source = isGapFill ? "gap_fill" : "history";
 
+      const reconcileClosedLive =
+        Boolean(existing) &&
+        isClosedBucket &&
+        (existing.source === "live" || existing.source === "mixed");
+      if (reconcileClosedLive) {
+        reconciledClosedLiveCount++;
+      }
+
       const merged = existing
-        ? this.mergeHistoryCandle(existing, candle, bucketStart, source, isGapFill)
+        ? this.mergeHistoryCandle(existing, candle, bucketStart, source, isGapFill, reconcileClosedLive)
         : {
             timeMs: bucketStart,
             open: candle.open,
@@ -468,11 +615,77 @@ class SessionStore {
       );
     }
     console.log(
-      `[sessionStore] Phase 3 (history): ${symbol} ${timeframe} backfilled=${historyCount} skippedLive=${skippedLiveCount}`
+      `[sessionStore] Phase 3 (history): ${symbol} ${timeframe} backfilled=${historyCount} skippedLive=${skippedLiveCount} reconciledClosedLive=${reconciledClosedLiveCount}`
     );
 
+    const gapRepaired = await this.fillGapRanges(sessionId, symbol, timeframe, {
+      startTimeMs: Number.isFinite(historyStartMs) ? historyStartMs : 0,
+      endTimeMs: Number.isFinite(historyEndMs) ? historyEndMs : Date.now()
+    });
     await this.updateGapRanges(sessionId, symbol, timeframe);
-    return { gapFill: gapFillCount, history: historyCount, skippedLive: skippedLiveCount };
+    return {
+      gapFill: gapFillCount,
+      history: historyCount,
+      skippedLive: skippedLiveCount,
+      reconciledClosedLive: reconciledClosedLiveCount,
+      gapRepaired,
+      skippedEntirely: false
+    };
+  }
+
+  /**
+   * For symbols with dense mark-price ticks, Redis may hold "live"/"mixed" buckets for past minutes
+   * while preload is skipped (historyLoaded). Overlay REST OHLC for those closed buckets only.
+   */
+  async reconcileClosedLiveFromApi(sessionId, symbol, timeframe, options = {}) {
+    if (!this.redis || !sessionId || !symbol) return 0;
+    const upper = normalizeSymbol(symbol);
+    if (!upper) return 0;
+
+    const intervalMs = intervalForTimeframe(timeframe);
+    const key = this.sessionCandlesKey(sessionId, upper, timeframe);
+    const nowMs = Date.now();
+    const { ok: historyOk, candles: history } = await this.fetchHistoricalCandles(upper, timeframe, options);
+    if (!historyOk || history.length === 0) return 0;
+
+    const existingRaw = await this.redis.hgetall(key);
+    if (!existingRaw || Object.keys(existingRaw).length === 0) return 0;
+
+    const pipeline = this.redis.pipeline();
+    let pipelineOps = 0;
+    let repaired = 0;
+
+    for (const candle of history) {
+      const bucketStart = Math.floor(candle.timeMs / intervalMs) * intervalMs;
+      if (bucketStart + intervalMs > nowMs) continue;
+
+      const raw = existingRaw[String(bucketStart)];
+      if (!raw) continue;
+      const existing = parseSafeJson(raw);
+      if (!existing || (existing.source !== "live" && existing.source !== "mixed")) continue;
+
+      const merged = this.mergeHistoryCandle(
+        existing,
+        candle,
+        bucketStart,
+        "history",
+        Boolean(existing.isGapFill),
+        true
+      );
+      pipeline.hset(key, String(bucketStart), JSON.stringify(merged));
+      pipelineOps++;
+      repaired++;
+    }
+
+    if (pipelineOps > 0) {
+      await pipeline.exec();
+      await this.redis.expire(key, this.sameDayTtlSeconds);
+      await this.updateGapRanges(sessionId, upper, timeframe);
+      console.log(
+        `[sessionStore] Closed-live reconcile (skip path) symbol=${upper} ${timeframe} buckets=${repaired} session=${sessionId}`
+      );
+    }
+    return repaired;
   }
 
   async upsertCandleForTick(sessionId, symbol, timeframe, tick) {
@@ -499,15 +712,15 @@ class SessionStore {
     await this.redis.set(key, JSON.stringify(gaps), "EX", this.sameDayTtlSeconds);
   }
 
-  async fillGapRanges(sessionId, symbol, timeframe) {
+  async fillGapRanges(sessionId, symbol, timeframe, options = {}) {
     if (!this.redis || !sessionId || !symbol) return 0;
     const intervalMs = intervalForTimeframe(timeframe);
     const candles = await this.getCandles(sessionId, symbol, timeframe);
     const gaps = detectGapRanges(candles, intervalMs);
     if (gaps.length === 0) return 0;
 
-    const history = await this.fetchHistoricalCandles(symbol, timeframe);
-    if (history.length === 0) return 0;
+    const { ok: historyOk, candles: history } = await this.fetchHistoricalCandles(symbol, timeframe, options);
+    if (!historyOk || history.length === 0) return 0;
 
     const gapSet = new Set();
     for (const gap of gaps) {

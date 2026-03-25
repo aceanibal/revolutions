@@ -35,16 +35,21 @@ function parseHHMM(value: string): { hour: number; minute: number } | null {
 }
 
 export function getTodayEasternTimeAnchorSec(anchorTimeHHMM: string): number {
+  return getEasternTimeAnchorSecForDate(Date.now(), anchorTimeHHMM);
+}
+
+export function getEasternTimeAnchorSecForDate(referenceDateMs: number, anchorTimeHHMM: string): number {
   const parsed = parseHHMM(anchorTimeHHMM);
   if (!parsed) return 0;
 
-  const now = new Date();
+  const referenceDate = new Date(referenceDateMs);
+  if (Number.isNaN(referenceDate.getTime())) return 0;
   const dateParts = new Intl.DateTimeFormat("en-US", {
     timeZone: EASTERN_TIME_ZONE,
     year: "numeric",
     month: "2-digit",
     day: "2-digit"
-  }).formatToParts(now);
+  }).formatToParts(referenceDate);
   const partMap = new Map(dateParts.map((part) => [part.type, part.value]));
   const year = Number(partMap.get("year") || 0);
   const month = Number(partMap.get("month") || 1);

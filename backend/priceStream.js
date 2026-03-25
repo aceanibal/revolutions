@@ -1,4 +1,8 @@
 const WebSocket = require("ws");
+const { resolvePerpCoinForInfoApi } = require("./hyperliquid");
+
+/** UPPERCASE key (app convention) → exact `coin` string for Hyperliquid WS/API */
+const wireCoinByInternal = new Map();
 
 let hyperliquidWs = null;
 const currentSubscriptions = {
@@ -28,6 +32,12 @@ function safeJsonParse(raw) {
   }
 }
 
+function normalizeInternalSymbol(symbol) {
+  return String(symbol || "")
+    .trim()
+    .toUpperCase();
+}
+
 function parseTradeMessage(msg, currentSymbol) {
   const channel = String(msg?.channel || msg?.topic || "").toLowerCase();
   const data = msg?.data || msg;
@@ -51,7 +61,7 @@ function parseTradeMessage(msg, currentSymbol) {
       continue;
     }
 
-    normalized.push({ symbol, price, size, side, ts });
+    normalized.push({ symbol: normalizeInternalSymbol(symbol), price, size, side, ts });
   }
 
   if (!normalized.length) {
@@ -78,27 +88,40 @@ function parseActiveAssetCtxMessage(msg, currentSymbol) {
     return null;
   }
 
-  return { symbol, mark: markPx };
+  return { symbol: normalizeInternalSymbol(symbol), mark: markPx };
 }
 
-function subscribeToSymbol(symbol) {
+async function subscribeToSymbol(symbol) {
+  const internal = normalizeInternalSymbol(symbol);
+  if (!internal) {
+    return;
+  }
+
   if (!hyperliquidWs || hyperliquidWs.readyState !== WebSocket.OPEN) {
-    console.log("[priceStream] subscribeToSymbol skipped, WS not open yet:", symbol);
+    console.log("[priceStream] subscribeToSymbol skipped, WS not open yet:", internal);
     return;
   }
 
-  if (currentSubscriptions.activeAssetCtx.has(symbol) && currentSubscriptions.trades.has(symbol)) {
-    console.log("[priceStream] Already subscribed to symbol:", symbol);
+  if (currentSubscriptions.activeAssetCtx.has(internal) && currentSubscriptions.trades.has(internal)) {
+    console.log("[priceStream] Already subscribed to symbol:", internal);
     return;
   }
 
-  console.log("[priceStream] Subscribing to symbol:", symbol);
+  let wireCoin = wireCoinByInternal.get(internal);
+  if (!wireCoin) {
+    wireCoin = await resolvePerpCoinForInfoApi(internal);
+    wireCoinByInternal.set(internal, wireCoin);
+  }
+
+  console.log(
+    `[priceStream] Subscribing to symbol: ${internal}` + (wireCoin !== internal ? ` (wire: ${wireCoin})` : "")
+  );
 
   const activeAssetCtxPayload = {
     method: "subscribe",
     subscription: {
       type: "activeAssetCtx",
-      coin: symbol
+      coin: wireCoin
     }
   };
 
@@ -106,51 +129,58 @@ function subscribeToSymbol(symbol) {
     method: "subscribe",
     subscription: {
       type: "trades",
-      coin: symbol
+      coin: wireCoin
     }
   };
 
-  if (!currentSubscriptions.activeAssetCtx.has(symbol)) {
+  if (!currentSubscriptions.activeAssetCtx.has(internal)) {
     hyperliquidWs.send(JSON.stringify(activeAssetCtxPayload));
-    currentSubscriptions.activeAssetCtx.add(symbol);
+    currentSubscriptions.activeAssetCtx.add(internal);
   }
 
-  if (!currentSubscriptions.trades.has(symbol)) {
+  if (!currentSubscriptions.trades.has(internal)) {
     hyperliquidWs.send(JSON.stringify(tradesPayload));
-    currentSubscriptions.trades.add(symbol);
+    currentSubscriptions.trades.add(internal);
   }
 }
 
-function unsubscribeFromSymbol(symbol) {
-  if (!hyperliquidWs || hyperliquidWs.readyState !== WebSocket.OPEN || !symbol) {
-    console.log("[priceStream] unsubscribeToSymbol skipped, WS not open or symbol missing:", symbol);
+async function unsubscribeFromSymbol(symbol) {
+  const internal = normalizeInternalSymbol(symbol);
+  if (!hyperliquidWs || hyperliquidWs.readyState !== WebSocket.OPEN || !internal) {
+    console.log("[priceStream] unsubscribeToSymbol skipped, WS not open or missing symbol:", symbol);
     return;
   }
 
-  console.log("[priceStream] Unsubscribing from symbol:", symbol);
+  let wireCoin = wireCoinByInternal.get(internal);
+  if (!wireCoin) {
+    wireCoin = await resolvePerpCoinForInfoApi(internal);
+    wireCoinByInternal.set(internal, wireCoin);
+  }
 
-  if (currentSubscriptions.activeAssetCtx.has(symbol)) {
+  console.log("[priceStream] Unsubscribing from symbol:", internal);
+
+  if (currentSubscriptions.activeAssetCtx.has(internal)) {
     const activeAssetCtxPayload = {
       method: "unsubscribe",
       subscription: {
         type: "activeAssetCtx",
-        coin: symbol
+        coin: wireCoin
       }
     };
     hyperliquidWs.send(JSON.stringify(activeAssetCtxPayload));
-    currentSubscriptions.activeAssetCtx.delete(symbol);
+    currentSubscriptions.activeAssetCtx.delete(internal);
   }
 
-  if (currentSubscriptions.trades.has(symbol)) {
+  if (currentSubscriptions.trades.has(internal)) {
     const tradesPayload = {
       method: "unsubscribe",
       subscription: {
         type: "trades",
-        coin: symbol
+        coin: wireCoin
       }
     };
     hyperliquidWs.send(JSON.stringify(tradesPayload));
-    currentSubscriptions.trades.delete(symbol);
+    currentSubscriptions.trades.delete(internal);
   }
 }
 
@@ -179,12 +209,14 @@ function connectHyperliquidWs({
     console.log("[priceStream] Connected to Hyperliquid WS");
     reconnectAttempts = 0;
     const symbols = typeof getActiveSymbols === "function" ? getActiveSymbols() : [];
-    for (const symbol of symbols || []) {
-      subscribeToSymbol(symbol);
-    }
-    if (typeof onConnected === "function") {
-      onConnected(symbols);
-    }
+    void (async () => {
+      for (const symbol of symbols || []) {
+        await subscribeToSymbol(symbol);
+      }
+      if (typeof onConnected === "function") {
+        onConnected(symbols);
+      }
+    })();
   });
 
   hyperliquidWs.on("message", (rawBuffer) => {
@@ -282,4 +314,3 @@ module.exports = {
   subscribeToSymbol,
   unsubscribeFromSymbol
 };
-

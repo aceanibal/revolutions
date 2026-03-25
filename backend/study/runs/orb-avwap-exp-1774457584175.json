@@ -1,0 +1,833 @@
+{
+  "runId": "orb-avwap-exp-1774457584175",
+  "generatedAtMs": 1774457584175,
+  "runType": "experiments",
+  "baseConfig": {
+    "timezone": "America/New_York",
+    "orb": {
+      "startTime": "09:30",
+      "endTime": "10:00",
+      "timeframe": "5m",
+      "breakoutSource": "wick"
+    },
+    "avwap": {
+      "anchorTime": "10:00",
+      "endTime": "13:00",
+      "priceSource": "close"
+    },
+    "execution": {
+      "directionMode": "both",
+      "maxTradesPerDay": 1,
+      "stopLossMode": "orb_opposite",
+      "takeProfitR": 1.5,
+      "feeBps": 2.5,
+      "slippageBps": 3
+    },
+    "validation": {
+      "walkForwardSplitPct": 0.7,
+      "minTradesForTrust": 30
+    }
+  },
+  "parameterGrid": {
+    "execution.takeProfitR": [
+      1,
+      1.5,
+      2
+    ],
+    "execution.maxTradesPerDay": [
+      1,
+      2
+    ],
+    "execution.directionMode": [
+      "both",
+      "long_only",
+      "short_only"
+    ],
+    "execution.stopLossMode": [
+      "orb_opposite",
+      "avwap_cross"
+    ]
+  },
+  "runs": [
+    {
+      "runId": "orb-avwap-308b4fc21308",
+      "config": {
+        "timezone": "America/New_York",
+        "orb": {
+          "startTime": "09:30",
+          "endTime": "10:00",
+          "timeframe": "5m",
+          "breakoutSource": "wick"
+        },
+        "avwap": {
+          "anchorTime": "10:00",
+          "endTime": "13:00",
+          "priceSource": "close"
+        },
+        "execution": {
+          "directionMode": "both",
+          "maxTradesPerDay": 1,
+          "stopLossMode": "orb_opposite",
+          "takeProfitR": 1,
+          "feeBps": 2.5,
+          "slippageBps": 3
+        },
+        "validation": {
+          "walkForwardSplitPct": 0.7,
+          "minTradesForTrust": 30
+        }
+      },
+      "aggregate": {
+        "tradeCount": 3,
+        "winRate": 0,
+        "avgR": -0.4943482489158625,
+        "expectancyR": -0.4943482489158625,
+        "profitFactor": 0,
+        "maxDrawdownR": 1.4830447467475874,
+        "netR": -1.4830447467475874,
+        "netPnLQuote": -12991.9696,
+        "sharpeLike": -5.59870127354687
+      },
+      "inSample": {
+        "tradeCount": 3,
+        "winRate": 0,
+        "avgR": -0.4943482489158625,
+        "expectancyR": -0.4943482489158625,
+        "profitFactor": 0,
+        "maxDrawdownR": 1.4830447467475874,
+        "netR": -1.4830447467475874,
+        "netPnLQuote": -12991.9696,
+        "sharpeLike": -5.59870127354687
+      },
+      "outOfSample": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "score": 0,
+      "caseCount": 6,
+      "tradeCount": 3
+    },
+    {
+      "runId": "orb-avwap-5bbda70f4c71",
+      "config": {
+        "timezone": "America/New_York",
+        "orb": {
+          "startTime": "09:30",
+          "endTime": "10:00",
+          "timeframe": "5m",
+          "breakoutSource": "wick"
+        },
+        "avwap": {
+          "anchorTime": "10:00",
+          "endTime": "13:00",
+          "priceSource": "close"
+        },
+        "execution": {
+          "directionMode": "both",
+          "maxTradesPerDay": 1,
+          "stopLossMode": "avwap_cross",
+          "takeProfitR": 1,
+          "feeBps": 2.5,
+          "slippageBps": 3
+        },
+        "validation": {
+          "walkForwardSplitPct": 0.7,
+          "minTradesForTrust": 30
+        }
+      },
+      "aggregate": {
+        "tradeCount": 3,
+        "winRate": 0,
+        "avgR": -1.0011,
+        "expectancyR": -1.0011,
+        "profitFactor": 0,
+        "maxDrawdownR": 3.0033000000000003,
+        "netR": -3.0033000000000003,
+        "netPnLQuote": -2515.4181655060756,
+        "sharpeLike": 0
+      },
+      "inSample": {
+        "tradeCount": 3,
+        "winRate": 0,
+        "avgR": -1.0011,
+        "expectancyR": -1.0011,
+        "profitFactor": 0,
+        "maxDrawdownR": 3.0033000000000003,
+        "netR": -3.0033000000000003,
+        "netPnLQuote": -2515.4181655060756,
+        "sharpeLike": 0
+      },
+      "outOfSample": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "score": 0,
+      "caseCount": 6,
+      "tradeCount": 3
+    },
+    {
+      "runId": "orb-avwap-f56bb0b4f745",
+      "config": {
+        "timezone": "America/New_York",
+        "orb": {
+          "startTime": "09:30",
+          "endTime": "10:00",
+          "timeframe": "5m",
+          "breakoutSource": "wick"
+        },
+        "avwap": {
+          "anchorTime": "10:00",
+          "endTime": "13:00",
+          "priceSource": "close"
+        },
+        "execution": {
+          "directionMode": "long_only",
+          "maxTradesPerDay": 1,
+          "stopLossMode": "orb_opposite",
+          "takeProfitR": 1,
+          "feeBps": 2.5,
+          "slippageBps": 3
+        },
+        "validation": {
+          "walkForwardSplitPct": 0.7,
+          "minTradesForTrust": 30
+        }
+      },
+      "aggregate": {
+        "tradeCount": 3,
+        "winRate": 0,
+        "avgR": -0.4943482489158625,
+        "expectancyR": -0.4943482489158625,
+        "profitFactor": 0,
+        "maxDrawdownR": 1.4830447467475874,
+        "netR": -1.4830447467475874,
+        "netPnLQuote": -12991.9696,
+        "sharpeLike": -5.59870127354687
+      },
+      "inSample": {
+        "tradeCount": 3,
+        "winRate": 0,
+        "avgR": -0.4943482489158625,
+        "expectancyR": -0.4943482489158625,
+        "profitFactor": 0,
+        "maxDrawdownR": 1.4830447467475874,
+        "netR": -1.4830447467475874,
+        "netPnLQuote": -12991.9696,
+        "sharpeLike": -5.59870127354687
+      },
+      "outOfSample": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "score": 0,
+      "caseCount": 6,
+      "tradeCount": 3
+    },
+    {
+      "runId": "orb-avwap-3ba7a246e84b",
+      "config": {
+        "timezone": "America/New_York",
+        "orb": {
+          "startTime": "09:30",
+          "endTime": "10:00",
+          "timeframe": "5m",
+          "breakoutSource": "wick"
+        },
+        "avwap": {
+          "anchorTime": "10:00",
+          "endTime": "13:00",
+          "priceSource": "close"
+        },
+        "execution": {
+          "directionMode": "long_only",
+          "maxTradesPerDay": 1,
+          "stopLossMode": "avwap_cross",
+          "takeProfitR": 1,
+          "feeBps": 2.5,
+          "slippageBps": 3
+        },
+        "validation": {
+          "walkForwardSplitPct": 0.7,
+          "minTradesForTrust": 30
+        }
+      },
+      "aggregate": {
+        "tradeCount": 3,
+        "winRate": 0,
+        "avgR": -1.0011,
+        "expectancyR": -1.0011,
+        "profitFactor": 0,
+        "maxDrawdownR": 3.0033000000000003,
+        "netR": -3.0033000000000003,
+        "netPnLQuote": -2515.4181655060756,
+        "sharpeLike": 0
+      },
+      "inSample": {
+        "tradeCount": 3,
+        "winRate": 0,
+        "avgR": -1.0011,
+        "expectancyR": -1.0011,
+        "profitFactor": 0,
+        "maxDrawdownR": 3.0033000000000003,
+        "netR": -3.0033000000000003,
+        "netPnLQuote": -2515.4181655060756,
+        "sharpeLike": 0
+      },
+      "outOfSample": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "score": 0,
+      "caseCount": 6,
+      "tradeCount": 3
+    },
+    {
+      "runId": "orb-avwap-5c635be874d1",
+      "config": {
+        "timezone": "America/New_York",
+        "orb": {
+          "startTime": "09:30",
+          "endTime": "10:00",
+          "timeframe": "5m",
+          "breakoutSource": "wick"
+        },
+        "avwap": {
+          "anchorTime": "10:00",
+          "endTime": "13:00",
+          "priceSource": "close"
+        },
+        "execution": {
+          "directionMode": "short_only",
+          "maxTradesPerDay": 1,
+          "stopLossMode": "orb_opposite",
+          "takeProfitR": 1,
+          "feeBps": 2.5,
+          "slippageBps": 3
+        },
+        "validation": {
+          "walkForwardSplitPct": 0.7,
+          "minTradesForTrust": 30
+        }
+      },
+      "aggregate": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "inSample": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "outOfSample": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "score": 0,
+      "caseCount": 6,
+      "tradeCount": 0
+    },
+    {
+      "runId": "orb-avwap-81ff3df6a41d",
+      "config": {
+        "timezone": "America/New_York",
+        "orb": {
+          "startTime": "09:30",
+          "endTime": "10:00",
+          "timeframe": "5m",
+          "breakoutSource": "wick"
+        },
+        "avwap": {
+          "anchorTime": "10:00",
+          "endTime": "13:00",
+          "priceSource": "close"
+        },
+        "execution": {
+          "directionMode": "short_only",
+          "maxTradesPerDay": 1,
+          "stopLossMode": "avwap_cross",
+          "takeProfitR": 1,
+          "feeBps": 2.5,
+          "slippageBps": 3
+        },
+        "validation": {
+          "walkForwardSplitPct": 0.7,
+          "minTradesForTrust": 30
+        }
+      },
+      "aggregate": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "inSample": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "outOfSample": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "score": 0,
+      "caseCount": 6,
+      "tradeCount": 0
+    },
+    {
+      "runId": "orb-avwap-0dd8f0d1eb48",
+      "config": {
+        "timezone": "America/New_York",
+        "orb": {
+          "startTime": "09:30",
+          "endTime": "10:00",
+          "timeframe": "5m",
+          "breakoutSource": "wick"
+        },
+        "avwap": {
+          "anchorTime": "10:00",
+          "endTime": "13:00",
+          "priceSource": "close"
+        },
+        "execution": {
+          "directionMode": "both",
+          "maxTradesPerDay": 2,
+          "stopLossMode": "orb_opposite",
+          "takeProfitR": 1,
+          "feeBps": 2.5,
+          "slippageBps": 3
+        },
+        "validation": {
+          "walkForwardSplitPct": 0.7,
+          "minTradesForTrust": 30
+        }
+      },
+      "aggregate": {
+        "tradeCount": 6,
+        "winRate": 0,
+        "avgR": -0.4986277394291275,
+        "expectancyR": -0.4986277394291275,
+        "profitFactor": 0,
+        "maxDrawdownR": 2.9917664365747654,
+        "netR": -2.9917664365747654,
+        "netPnLQuote": -26437.4375,
+        "sharpeLike": -5.684433905291373
+      },
+      "inSample": {
+        "tradeCount": 6,
+        "winRate": 0,
+        "avgR": -0.4986277394291275,
+        "expectancyR": -0.4986277394291275,
+        "profitFactor": 0,
+        "maxDrawdownR": 2.9917664365747654,
+        "netR": -2.9917664365747654,
+        "netPnLQuote": -26437.4375,
+        "sharpeLike": -5.684433905291373
+      },
+      "outOfSample": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "score": 0,
+      "caseCount": 6,
+      "tradeCount": 6
+    },
+    {
+      "runId": "orb-avwap-0927246d2128",
+      "config": {
+        "timezone": "America/New_York",
+        "orb": {
+          "startTime": "09:30",
+          "endTime": "10:00",
+          "timeframe": "5m",
+          "breakoutSource": "wick"
+        },
+        "avwap": {
+          "anchorTime": "10:00",
+          "endTime": "13:00",
+          "priceSource": "close"
+        },
+        "execution": {
+          "directionMode": "both",
+          "maxTradesPerDay": 2,
+          "stopLossMode": "avwap_cross",
+          "takeProfitR": 1,
+          "feeBps": 2.5,
+          "slippageBps": 3
+        },
+        "validation": {
+          "walkForwardSplitPct": 0.7,
+          "minTradesForTrust": 30
+        }
+      },
+      "aggregate": {
+        "tradeCount": 6,
+        "winRate": 0,
+        "avgR": -1.0011,
+        "expectancyR": -1.0011,
+        "profitFactor": 0,
+        "maxDrawdownR": 6.006600000000001,
+        "netR": -6.006600000000001,
+        "netPnLQuote": -5392.2302166116115,
+        "sharpeLike": 0
+      },
+      "inSample": {
+        "tradeCount": 6,
+        "winRate": 0,
+        "avgR": -1.0011,
+        "expectancyR": -1.0011,
+        "profitFactor": 0,
+        "maxDrawdownR": 6.006600000000001,
+        "netR": -6.006600000000001,
+        "netPnLQuote": -5392.2302166116115,
+        "sharpeLike": 0
+      },
+      "outOfSample": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "score": 0,
+      "caseCount": 6,
+      "tradeCount": 6
+    },
+    {
+      "runId": "orb-avwap-27d0cf10d3f3",
+      "config": {
+        "timezone": "America/New_York",
+        "orb": {
+          "startTime": "09:30",
+          "endTime": "10:00",
+          "timeframe": "5m",
+          "breakoutSource": "wick"
+        },
+        "avwap": {
+          "anchorTime": "10:00",
+          "endTime": "13:00",
+          "priceSource": "close"
+        },
+        "execution": {
+          "directionMode": "long_only",
+          "maxTradesPerDay": 2,
+          "stopLossMode": "orb_opposite",
+          "takeProfitR": 1,
+          "feeBps": 2.5,
+          "slippageBps": 3
+        },
+        "validation": {
+          "walkForwardSplitPct": 0.7,
+          "minTradesForTrust": 30
+        }
+      },
+      "aggregate": {
+        "tradeCount": 6,
+        "winRate": 0,
+        "avgR": -0.4986277394291275,
+        "expectancyR": -0.4986277394291275,
+        "profitFactor": 0,
+        "maxDrawdownR": 2.9917664365747654,
+        "netR": -2.9917664365747654,
+        "netPnLQuote": -26437.4375,
+        "sharpeLike": -5.684433905291373
+      },
+      "inSample": {
+        "tradeCount": 6,
+        "winRate": 0,
+        "avgR": -0.4986277394291275,
+        "expectancyR": -0.4986277394291275,
+        "profitFactor": 0,
+        "maxDrawdownR": 2.9917664365747654,
+        "netR": -2.9917664365747654,
+        "netPnLQuote": -26437.4375,
+        "sharpeLike": -5.684433905291373
+      },
+      "outOfSample": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "score": 0,
+      "caseCount": 6,
+      "tradeCount": 6
+    },
+    {
+      "runId": "orb-avwap-7d4ef9a02a6e",
+      "config": {
+        "timezone": "America/New_York",
+        "orb": {
+          "startTime": "09:30",
+          "endTime": "10:00",
+          "timeframe": "5m",
+          "breakoutSource": "wick"
+        },
+        "avwap": {
+          "anchorTime": "10:00",
+          "endTime": "13:00",
+          "priceSource": "close"
+        },
+        "execution": {
+          "directionMode": "long_only",
+          "maxTradesPerDay": 2,
+          "stopLossMode": "avwap_cross",
+          "takeProfitR": 1,
+          "feeBps": 2.5,
+          "slippageBps": 3
+        },
+        "validation": {
+          "walkForwardSplitPct": 0.7,
+          "minTradesForTrust": 30
+        }
+      },
+      "aggregate": {
+        "tradeCount": 6,
+        "winRate": 0,
+        "avgR": -1.0011,
+        "expectancyR": -1.0011,
+        "profitFactor": 0,
+        "maxDrawdownR": 6.006600000000001,
+        "netR": -6.006600000000001,
+        "netPnLQuote": -5392.2302166116115,
+        "sharpeLike": 0
+      },
+      "inSample": {
+        "tradeCount": 6,
+        "winRate": 0,
+        "avgR": -1.0011,
+        "expectancyR": -1.0011,
+        "profitFactor": 0,
+        "maxDrawdownR": 6.006600000000001,
+        "netR": -6.006600000000001,
+        "netPnLQuote": -5392.2302166116115,
+        "sharpeLike": 0
+      },
+      "outOfSample": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "score": 0,
+      "caseCount": 6,
+      "tradeCount": 6
+    },
+    {
+      "runId": "orb-avwap-dae8e342d482",
+      "config": {
+        "timezone": "America/New_York",
+        "orb": {
+          "startTime": "09:30",
+          "endTime": "10:00",
+          "timeframe": "5m",
+          "breakoutSource": "wick"
+        },
+        "avwap": {
+          "anchorTime": "10:00",
+          "endTime": "13:00",
+          "priceSource": "close"
+        },
+        "execution": {
+          "directionMode": "short_only",
+          "maxTradesPerDay": 2,
+          "stopLossMode": "orb_opposite",
+          "takeProfitR": 1,
+          "feeBps": 2.5,
+          "slippageBps": 3
+        },
+        "validation": {
+          "walkForwardSplitPct": 0.7,
+          "minTradesForTrust": 30
+        }
+      },
+      "aggregate": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "inSample": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "outOfSample": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "score": 0,
+      "caseCount": 6,
+      "tradeCount": 0
+    },
+    {
+      "runId": "orb-avwap-39a4474cf289",
+      "config": {
+        "timezone": "America/New_York",
+        "orb": {
+          "startTime": "09:30",
+          "endTime": "10:00",
+          "timeframe": "5m",
+          "breakoutSource": "wick"
+        },
+        "avwap": {
+          "anchorTime": "10:00",
+          "endTime": "13:00",
+          "priceSource": "close"
+        },
+        "execution": {
+          "directionMode": "short_only",
+          "maxTradesPerDay": 2,
+          "stopLossMode": "avwap_cross",
+          "takeProfitR": 1,
+          "feeBps": 2.5,
+          "slippageBps": 3
+        },
+        "validation": {
+          "walkForwardSplitPct": 0.7,
+          "minTradesForTrust": 30
+        }
+      },
+      "aggregate": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "inSample": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "outOfSample": {
+        "tradeCount": 0,
+        "winRate": 0,
+        "avgR": 0,
+        "expectancyR": 0,
+        "profitFactor": 0,
+        "maxDrawdownR": 0,
+        "netR": 0,
+        "netPnLQuote": 0,
+        "sharpeLike": 0
+      },
+      "score": 0,
+      "caseCount": 6,
+      "tradeCount": 0
+    }
+  ]
+}

@@ -35,6 +35,11 @@ interface ChartProps {
   onStopLossPriceChange?: (nextPrice: number) => void;
   onCrosshairTimeChange?: (timeSec: number | null) => void;
   onChartClickPrice?: (price: number) => void;
+  /**
+   * When set, the chart snaps to the latest bar after data updates if this key changed
+   * or candles went from empty to non-empty (session study / timeframe switches).
+   */
+  scrollToLatestKey?: string | number;
 }
 
 function toEpochSeconds(time: Time): number | null {
@@ -70,7 +75,8 @@ export function Chart({
   enableStopLossDrag = false,
   onStopLossPriceChange,
   onCrosshairTimeChange,
-  onChartClickPrice
+  onChartClickPrice,
+  scrollToLatestKey
 }: ChartProps) {
   const palette = {
     live: { up: "#16a34a", down: "#dc2626" },
@@ -96,6 +102,8 @@ export function Chart({
   >([]);
   const draggingStopLossRef = useRef(false);
   const latestStopLossRef = useRef(stopLossPrice);
+  const prevScrollToLatestKeyRef = useRef<string | number | undefined>(undefined);
+  const prevCandleBarCountRef = useRef(0);
 
   useEffect(() => {
     if (!containerRef.current || chartRef.current) {
@@ -304,6 +312,22 @@ export function Chart({
       text: `Gap (${gap.missingBuckets})`
     }));
     (seriesRef.current as any)?.setMarkers?.(markers);
+
+    const chart = chartRef.current;
+    if (chart && scrollToLatestKey !== undefined && data.length > 0) {
+      const keyChanged = scrollToLatestKey !== prevScrollToLatestKeyRef.current;
+      const filledFromEmpty = prevCandleBarCountRef.current === 0;
+      if (keyChanged || filledFromEmpty) {
+        requestAnimationFrame(() => {
+          chartRef.current?.timeScale().scrollToRealTime();
+        });
+      }
+      prevScrollToLatestKeyRef.current = scrollToLatestKey;
+      prevCandleBarCountRef.current = data.length;
+    } else if (scrollToLatestKey !== undefined) {
+      prevScrollToLatestKeyRef.current = scrollToLatestKey;
+      prevCandleBarCountRef.current = data.length;
+    }
   }, [
     candles,
     gaps,
@@ -312,7 +336,8 @@ export function Chart({
     anchoredVwapEnabled,
     anchoredVwapAnchorTimeSec,
     emaEnabled,
-    emaPeriod
+    emaPeriod,
+    scrollToLatestKey
   ]);
 
   useEffect(() => {

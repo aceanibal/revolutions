@@ -1,0 +1,78 @@
+{
+  "runId": "orb-avwap-c24eca8f12e3",
+  "generatedAtMs": 1774457456372,
+  "aggregate": {
+    "tradeCount": 0,
+    "winRate": 0,
+    "avgR": 0,
+    "expectancyR": 0,
+    "profitFactor": 0,
+    "maxDrawdownR": 0,
+    "netR": 0,
+    "netPnLQuote": 0,
+    "sharpeLike": 0
+  },
+  "inSample": {
+    "tradeCount": 0,
+    "winRate": 0,
+    "avgR": 0,
+    "expectancyR": 0,
+    "profitFactor": 0,
+    "maxDrawdownR": 0,
+    "netR": 0,
+    "netPnLQuote": 0,
+    "sharpeLike": 0
+  },
+  "outOfSample": {
+    "tradeCount": 0,
+    "winRate": 0,
+    "avgR": 0,
+    "expectancyR": 0,
+    "profitFactor": 0,
+    "maxDrawdownR": 0,
+    "netR": 0,
+    "netPnLQuote": 0,
+    "sharpeLike": 0
+  },
+  "bySymbol": {},
+  "cases": [
+    {
+      "sessionId": "2026-03-25_0800-o45qra",
+      "symbol": "BTC",
+      "startedAtMs": 1774442426611,
+      "tradeCount": 0,
+      "netR": 0,
+      "winRate": 0,
+      "notes": ""
+    }
+  ],
+  "trades": [],
+  "runType": "single",
+  "config": {
+    "timezone": "America/New_York",
+    "orb": {
+      "startTime": "09:30",
+      "endTime": "10:00",
+      "timeframe": "5m",
+      "breakoutSource": "wick"
+    },
+    "avwap": {
+      "anchorTime": "10:00",
+      "endTime": "13:00",
+      "priceSource": "close"
+    },
+    "execution": {
+      "directionMode": "both",
+      "maxTradesPerDay": 1,
+      "stopLossMode": "orb_opposite",
+      "takeProfitR": 1.5,
+      "feeBps": 2.5,
+      "slippageBps": 3
+    },
+    "validation": {
+      "walkForwardSplitPct": 0.7,
+      "minTradesForTrust": 30
+    }
+  },
+  "caseCount": 1
+}

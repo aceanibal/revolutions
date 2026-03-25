@@ -197,6 +197,26 @@ async function fetchMeta(mode = "live") {
 }
 
 /**
+ * Hyperliquid info + WS expect the exact `universe[].name` string (case-sensitive).
+ * Our app normalizes symbols to UPPERCASE; map back to canonical names (e.g. KPEPE → kPEPE).
+ */
+async function resolvePerpCoinForInfoApi(symbol, mode = "live") {
+  const upper = String(symbol || "")
+    .trim()
+    .toUpperCase();
+  if (!upper) return "";
+  try {
+    const meta = await fetchMeta(mode);
+    const universe = Array.isArray(meta?.universe) ? meta.universe : [];
+    const entry = universe.find((e) => String(e?.name ?? "").toUpperCase() === upper);
+    if (entry?.name) return String(entry.name);
+  } catch {
+    /* fall through */
+  }
+  return upper;
+}
+
+/**
  * Use `frontendOpenOrders` (not bare `openOrders`): the minimal openOrders response often omits
  * triggerPx / triggerCondition / orderType — the UI shows e.g. "Price below 1.431" while only limitPx is present on openOrders.
  * @see https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint
@@ -1216,6 +1236,7 @@ module.exports = {
   fetchUserFills,
   fetchUserFees,
   fetchMeta,
+  resolvePerpCoinForInfoApi,
   fetchOpenOrders,
   fetchAllMids,
   fetchMidPrice,

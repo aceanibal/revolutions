@@ -37,6 +37,14 @@ const { setupKeyboardController } = require("./controller");
 const { SessionStore } = require("./sessionStore");
 const { detectGapRanges, intervalForTimeframe, upsertCandle } = require("./sessionMath");
 const {
+  DEFAULT_STUDY_CONFIG,
+  normalizeStudyConfig,
+  runStudy,
+  runExperimentBatch,
+  listRuns,
+  getRun
+} = require("./study/orbAvwapRunner");
+const {
   createTradeStateStore,
   inferExchangeStopLossFromPendingOrders,
   inferExchangeTakeProfitFromPendingOrders,
@@ -629,10 +637,13 @@ async function buildDirectHistorySnapshot(symbol) {
   const upper = normalizeSymbol(symbol);
   if (!upper) return null;
 
-  const [candles1mRaw, candles5mRaw] = await Promise.all([
+  const [res1m, res5m] = await Promise.all([
     sessionStore.fetchHistoricalCandles(upper, "1m"),
     sessionStore.fetchHistoricalCandles(upper, "5m")
   ]);
+
+  const candles1mRaw = res1m.ok ? res1m.candles : [];
+  const candles5mRaw = res5m.ok ? res5m.candles : [];
 
   const candles1m = candles1mRaw.map((c) => ({ ...c, source: "history", isGapFill: false }));
   const candles5m = candles5mRaw.map((c) => ({ ...c, source: "history", isGapFill: false }));
@@ -706,7 +717,7 @@ app.post("/api/change-symbol", async (req, res) => {
   // Ensure the symbol is streaming.
   if (!activeSymbols.has(nextSymbol)) {
     activeSymbols.add(nextSymbol);
-    subscribeToSymbol(nextSymbol);
+    await subscribeToSymbol(nextSymbol);
   }
 
   primarySymbol = nextSymbol;
@@ -764,7 +775,7 @@ app.post("/api/streams", async (req, res) => {
 
   if (!activeSymbols.has(symbol)) {
     activeSymbols.add(symbol);
-    subscribeToSymbol(symbol);
+    await subscribeToSymbol(symbol);
   }
 
   await preloadSymbolHistory(symbol);
@@ -779,7 +790,7 @@ app.post("/api/streams", async (req, res) => {
   });
 });
 
-app.delete("/api/streams/:symbol", (req, res) => {
+app.delete("/api/streams/:symbol", async (req, res) => {
   const symbol = normalizeSymbol(req.params.symbol);
   if (!symbol || !activeSymbols.has(symbol)) {
     return res.status(404).json({ ok: false, message: "Symbol not found in active streams" });
@@ -792,7 +803,7 @@ app.delete("/api/streams/:symbol", (req, res) => {
   }
 
   activeSymbols.delete(symbol);
-  unsubscribeFromSymbol(symbol);
+  await unsubscribeFromSymbol(symbol);
   tradeState.deleteKey(symbol, accountMode);
   activePositionBySymbol.delete(symbol);
   stopLossBySymbol.delete(symbol);
@@ -1047,6 +1058,68 @@ app.get("/api/sessions/:id", async (req, res) => {
     res.json({ ok: true, ...snapshot });
   } catch (error) {
     res.status(500).json({ ok: false, message: error.message || "Failed to load session" });
+  }
+});
+
+app.get("/api/study/orb-avwap/config/default", (req, res) => {
+  try {
+    const normalized = normalizeStudyConfig(DEFAULT_STUDY_CONFIG);
+    res.json({ ok: true, config: normalized });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error.message || "Failed to build default study config" });
+  }
+});
+
+app.post("/api/study/orb-avwap/run", async (req, res) => {
+  try {
+    const result = await runStudy(sessionStore, {
+      config: req.body?.config || {},
+      sessionIds: Array.isArray(req.body?.sessionIds) ? req.body.sessionIds : [],
+      symbol: req.body?.symbol || "",
+      limit: req.body?.limit
+    });
+    res.json({ ok: true, result });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error.message || "Failed to run ORB study" });
+  }
+});
+
+app.post("/api/study/orb-avwap/experiments", async (req, res) => {
+  try {
+    const result = await runExperimentBatch(sessionStore, {
+      baseConfig: req.body?.baseConfig || {},
+      parameterGrid: req.body?.parameterGrid || {},
+      sessionIds: Array.isArray(req.body?.sessionIds) ? req.body.sessionIds : [],
+      symbol: req.body?.symbol || "",
+      limit: req.body?.limit,
+      maxExperiments: req.body?.maxExperiments
+    });
+    res.json({ ok: true, result });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error.message || "Failed to run ORB experiments" });
+  }
+});
+
+app.get("/api/study/orb-avwap/runs", async (req, res) => {
+  try {
+    const limit = Number(req.query?.limit || 20);
+    const runs = await listRuns(limit);
+    res.json({ ok: true, runs });
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error.message || "Failed to list ORB runs" });
+  }
+});
+
+app.get("/api/study/orb-avwap/runs/:runId", async (req, res) => {
+  try {
+    const runId = String(req.params?.runId || "").trim();
+    if (!runId) {
+      return res.status(400).json({ ok: false, message: "Missing run id" });
+    }
+    const run = await getRun(runId);
+    return res.json({ ok: true, run });
+  } catch (error) {
+    return res.status(404).json({ ok: false, message: error.message || "Run not found" });
   }
 });
 
@@ -2092,7 +2165,7 @@ io.on("connection", (socket) => {
 
     if (!activeSymbols.has(symbol)) {
       activeSymbols.add(symbol);
-      subscribeToSymbol(symbol);
+      await subscribeToSymbol(symbol);
     }
 
     await preloadSymbolHistory(symbol);
@@ -2130,7 +2203,7 @@ io.on("connection", (socket) => {
     console.log("changeSymbol from client:", nextSymbol);
     if (!activeSymbols.has(nextSymbol)) {
       activeSymbols.add(nextSymbol);
-      subscribeToSymbol(nextSymbol);
+      await subscribeToSymbol(nextSymbol);
     }
 
     await preloadSymbolHistory(nextSymbol);
