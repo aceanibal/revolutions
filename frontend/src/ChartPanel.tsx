@@ -25,6 +25,8 @@ interface ChartPanelProps {
   trackedSymbols?: string[];
   vwapEnabled?: boolean;
   vwapPeriod?: number;
+  anchoredVwapEnabled?: boolean;
+  anchoredVwapAnchorTimeSec?: number;
   emaEnabled?: boolean;
   emaPeriod?: number;
   selectedSessionId?: string | null;
@@ -38,6 +40,8 @@ export function ChartPanel({
   trackedSymbols = [],
   vwapEnabled = true,
   vwapPeriod = 20,
+  anchoredVwapEnabled = false,
+  anchoredVwapAnchorTimeSec = 0,
   emaEnabled = true,
   emaPeriod = 9,
   selectedSessionId = null,
@@ -73,6 +77,8 @@ export function ChartPanel({
   const [leveragePreview, setLeveragePreview] = useState<LeveragePreview | null>(null);
   const [settingsSaveState, setSettingsSaveState] = useState<SettingsSaveState>("idle");
   const [settingsSaveMessage, setSettingsSaveMessage] = useState<string | null>(null);
+  const [userStopLines, setUserStopLines] = useState<number[]>([]);
+  const [drawModeEnabled, setDrawModeEnabled] = useState(false);
   const maxExchangeLeverage = 50;
 
   const riskEntryPrice = hud.price;
@@ -345,6 +351,16 @@ export function ChartPanel({
     setStopLossPriceOnSocket(nextPrice);
   };
 
+  const handleChartClickPrice = (price: number) => {
+    if (!drawModeEnabled) return;
+    if (!Number.isFinite(price) || price <= 0) return;
+    setUserStopLines((prev) => [...prev, price]);
+  };
+
+  const handleClearLines = () => {
+    setUserStopLines([]);
+  };
+
   const handleSaveRiskSettings = async () => {
     if (settingsSaveState === "saving") return;
     setSettingsSaveState("saving");
@@ -443,6 +459,23 @@ export function ChartPanel({
             >
               15m
             </button>
+            <button
+              type="button"
+              className={`rounded-full px-2 py-0.5 text-white transition ${
+                drawModeEnabled ? "bg-amber-700 hover:bg-amber-800" : "bg-slate-800 hover:bg-slate-700"
+              }`}
+              onClick={() => setDrawModeEnabled((prev) => !prev)}
+            >
+              Draw Line
+            </button>
+            <button
+              type="button"
+              className="rounded-full px-2 py-0.5 text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300"
+              disabled={userStopLines.length === 0}
+              onClick={handleClearLines}
+            >
+              Clear Lines
+            </button>
           </div>
           <div className="absolute bottom-2 right-2 z-20 rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-medium text-slate-700 ring-1 ring-inset ring-slate-200 backdrop-blur">
             {displayTime}
@@ -481,6 +514,8 @@ export function ChartPanel({
             gaps={gaps}
             vwapEnabled={vwapEnabled}
             vwapPeriod={vwapPeriod}
+            anchoredVwapEnabled={anchoredVwapEnabled}
+            anchoredVwapAnchorTimeSec={anchoredVwapAnchorTimeSec}
             emaEnabled={emaEnabled}
             emaPeriod={emaPeriod}
             entryPrice={chartEntryPrice}
@@ -490,9 +525,11 @@ export function ChartPanel({
             breakEvenPrice={metrics.breakEvenPrice}
             signedR={chartSignedR}
             isLong={activeTradeIsLong}
+            userHorizontalLines={userStopLines}
             enableStopLossDrag
             onStopLossPriceChange={handleStopLossPriceChange}
             onCrosshairTimeChange={setHoveredTimeSec}
+            onChartClickPrice={handleChartClickPrice}
           />
         </div>
       </section>

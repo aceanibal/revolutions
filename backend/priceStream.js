@@ -5,6 +5,20 @@ const currentSubscriptions = {
   activeAssetCtx: new Set(),
   trades: new Set()
 };
+let reconnectTimer = null;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = Math.max(
+  1,
+  Number.parseInt(process.env.HYPERLIQUID_WS_MAX_RECONNECT_ATTEMPTS || "8", 10) || 8
+);
+const BASE_RECONNECT_DELAY_MS = Math.max(
+  250,
+  Number.parseInt(process.env.HYPERLIQUID_WS_RECONNECT_BASE_MS || "2000", 10) || 2000
+);
+const MAX_RECONNECT_DELAY_MS = Math.max(
+  BASE_RECONNECT_DELAY_MS,
+  Number.parseInt(process.env.HYPERLIQUID_WS_RECONNECT_MAX_MS || "30000", 10) || 30000
+);
 
 function safeJsonParse(raw) {
   try {
@@ -149,11 +163,21 @@ function connectHyperliquidWs({
   onTick,
   onConnected
 }) {
+  // New socket instance must re-send subscriptions.
+  currentSubscriptions.activeAssetCtx.clear();
+  currentSubscriptions.trades.clear();
+
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
   console.log("[priceStream] Opening Hyperliquid WS:", wsUrl);
   hyperliquidWs = new WebSocket(wsUrl);
 
   hyperliquidWs.on("open", () => {
     console.log("[priceStream] Connected to Hyperliquid WS");
+    reconnectAttempts = 0;
     const symbols = typeof getActiveSymbols === "function" ? getActiveSymbols() : [];
     for (const symbol of symbols || []) {
       subscribeToSymbol(symbol);
@@ -207,7 +231,33 @@ function connectHyperliquidWs({
       "Reason:",
       reason?.toString?.() || ""
     );
-    setTimeout(
+    currentSubscriptions.activeAssetCtx.clear();
+    currentSubscriptions.trades.clear();
+    hyperliquidWs = null;
+
+    reconnectAttempts += 1;
+    if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+      console.log(
+        "[priceStream] Max reconnect attempts reached. Not retrying.",
+        { attempts: reconnectAttempts - 1, maxAttempts: MAX_RECONNECT_ATTEMPTS }
+      );
+      reconnectTimer = null;
+      return;
+    }
+
+    const retryDelayMs = Math.min(
+      BASE_RECONNECT_DELAY_MS * 2 ** (reconnectAttempts - 1),
+      MAX_RECONNECT_DELAY_MS
+    );
+    console.log(
+      "[priceStream] Scheduling reconnect attempt",
+      reconnectAttempts,
+      "in",
+      retryDelayMs,
+      "ms"
+    );
+
+    reconnectTimer = setTimeout(
       () =>
         connectHyperliquidWs({
           io,
@@ -218,7 +268,7 @@ function connectHyperliquidWs({
           onTick,
           onConnected
         }),
-      2000
+      retryDelayMs
     );
   });
 

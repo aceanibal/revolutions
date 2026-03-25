@@ -30,6 +30,29 @@ export function calculateVwapData(data: ChartCandlePoint[], periodInput: number)
   return vwapData;
 }
 
+export function calculateAnchoredVwapData(data: ChartCandlePoint[], anchorTimeSec: number): LineData[] {
+  const anchor = Math.floor(Number(anchorTimeSec || 0));
+  if (!Number.isFinite(anchor) || anchor <= 0) return [];
+
+  let cumulativePV = 0;
+  let cumulativeVolume = 0;
+  const vwapData: LineData[] = [];
+
+  for (const point of data) {
+    if (point.time < anchor) continue;
+    const typicalPrice = (point.high + point.low + point.close) / 3;
+    const volume = Number.isFinite(point.volume) ? point.volume : 0;
+    cumulativePV += typicalPrice * volume;
+    cumulativeVolume += volume;
+    vwapData.push({
+      time: point.time as Time,
+      value: cumulativeVolume > 0 ? cumulativePV / cumulativeVolume : typicalPrice
+    });
+  }
+
+  return vwapData;
+}
+
 export function calculateEmaData(data: ChartCandlePoint[], periodInput: number): LineData[] {
   const period = Math.max(1, Math.floor(periodInput));
   const multiplier = 2 / (period + 1);

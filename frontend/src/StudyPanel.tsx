@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Chart } from "./Chart";
 import type { Candle, GapRange, SavedSession, SessionTrade, Timeframe } from "./types";
 import {
@@ -9,6 +9,7 @@ import {
   fetchSessionTrades,
   saveSessionNotes
 } from "./lib/api";
+import { getTodayEasternTimeAnchorSec } from "./lib/easternTime";
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 
@@ -37,6 +38,8 @@ function formatTradeSide(dir: string, side: string): string {
 }
 
 export function StudyPanel() {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLElement | null>(null);
   const [sessions, setSessions] = useState<SavedSession[]>([]);
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string>("");
@@ -60,6 +63,12 @@ export function StudyPanel() {
   const [saveMessage, setSaveMessage] = useState("");
   const [sessionTrades, setSessionTrades] = useState<SessionTrade[]>([]);
   const [tradeMode, setTradeMode] = useState<"live" | "test">("live");
+  const [leftPanelWidth, setLeftPanelWidth] = useState(352);
+  const [chartHeight, setChartHeight] = useState(360);
+  const [studyUserLines, setStudyUserLines] = useState<number[]>([]);
+  const [drawModeEnabled, setDrawModeEnabled] = useState(false);
+  const [anchoredVwapEnabled, setAnchoredVwapEnabled] = useState(true);
+  const [anchoredVwapTime, setAnchoredVwapTime] = useState("09:30");
 
   const selectedSession = useMemo(
     () => sessions.find((session) => session.id === selectedSessionId) || null,
@@ -197,9 +206,57 @@ export function StudyPanel() {
     () => sessionTrades.filter((trade) => trade.mode === tradeMode),
     [sessionTrades, tradeMode]
   );
+  const chartCandles = useMemo(() => candlesByTimeframe[timeframe] || [], [candlesByTimeframe, timeframe]);
+  const anchoredVwapAnchorTimeSec = useMemo(
+    () => getTodayEasternTimeAnchorSec(anchoredVwapTime),
+    [anchoredVwapTime]
+  );
+  const handleChartClickPrice = (price: number) => {
+    if (!drawModeEnabled) return;
+    if (!Number.isFinite(price) || price <= 0) return;
+    setStudyUserLines((prev) => [...prev, price]);
+  };
+
+  const handleClearStudyLines = () => {
+    setStudyUserLines([]);
+  };
+
+  const startHorizontalResize = () => {
+    const onMouseMove = (event: MouseEvent) => {
+      if (!rootRef.current) return;
+      const rect = rootRef.current.getBoundingClientRect();
+      const next = event.clientX - rect.left;
+      setLeftPanelWidth(next);
+    };
+    const onMouseUp = () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  };
+
+  const startVerticalResize = () => {
+    const onMouseMove = (event: MouseEvent) => {
+      if (!contentRef.current) return;
+      const rect = contentRef.current.getBoundingClientRect();
+      const next = event.clientY - rect.top;
+      setChartHeight(next);
+    };
+    const onMouseUp = () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  };
 
   return (
-    <div className="grid h-[calc(100vh-5.5rem)] grid-cols-[22rem_minmax(0,1fr)] gap-3">
+    <div
+      ref={rootRef}
+      className="grid h-[calc(100vh-5.5rem)] gap-3"
+      style={{ gridTemplateColumns: `${leftPanelWidth}px 6px minmax(0, 1fr)` }}
+    >
       <aside className="overflow-hidden rounded-xl border border-slate-200 bg-white">
         <div className="border-b border-slate-100 px-3 py-2">
           <div className="text-sm font-semibold text-slate-900">Saved Sessions</div>
@@ -251,7 +308,17 @@ export function StudyPanel() {
         </div>
       </aside>
 
-      <section className="flex min-h-0 flex-col gap-3">
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sessions panel"
+        className="group relative cursor-col-resize"
+        onMouseDown={startHorizontalResize}
+      >
+        <div className="absolute inset-y-0 left-1/2 w-[2px] -translate-x-1/2 rounded bg-slate-200 transition group-hover:bg-indigo-300" />
+      </div>
+
+      <section ref={contentRef} className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1">
         <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
           {selectedSession ? (
             <div className="flex flex-wrap items-center gap-3 text-xs text-slate-700">
@@ -289,21 +356,62 @@ export function StudyPanel() {
                   5m
                 </button>
               </div>
+              <button
+                type="button"
+                onClick={() => setDrawModeEnabled((prev) => !prev)}
+                className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition ${
+                  drawModeEnabled
+                    ? "bg-amber-700 text-white hover:bg-amber-800"
+                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                }`}
+              >
+                Draw Line
+              </button>
+              <button
+                type="button"
+                onClick={handleClearStudyLines}
+                disabled={studyUserLines.length === 0}
+                className="rounded-full px-2.5 py-1 text-[11px] font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300"
+              >
+                Clear Lines
+              </button>
+              <label className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-700">
+                <span>Anchored VWAP</span>
+                <input
+                  type="checkbox"
+                  checked={anchoredVwapEnabled}
+                  onChange={(e) => setAnchoredVwapEnabled(e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                  aria-label="Enable Anchored VWAP"
+                />
+                <input
+                  type="time"
+                  value={anchoredVwapTime}
+                  disabled={!anchoredVwapEnabled}
+                  onChange={(e) => setAnchoredVwapTime(e.target.value)}
+                  className="rounded border border-slate-200 px-1.5 py-0.5 text-[11px] disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label="Anchored VWAP time"
+                />
+              </label>
             </div>
           ) : (
             <div className="text-sm text-slate-600">Select a saved session to begin studying.</div>
           )}
         </div>
 
-        <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-slate-200 bg-white p-2">
+        <div className="shrink-0 overflow-hidden rounded-xl border border-slate-200 bg-white p-2" style={{ height: chartHeight }}>
           {loadingSnapshot ? (
             <div className="flex h-full items-center justify-center text-sm text-slate-500">Loading chart...</div>
           ) : selectedSymbol ? (
             <Chart
-              candles={candlesByTimeframe[timeframe]}
+              candles={chartCandles}
               gaps={gapsByTimeframe[timeframe]}
               vwapEnabled
+              anchoredVwapEnabled={anchoredVwapEnabled}
+              anchoredVwapAnchorTimeSec={anchoredVwapAnchorTimeSec}
               emaEnabled
+              userHorizontalLines={studyUserLines}
+              onChartClickPrice={handleChartClickPrice}
             />
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-slate-500">
@@ -312,7 +420,17 @@ export function StudyPanel() {
           )}
         </div>
 
-        <div className="rounded-xl border border-slate-200 bg-white p-3">
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize chart height"
+          className="group -my-1 h-2 cursor-row-resize"
+          onMouseDown={startVerticalResize}
+        >
+          <div className="mx-auto mt-[3px] h-[2px] w-16 rounded bg-slate-200 transition group-hover:bg-indigo-300" />
+        </div>
+
+        <div className="min-h-0 rounded-xl border border-slate-200 bg-white p-3">
           <div className="mb-2 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-slate-900">Session Notes</h3>
             <span className={`text-xs ${saveStateClass}`}>{saveMessage}</span>
@@ -326,7 +444,7 @@ export function StudyPanel() {
           />
         </div>
 
-        <div className="rounded-xl border border-slate-200 bg-white p-3">
+        <div className="min-h-0 rounded-xl border border-slate-200 bg-white p-3">
           <div className="mb-2 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-slate-900">
               Session Trades ({filteredTrades.length})

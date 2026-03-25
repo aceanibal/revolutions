@@ -10,13 +10,15 @@ import {
 } from "lightweight-charts";
 import type { Candle, GapRange } from "./types";
 import { normalizeCandles } from "./chart/logic/candles";
-import { calculateEmaData, calculateVwapData } from "./chart/logic/indicators";
+import { calculateAnchoredVwapData, calculateEmaData, calculateVwapData } from "./chart/logic/indicators";
 
 interface ChartProps {
   candles: Candle[];
   gaps?: GapRange[];
   vwapEnabled?: boolean;
   vwapPeriod?: number;
+  anchoredVwapEnabled?: boolean;
+  anchoredVwapAnchorTimeSec?: number;
   emaEnabled?: boolean;
   emaPeriod?: number;
   entryPrice?: number;
@@ -28,9 +30,11 @@ interface ChartProps {
   breakEvenPrice?: number;
   signedR?: number | null;
   isLong?: boolean;
+  userHorizontalLines?: number[];
   enableStopLossDrag?: boolean;
   onStopLossPriceChange?: (nextPrice: number) => void;
   onCrosshairTimeChange?: (timeSec: number | null) => void;
+  onChartClickPrice?: (price: number) => void;
 }
 
 function toEpochSeconds(time: Time): number | null {
@@ -51,6 +55,8 @@ export function Chart({
   gaps = [],
   vwapEnabled = true,
   vwapPeriod = 20,
+  anchoredVwapEnabled = false,
+  anchoredVwapAnchorTimeSec = 0,
   emaEnabled = true,
   emaPeriod = 9,
   entryPrice = 0,
@@ -60,9 +66,11 @@ export function Chart({
   breakEvenPrice = 0,
   signedR = null,
   isLong = true,
+  userHorizontalLines = [],
   enableStopLossDrag = false,
   onStopLossPriceChange,
-  onCrosshairTimeChange
+  onCrosshairTimeChange,
+  onChartClickPrice
 }: ChartProps) {
   const palette = {
     live: { up: "#16a34a", down: "#dc2626" },
@@ -76,12 +84,16 @@ export function Chart({
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const vwapSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const anchoredVwapSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const emaSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const stopLossLineRef = useRef<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null>(null);
   const stopPlacedLineRef = useRef<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null>(null);
   const takeProfitPlacedLineRef = useRef<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null>(null);
   const breakEvenLineRef = useRef<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null>(null);
   const entryLineRef = useRef<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]> | null>(null);
+  const userHorizontalLinesRef = useRef<
+    Array<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]>>
+  >([]);
   const draggingStopLossRef = useRef(false);
   const latestStopLossRef = useRef(stopLossPrice);
 
@@ -174,6 +186,13 @@ export function Chart({
       priceLineVisible: false,
       lastValueVisible: false
     });
+    const anchoredVwapSeries = chart.addLineSeries({
+      color: "#7c3aed",
+      lineWidth: 2,
+      lineStyle: 2,
+      priceLineVisible: false,
+      lastValueVisible: false
+    });
     const emaSeries = chart.addLineSeries({
       color: "#f59e0b",
       lineWidth: 2,
@@ -185,6 +204,7 @@ export function Chart({
     seriesRef.current = series;
     volumeSeriesRef.current = volumeSeries;
     vwapSeriesRef.current = vwapSeries;
+    anchoredVwapSeriesRef.current = anchoredVwapSeries;
     emaSeriesRef.current = emaSeries;
     const handleCrosshairMove = (param: { time?: Time }) => {
       if (!onCrosshairTimeChange || !param.time) {
@@ -207,11 +227,18 @@ export function Chart({
     return () => {
       ro.disconnect();
       chart.unsubscribeCrosshairMove(handleCrosshairMove);
+      if (seriesRef.current) {
+        userHorizontalLinesRef.current.forEach((line) => {
+          seriesRef.current?.removePriceLine(line);
+        });
+      }
+      userHorizontalLinesRef.current = [];
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
       volumeSeriesRef.current = null;
       vwapSeriesRef.current = null;
+      anchoredVwapSeriesRef.current = null;
       emaSeriesRef.current = null;
     };
   }, [onCrosshairTimeChange]);
@@ -255,6 +282,13 @@ export function Chart({
       vwapSeriesRef.current?.setData([]);
     }
 
+    if (anchoredVwapEnabled) {
+      const anchoredVwapData = calculateAnchoredVwapData(data, anchoredVwapAnchorTimeSec);
+      anchoredVwapSeriesRef.current?.setData(anchoredVwapData);
+    } else {
+      anchoredVwapSeriesRef.current?.setData([]);
+    }
+
     if (emaEnabled) {
       const emaData = calculateEmaData(data, emaPeriod);
       emaSeriesRef.current?.setData(emaData);
@@ -270,7 +304,16 @@ export function Chart({
       text: `Gap (${gap.missingBuckets})`
     }));
     (seriesRef.current as any)?.setMarkers?.(markers);
-  }, [candles, gaps, vwapEnabled, vwapPeriod, emaEnabled, emaPeriod]);
+  }, [
+    candles,
+    gaps,
+    vwapEnabled,
+    vwapPeriod,
+    anchoredVwapEnabled,
+    anchoredVwapAnchorTimeSec,
+    emaEnabled,
+    emaPeriod
+  ]);
 
   useEffect(() => {
     latestStopLossRef.current = stopLossPrice;
@@ -319,6 +362,26 @@ export function Chart({
       window.removeEventListener("pointercancel", stopDragging);
     };
   }, [enableStopLossDrag, onStopLossPriceChange]);
+
+  useEffect(() => {
+    const series = seriesRef.current;
+    const container = containerRef.current;
+    if (!series || !container || !onChartClickPrice) return;
+
+    const onPointerUp = (event: PointerEvent) => {
+      const rect = container.getBoundingClientRect();
+      const y = event.clientY - rect.top;
+      const price = series.coordinateToPrice(y);
+      if (price && Number.isFinite(price) && price > 0) {
+        onChartClickPrice(price);
+      }
+    };
+
+    container.addEventListener("pointerup", onPointerUp);
+    return () => {
+      container.removeEventListener("pointerup", onPointerUp);
+    };
+  }, [onChartClickPrice]);
 
   useEffect(() => {
     const series = seriesRef.current;
@@ -413,6 +476,31 @@ export function Chart({
       });
     }
   }, [entryPrice, stopLossPrice, stopPlacedPrice, takeProfitPlacedPrice, breakEvenPrice, isLong]);
+
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series) return;
+
+    userHorizontalLinesRef.current.forEach((line) => {
+      series.removePriceLine(line);
+    });
+    userHorizontalLinesRef.current = [];
+
+    if (userHorizontalLines.length === 0) return;
+
+    userHorizontalLinesRef.current = userHorizontalLines
+      .filter((price) => Number.isFinite(price) && price > 0)
+      .map((price, index) =>
+        series.createPriceLine({
+          price,
+          color: "rgba(120, 72, 0, 0.95)",
+          lineWidth: 2,
+          lineStyle: 0,
+          axisLabelVisible: true,
+          title: `User line ${index + 1}`
+        })
+      );
+  }, [userHorizontalLines]);
 
   const hasSignedR = signedR !== null && signedR !== undefined && Number.isFinite(signedR);
   const signedRValue = Number(signedR ?? 0);

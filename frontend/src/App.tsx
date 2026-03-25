@@ -12,6 +12,7 @@ import {
   saveCurrentSession,
   setPrimarySymbol as setPrimarySymbolOnServer
 } from "./lib/api";
+import { getTodayEasternTimeAnchorSec } from "./lib/easternTime";
 import type { PersistenceStatus, SessionInfo } from "./types";
 
 type AppTab = "trade" | "report" | "assets" | "account" | "study";
@@ -46,6 +47,8 @@ export function App() {
   const [primarySymbol, setPrimarySymbol] = useState<string>("");
   const [vwapEnabled, setVwapEnabled] = useState<boolean>(true);
   const [vwapPeriod, setVwapPeriod] = useState<number>(20);
+  const [anchoredVwapEnabled, setAnchoredVwapEnabled] = useState<boolean>(true);
+  const [anchoredVwapTime, setAnchoredVwapTime] = useState<string>("09:30");
   const [emaEnabled, setEmaEnabled] = useState<boolean>(true);
   const [emaPeriod, setEmaPeriod] = useState<number>(9);
   const [snapshotMode, setSnapshotMode] = useState<"preopen" | "live">("preopen");
@@ -65,6 +68,7 @@ export function App() {
 
   const sessionElapsedMs = sessionInfo ? clockNowMs - sessionInfo.startedAtMs : 0;
   const sessionStatusLabel = sessionInfo?.status === "closed" ? "saved" : sessionInfo?.status || "";
+  const anchoredVwapAnchorTimeSec = getTodayEasternTimeAnchorSec(anchoredVwapTime);
 
   const handleChangeTab = (tab: AppTab) => {
     setActiveTab(tab);
@@ -288,6 +292,24 @@ export function App() {
                 aria-label="EMA period"
               />
             </label>
+            <label className="inline-flex items-center gap-1 rounded-full bg-white px-2.5 py-1 font-medium text-slate-700 ring-1 ring-inset ring-slate-200">
+              <span>Anchored VWAP</span>
+              <input
+                type="checkbox"
+                checked={anchoredVwapEnabled}
+                onChange={(e) => setAnchoredVwapEnabled(e.target.checked)}
+                className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                aria-label="Enable Anchored VWAP"
+              />
+              <input
+                type="time"
+                value={anchoredVwapTime}
+                disabled={!anchoredVwapEnabled}
+                onChange={(e) => setAnchoredVwapTime(e.target.value)}
+                className="rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] tabular-nums outline-none focus:border-indigo-300 focus:ring-1 focus:ring-indigo-300 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label="Anchored VWAP time"
+              />
+            </label>
             {sessionInfo && (
               <div className="inline-flex items-center gap-2 rounded-full bg-white px-2.5 py-1 font-medium text-slate-700 ring-1 ring-inset ring-slate-200">
                 <span
@@ -363,6 +385,8 @@ export function App() {
                 trackedSymbols={[...subscribedAssets, primarySymbol].filter(Boolean)}
                 vwapEnabled={vwapEnabled}
                 vwapPeriod={vwapPeriod}
+                anchoredVwapEnabled={anchoredVwapEnabled}
+                anchoredVwapAnchorTimeSec={anchoredVwapAnchorTimeSec}
                 emaEnabled={emaEnabled}
                 emaPeriod={emaPeriod}
                 onSessionInfoChange={handleSessionInfoChange}
