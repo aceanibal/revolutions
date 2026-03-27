@@ -73,6 +73,8 @@ class SessionStore {
       "https://api.hyperliquid.xyz/info";
     this.lastSqlSaveAtMs = null;
     this.lastSqlSavedSessionId = null;
+    /** When true, init() skips connecting to Redis (SQLite-only consumers, e.g. backtester). */
+    this.disableRedis = Boolean(options.disableRedis);
   }
 
   inferHyperliquidMode() {
@@ -80,7 +82,7 @@ class SessionStore {
   }
 
   async init() {
-    if (!this.redis) {
+    if (!this.redis && !this.disableRedis) {
       const candidate = new Redis(this.redisUrl, {
         maxRetriesPerRequest: 1,
         lazyConnect: true,

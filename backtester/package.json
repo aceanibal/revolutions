@@ -1,0 +1,19 @@
+{
+  "name": "revolutions-backtester",
+  "version": "0.2.0",
+  "private": true,
+  "description": "SQLite-first standalone session backtesting package.",
+  "main": "index.js",
+  "scripts": {
+    "server": "node server.js",
+    "import": "node scripts/importSession.js",
+    "list": "node scripts/listSessions.js",
+    "run": "node runner/cli.js",
+    "import:scanner": "node scripts/importScannerMetadata.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "express": "^4.22.1",
+    "luxon": "^3.7.2"
+  }
+}

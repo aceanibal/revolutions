@@ -1,5 +1,6 @@
 const express = require("express");
 const http = require("http");
+const path = require("path");
 const { Server } = require("socket.io");
 const {
   computePositionSize,
@@ -35,15 +36,8 @@ const {
 const { connectHyperliquidWs, subscribeToSymbol, unsubscribeFromSymbol } = require("./priceStream");
 const { setupKeyboardController } = require("./controller");
 const { SessionStore } = require("./sessionStore");
+const { createBacktestRepository, runBacktest, importSession, listSourceSessions } = require("../backtester");
 const { detectGapRanges, intervalForTimeframe, upsertCandle } = require("./sessionMath");
-const {
-  DEFAULT_STUDY_CONFIG,
-  normalizeStudyConfig,
-  runStudy,
-  runExperimentBatch,
-  listRuns,
-  getRun
-} = require("./study/orbAvwapRunner");
 const {
   createTradeStateStore,
   inferExchangeStopLossFromPendingOrders,
@@ -55,6 +49,8 @@ const {
 const PORT = process.env.PORT || 3000;
 const HYPERLIQUID_WS_URL =
   process.env.HYPERLIQUID_WS_URL || "wss://api.hyperliquid.xyz/ws";
+const BACKTEST_SQLITE_PATH =
+  process.env.BACKTEST_SQLITE_PATH || path.join(__dirname, "..", "backtester", "data", "backtest.sqlite");
 const DEFAULT_SYMBOL = "";
 const DEFAULT_STOP_LOSS_PRICE = 0;
 const ARCHIVE_ON_SHUTDOWN = String(process.env.SESSION_ARCHIVE_ON_SHUTDOWN || "")
@@ -332,6 +328,7 @@ const runtimeCounters = {
 };
 
 const sessionStore = new SessionStore();
+let backtestRepo = null;
 const tradeState = createTradeStateStore({
   onUpdate: (state) => {
     void persistTradeStateSnapshots([state]);
@@ -369,6 +366,12 @@ function emitTradeStateSnapshot(target, symbol = primarySymbol, mode = accountMo
   const normalized = normalizeSymbol(symbol);
   if (!normalized || !target || typeof target.emit !== "function") return;
   target.emit("tradeState:snapshot", tradeState.getClientSnapshot(normalized, mode));
+}
+
+function normalizeBacktestSymbol(value) {
+  return String(value || "")
+    .trim()
+    .toUpperCase();
 }
 
 async function persistTradeStateSnapshots(states = null) {
@@ -1061,65 +1064,184 @@ app.get("/api/sessions/:id", async (req, res) => {
   }
 });
 
-app.get("/api/study/orb-avwap/config/default", (req, res) => {
-  try {
-    const normalized = normalizeStudyConfig(DEFAULT_STUDY_CONFIG);
-    res.json({ ok: true, config: normalized });
-  } catch (error) {
-    res.status(500).json({ ok: false, message: error.message || "Failed to build default study config" });
+app.get("/api/backtest/sessions/all", (req, res) => {
+  if (!backtestRepo) {
+    return res.status(503).json({ ok: false, message: "Backtest repository unavailable" });
   }
-});
-
-app.post("/api/study/orb-avwap/run", async (req, res) => {
   try {
-    const result = await runStudy(sessionStore, {
-      config: req.body?.config || {},
-      sessionIds: Array.isArray(req.body?.sessionIds) ? req.body.sessionIds : [],
-      symbol: req.body?.symbol || "",
-      limit: req.body?.limit
+    const all = backtestRepo.listSessions();
+    const page = Math.max(1, Number.parseInt(String(req.query?.page || "1"), 10) || 1);
+    const pageSize = Math.max(1, Math.min(500, Number.parseInt(String(req.query?.pageSize || "100"), 10) || 100));
+    const date = String(req.query?.date || "").trim();
+    const filtered = date
+      ? all.filter((item) => {
+          const day = new Date(item.startedAtMs).toISOString().slice(0, 10);
+          return day === date;
+        })
+      : all;
+    const total = filtered.length;
+    const offset = (page - 1) * pageSize;
+    const sessions = filtered.slice(offset, offset + pageSize);
+    return res.json({
+      ok: true,
+      sessions,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize))
+      }
     });
-    res.json({ ok: true, result });
   } catch (error) {
-    res.status(500).json({ ok: false, message: error.message || "Failed to run ORB study" });
+    return res.status(500).json({ ok: false, message: error.message || "Failed to load backtest sessions" });
   }
 });
 
-app.post("/api/study/orb-avwap/experiments", async (req, res) => {
+app.get("/api/backtest/import/source-sessions", (req, res) => {
   try {
-    const result = await runExperimentBatch(sessionStore, {
-      baseConfig: req.body?.baseConfig || {},
-      parameterGrid: req.body?.parameterGrid || {},
-      sessionIds: Array.isArray(req.body?.sessionIds) ? req.body.sessionIds : [],
-      symbol: req.body?.symbol || "",
-      limit: req.body?.limit,
-      maxExperiments: req.body?.maxExperiments
+    const page = Number.parseInt(String(req.query?.page || "1"), 10) || 1;
+    const pageSize = Number.parseInt(String(req.query?.pageSize || "50"), 10) || 50;
+    const date = String(req.query?.date || "").trim();
+    const result = listSourceSessions({ page, pageSize, date: date || undefined });
+    return res.json({ ok: true, ...result });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error.message || "Failed to list source sessions" });
+  }
+});
+
+app.post("/api/backtest/import/session", async (req, res) => {
+  const sessionId = String(req.body?.sessionId || "").trim();
+  if (!sessionId) {
+    return res.status(400).json({ ok: false, message: "sessionId is required" });
+  }
+  try {
+    const result = await importSession({ sessionId });
+    return res.json({ ok: true, result });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error.message || "Failed to import session" });
+  }
+});
+
+app.get("/api/backtest/sessions/:id/symbols", (req, res) => {
+  if (!backtestRepo) {
+    return res.status(503).json({ ok: false, message: "Backtest repository unavailable" });
+  }
+  const sessionId = String(req.params?.id || "").trim();
+  if (!sessionId) {
+    return res.status(400).json({ ok: false, message: "Missing session id" });
+  }
+  try {
+    const symbols = backtestRepo.listSessionSymbols(sessionId);
+    return res.json({ ok: true, sessionId, symbols });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error.message || "Failed to load symbols" });
+  }
+});
+
+app.get("/api/backtest/sessions/:id", (req, res) => {
+  if (!backtestRepo) {
+    return res.status(503).json({ ok: false, message: "Backtest repository unavailable" });
+  }
+  const sessionId = String(req.params?.id || "").trim();
+  const symbol = normalizeBacktestSymbol(req.query?.symbol || "");
+  const timeframeRaw = String(req.query?.timeframe || "all").toLowerCase();
+  const timeframe = timeframeRaw === "1m" || timeframeRaw === "5m" ? timeframeRaw : "all";
+  if (!sessionId || !symbol) {
+    return res.status(400).json({ ok: false, message: "session id and symbol are required" });
+  }
+  try {
+    const snapshot = backtestRepo.getSessionSnapshot(sessionId, symbol, timeframe);
+    if (!snapshot) return res.status(404).json({ ok: false, message: "Session not found" });
+    return res.json({ ok: true, ...snapshot });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error.message || "Failed to load snapshot" });
+  }
+});
+
+app.get("/api/backtest/sessions/:id/trades", (req, res) => {
+  if (!backtestRepo) {
+    return res.status(503).json({ ok: false, message: "Backtest repository unavailable" });
+  }
+  const sessionId = String(req.params?.id || "").trim();
+  if (!sessionId) {
+    return res.status(400).json({ ok: false, message: "Missing session id" });
+  }
+  try {
+    const trades = backtestRepo.getSessionTrades(sessionId);
+    return res.json({ ok: true, sessionId, trades });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error.message || "Failed to load trades" });
+  }
+});
+
+app.get("/api/backtest/sessions/:id/scanner-metadata", (req, res) => {
+  if (!backtestRepo) {
+    return res.status(503).json({ ok: false, message: "Backtest repository unavailable" });
+  }
+  const sessionId = String(req.params?.id || "").trim();
+  if (!sessionId) {
+    return res.status(400).json({ ok: false, message: "Missing session id" });
+  }
+  const tool = String(req.query?.tool || "").trim();
+  try {
+    const items = backtestRepo.listScannerMetadata(sessionId, tool);
+    return res.json({ ok: true, sessionId, tool: tool || null, items });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error.message || "Failed to load scanner metadata" });
+  }
+});
+
+app.post("/api/backtest/scanner-metadata", (req, res) => {
+  if (!backtestRepo) {
+    return res.status(503).json({ ok: false, message: "Backtest repository unavailable" });
+  }
+  const sessionId = String(req.body?.sessionId || "").trim();
+  const tool = String(req.body?.tool || "scanner").trim();
+  const sourceId = String(req.body?.sourceId || "").trim();
+  const payload = req.body?.payload ?? {};
+  if (!sessionId) {
+    return res.status(400).json({ ok: false, message: "sessionId is required" });
+  }
+  try {
+    backtestRepo.importScannerMetadata({ sessionId, tool, sourceId, payload, importedAtMs: Date.now() });
+    return res.json({ ok: true, sessionId, tool, sourceId });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error.message || "Failed to import scanner metadata" });
+  }
+});
+
+app.post("/api/backtest/run", (req, res) => {
+  if (!backtestRepo) {
+    return res.status(503).json({ ok: false, message: "Backtest repository unavailable" });
+  }
+  const sessionId = String(req.body?.sessionId || "").trim();
+  const symbol = normalizeBacktestSymbol(req.body?.symbol || "");
+  const modeRaw = String(req.body?.mode || "candle").toLowerCase();
+  const mode = modeRaw === "tick" || modeRaw === "mixed" ? modeRaw : "candle";
+  const timeframeRaw = String(req.body?.timeframe || "1m").toLowerCase();
+  const timeframe = timeframeRaw === "5m" ? "5m" : "1m";
+  const strategyId = String(req.body?.strategyId || "noop");
+  const params = req.body?.params && typeof req.body.params === "object" ? req.body.params : {};
+  if (!sessionId || !symbol) {
+    return res.status(400).json({ ok: false, message: "sessionId and symbol are required" });
+  }
+
+  try {
+    const candles = backtestRepo.getCandles(sessionId, symbol, timeframe);
+    const ticks = backtestRepo.getTicks(sessionId, symbol);
+    const result = runBacktest({
+      sessionId,
+      symbol,
+      timeframe,
+      mode,
+      strategyId,
+      params,
+      candles,
+      ticks
     });
-    res.json({ ok: true, result });
+    return res.json({ ok: true, result });
   } catch (error) {
-    res.status(500).json({ ok: false, message: error.message || "Failed to run ORB experiments" });
-  }
-});
-
-app.get("/api/study/orb-avwap/runs", async (req, res) => {
-  try {
-    const limit = Number(req.query?.limit || 20);
-    const runs = await listRuns(limit);
-    res.json({ ok: true, runs });
-  } catch (error) {
-    res.status(500).json({ ok: false, message: error.message || "Failed to list ORB runs" });
-  }
-});
-
-app.get("/api/study/orb-avwap/runs/:runId", async (req, res) => {
-  try {
-    const runId = String(req.params?.runId || "").trim();
-    if (!runId) {
-      return res.status(400).json({ ok: false, message: "Missing run id" });
-    }
-    const run = await getRun(runId);
-    return res.json({ ok: true, run });
-  } catch (error) {
-    return res.status(404).json({ ok: false, message: error.message || "Run not found" });
+    return res.status(500).json({ ok: false, message: error.message || "Failed to run backtest" });
   }
 });
 
@@ -2232,6 +2354,13 @@ async function bootstrapServer() {
     await hydrateStartupStreams();
   } catch (error) {
     console.log("Session store initialization warning:", error?.message || error);
+  }
+
+  try {
+    backtestRepo = createBacktestRepository({ sqlitePath: BACKTEST_SQLITE_PATH });
+  } catch (error) {
+    backtestRepo = null;
+    console.log("Backtest repository initialization warning:", error?.message || error);
   }
 
   server.listen(PORT, async () => {

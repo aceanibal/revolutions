@@ -9,8 +9,6 @@ import type {
   GapRange,
   LeveragePreview,
   PersistenceStatus,
-  OrbAvwapStudyConfig,
-  OrbAvwapStudyRun,
   SavedSession,
   SessionInfo,
   SessionTrade,
@@ -436,76 +434,6 @@ export async function fetchAllSessions(): Promise<SavedSession[]> {
       return [];
     }
     return payload.sessions as SavedSession[];
-  } catch {
-    return [];
-  }
-}
-
-export async function fetchOrbAvwapDefaultConfig(): Promise<OrbAvwapStudyConfig | null> {
-  try {
-    const res = await fetch(`${BACKEND_BASE_URL}/api/study/orb-avwap/config/default`);
-    if (!res.ok) return null;
-    const payload: any = await res.json();
-    if (!payload?.ok || !payload?.config) return null;
-    return payload.config as OrbAvwapStudyConfig;
-  } catch {
-    return null;
-  }
-}
-
-export async function runOrbAvwapStudy(params: {
-  config: OrbAvwapStudyConfig;
-  sessionIds?: string[];
-  symbol?: string;
-  limit?: number;
-}): Promise<OrbAvwapStudyRun | null> {
-  try {
-    const res = await fetch(`${BACKEND_BASE_URL}/api/study/orb-avwap/run`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params)
-    });
-    if (!res.ok) return null;
-    const payload: any = await res.json();
-    if (!payload?.ok || !payload?.result) return null;
-    return payload.result as OrbAvwapStudyRun;
-  } catch {
-    return null;
-  }
-}
-
-export async function runOrbAvwapExperiments(params: {
-  baseConfig: OrbAvwapStudyConfig;
-  sessionIds?: string[];
-  symbol?: string;
-  limit?: number;
-  maxExperiments?: number;
-  parameterGrid: Record<string, unknown[]>;
-}): Promise<OrbAvwapStudyRun | null> {
-  try {
-    const res = await fetch(`${BACKEND_BASE_URL}/api/study/orb-avwap/experiments`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params)
-    });
-    if (!res.ok) return null;
-    const payload: any = await res.json();
-    if (!payload?.ok || !payload?.result) return null;
-    return payload.result as OrbAvwapStudyRun;
-  } catch {
-    return null;
-  }
-}
-
-export async function fetchOrbAvwapRuns(limit = 20): Promise<
-  Array<{ runId: string; runType: string; generatedAtMs: number; caseCount: number; tradeCount: number; netR: number }>
-> {
-  try {
-    const res = await fetch(`${BACKEND_BASE_URL}/api/study/orb-avwap/runs?limit=${Math.max(1, limit)}`);
-    if (!res.ok) return [];
-    const payload: any = await res.json();
-    if (!payload?.ok || !Array.isArray(payload.runs)) return [];
-    return payload.runs;
   } catch {
     return [];
   }
