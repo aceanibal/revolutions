@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chart } from "./Chart";
 import type { Candle, GapRange, SavedSession, SessionTrade, Timeframe } from "./types";
 import {
@@ -10,6 +10,11 @@ import {
   saveSessionNotes
 } from "./lib/api";
 import { getEasternTimeAnchorSecForDate } from "./lib/easternTime";
+import { normalizeCandles } from "./chart/logic/candles";
+import { calculateAnchoredVwapData, calculateVwapData } from "./chart/logic/indicators";
+
+/** Must stay in sync with `Chart` default `vwapPeriod`. */
+const STUDY_ROLLING_VWAP_PERIOD = 20;
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 
@@ -213,6 +218,105 @@ export function StudyPanel() {
     () => getEasternTimeAnchorSecForDate(selectedSession?.startedAtMs || Date.now(), anchoredVwapTime),
     [anchoredVwapTime, selectedSession?.startedAtMs]
   );
+
+  const lastLoggedCrosshairTimeRef = useRef<number | null>(null);
+  const crosshairLogStateRef = useRef({
+    chartCandles,
+    selectedSessionId,
+    selectedSymbol,
+    timeframe,
+    anchoredVwapAnchorTimeSec,
+    anchoredVwapTime,
+    anchoredVwapEnabled,
+    vwapEnabled
+  });
+  crosshairLogStateRef.current = {
+    chartCandles,
+    selectedSessionId,
+    selectedSymbol,
+    timeframe,
+    anchoredVwapAnchorTimeSec,
+    anchoredVwapTime,
+    anchoredVwapEnabled,
+    vwapEnabled
+  };
+
+  /** Stable identity so `Chart` does not tear down when deps change (its init effect lists this prop). */
+  const handleCrosshairStudyLog = useCallback((timeSec: number | null) => {
+    if (timeSec === null) {
+      lastLoggedCrosshairTimeRef.current = null;
+      return;
+    }
+    if (lastLoggedCrosshairTimeRef.current === timeSec) return;
+    lastLoggedCrosshairTimeRef.current = timeSec;
+
+    const s = crosshairLogStateRef.current;
+    const points = normalizeCandles(s.chartCandles);
+    const at = points.find((p) => p.time === timeSec);
+    const anchoredSeries = calculateAnchoredVwapData(points, s.anchoredVwapAnchorTimeSec);
+    const rollingSeries = calculateVwapData(points, STUDY_ROLLING_VWAP_PERIOD);
+    const anchoredPoint = anchoredSeries.find((p) => p.time === timeSec);
+    const rollingPoint = rollingSeries.find((p) => p.time === timeSec);
+    const av = anchoredPoint?.value;
+    const orbStyle =
+      at && s.anchoredVwapEnabled && typeof av === "number" && Number.isFinite(av)
+        ? {
+            avwap: av,
+            /** Same boolean as backtester `orb-avwap-930` on this bar. */
+            long: at.open < av && at.close > av,
+            short: at.open > av && at.close < av
+          }
+        : null;
+
+    const timeEtLegacy = new Date(timeSec * 1000).toLocaleString("en-US", {
+      timeZone: "America/New_York"
+    });
+    const timeEt = new Date(timeSec * 1000).toLocaleString("en-US", {
+      timeZone: "America/New_York",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false
+    });
+
+    // timeSec matches candle timeMs/1000. Keep legacy ET format plus explicit 24h ET.
+    console.log("[StudyPanel][chart]", {
+      sessionId: s.selectedSessionId,
+      symbol: s.selectedSymbol,
+      timeframe: s.timeframe,
+      timeSec,
+      timeEt: timeEtLegacy,
+      timeEt24: `${timeEt} ET`,
+      candle: at
+        ? { open: at.open, high: at.high, low: at.low, close: at.close, volume: at.volume }
+        : null,
+      note: at ? undefined : "no normalized candle for this time (series time mismatch)",
+      indicators: {
+        rollingVwapEnabled: s.vwapEnabled,
+        rollingVwapPeriod: STUDY_ROLLING_VWAP_PERIOD,
+        rollingVwap: rollingPoint?.value ?? null,
+        anchoredVwapEnabled: s.anchoredVwapEnabled,
+        anchoredVwapAnchorInput: s.anchoredVwapTime,
+        anchoredVwapAnchorSec: s.anchoredVwapAnchorTimeSec,
+        anchoredVwap: anchoredPoint?.value ?? null
+      },
+      /**
+       * Why it can look like “no cross” on the chart even when `orbStyle.long` is true:
+       * - Turn off rolling VWAP; it is a different line than anchored AVWAP.
+       * - AVWAP is drawn as straight segments between bar times; the sim compares O/C to the **endpoint**
+       *   value at this bar (same as the anchored line at this time), not to a horizontal line mid-bar.
+       */
+      orbAvwap930Style: orbStyle,
+      visualHints: {
+        rollingVwapOverlapsAnchored: s.vwapEnabled && s.anchoredVwapEnabled,
+        timeSecIsBarOpenUnix: timeSec
+      }
+    });
+  }, []);
+
   const handleChartClickPrice = (price: number) => {
     if (!drawModeEnabled) return;
     if (!Number.isFinite(price) || price <= 0) return;
@@ -433,6 +537,7 @@ export function StudyPanel() {
               anchoredVwapAnchorTimeSec={anchoredVwapAnchorTimeSec}
               emaEnabled={emaEnabled}
               userHorizontalLines={studyUserLines}
+              onCrosshairTimeChange={handleCrosshairStudyLog}
               onChartClickPrice={handleChartClickPrice}
             />
           ) : (

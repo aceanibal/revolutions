@@ -46,12 +46,14 @@ function createOrbAvwap930Strategy(options = {}) {
       if (event.kind !== "candle") return null;
       const stateSymbol = String(state?.symbol || "").toUpperCase();
       const c = event.candle || {};
-      const t = Number(event.ts || c.timeMs || 0);
+      // Prefer candle bucket open (timeMs). In mixed mode `event.ts` is end-of-bar for sort order only;
+      // Study/chart use bucket_start_ms — must match for ET labels and session windows.
+      const t = Number(c.timeMs || event.ts || 0);
       const open = Number(c.open);
       const high = Number(c.high);
       const low = Number(c.low);
       const close = Number(c.close);
-      const volumeRaw = Number(c.volume || 0);
+      const volumeRaw = Number(c.volume ?? 0);
       if (![t, open, high, low, close].every(Number.isFinite)) return null;
       if (t <= 0) return null;
 
@@ -65,14 +67,7 @@ function createOrbAvwap930Strategy(options = {}) {
         }
         return null;
       }
-      if (hhmm < activeStartHHMM || hhmm >= activeEndHHMM) {
-        if (debug) {
-          console.log(
-            `[orb-avwap-930] skip outside active window at=${etLabel} ET active=[${activeStartHHMM}..${activeEndHHMM})`
-          );
-        }
-        return null;
-      }
+      const isActiveWindow = hhmm >= activeStartHHMM && hhmm < activeEndHHMM;
       if (dayKey !== currentDay) {
         currentDay = dayKey;
         cumulativePV = 0;
@@ -95,14 +90,16 @@ function createOrbAvwap930Strategy(options = {}) {
         return null;
       }
 
-      const volume = volumeRaw > 0 ? volumeRaw : 1;
+      // Keep Anchored VWAP math aligned with frontend chart indicator logic.
+      // Frontend treats non-finite volume as 0 and does not coerce zero-volume bars to 1.
+      const volume = Number.isFinite(volumeRaw) ? volumeRaw : 0;
       const typical = (high + low + close) / 3;
       cumulativePV += typical * volume;
       cumulativeV += volume;
-      if (!Number.isFinite(cumulativePV) || !Number.isFinite(cumulativeV) || cumulativeV <= 0) {
+      if (!Number.isFinite(cumulativePV) || !Number.isFinite(cumulativeV)) {
         return null;
       }
-      const anchoredVwap = cumulativePV / cumulativeV;
+      const anchoredVwap = cumulativeV > 0 ? cumulativePV / cumulativeV : typical;
       if (debug && hhmm % 100 === 0) {
         console.log(
           `[orb-avwap-930] avwap day=${dayKey} at=${etLabel} ET avwap=${anchoredVwap.toFixed(6)} o=${open.toFixed(6)} c=${close.toFixed(6)}`
@@ -138,6 +135,14 @@ function createOrbAvwap930Strategy(options = {}) {
       if (hhmm < confirmAfterHHMM) {
         if (debug) {
           console.log(`[orb-avwap-930] skip pre-confirm at=${etLabel} ET`);
+        }
+        return null;
+      }
+      if (!isActiveWindow) {
+        if (debug) {
+          console.log(
+            `[orb-avwap-930] skip entries outside active window at=${etLabel} ET active=[${activeStartHHMM}..${activeEndHHMM})`
+          );
         }
         return null;
       }

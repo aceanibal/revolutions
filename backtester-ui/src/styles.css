@@ -34,9 +34,65 @@ body {
   flex-direction: column;
 }
 
+.left-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.left-nav-item {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.left-nav-item strong {
+  font-size: 12px;
+  color: #1e293b;
+}
+
+.left-nav-item span {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.left-nav-item.active {
+  border-color: #6366f1;
+  background: #eef2ff;
+}
+
+.left-context {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .panel-main {
   overflow: auto;
   padding: 10px;
+}
+
+.workspace-header {
+  margin-bottom: 10px;
+}
+
+.workspace-header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.workspace-header p {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 12px;
 }
 
 .panel-header {
@@ -227,6 +283,65 @@ thead th {
   border-top: none;
   color: #475569;
   background: #f8fafc;
+}
+
+.trade-row {
+  cursor: pointer;
+}
+
+.trade-row:hover {
+  background: #f8fafc;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+}
+
+.modal-card {
+  width: min(1100px, 100%);
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.modal-header button {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  padding: 6px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.modal-chart {
+  margin-top: 10px;
+  height: 460px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
 }
 
 .empty {

@@ -370,6 +370,49 @@ export async function fetchSessionSnapshotById(
   }
 }
 
+/**
+ * Same SQLite + schema as the backtester (`backtester/data/backtest.sqlite` via backend repo).
+ * Use for Study so OHLC/AVWAP match `npm start` / backtester runs; avoids Redis/sessionStore drift.
+ */
+export async function fetchBacktestSessionSnapshot(
+  sessionId: string,
+  symbol: string
+): Promise<SessionSnapshot | null> {
+  try {
+    const res = await fetch(
+      `${BACKEND_BASE_URL}/api/backtest/sessions/${encodeURIComponent(sessionId)}?symbol=${encodeURIComponent(
+        symbol
+      )}&timeframe=all`
+    );
+    if (!res.ok) {
+      return null;
+    }
+    const payload: any = await res.json();
+    if (!payload?.ok) return null;
+
+    return {
+      sessionInfo: payload.sessionInfo as SessionInfo,
+      symbol: String(payload.symbol || symbol).toUpperCase(),
+      candlesByTimeframe: {
+        "1m": Array.isArray(payload?.candlesByTimeframe?.["1m"])
+          ? payload.candlesByTimeframe["1m"]
+          : [],
+        "5m": Array.isArray(payload?.candlesByTimeframe?.["5m"])
+          ? payload.candlesByTimeframe["5m"]
+          : [],
+        "15m": []
+      },
+      gapsByTimeframe: {
+        "1m": Array.isArray(payload?.gapsByTimeframe?.["1m"]) ? payload.gapsByTimeframe["1m"] : [],
+        "5m": Array.isArray(payload?.gapsByTimeframe?.["5m"]) ? payload.gapsByTimeframe["5m"] : [],
+        "15m": []
+      }
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function saveCurrentSession(): Promise<PersistenceStatus | null> {
   try {
     const res = await fetch(`${BACKEND_BASE_URL}/api/session/save`, {

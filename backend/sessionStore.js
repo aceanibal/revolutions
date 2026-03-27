@@ -959,12 +959,27 @@ class SessionStore {
     }
     if (!sessionInfo) return null;
 
+    /** Live window: Redis may have newer ticks. Any other session: prefer SQLite so Study matches `session_candles` (and backtest imports), not stale tick-built Redis OHLC. */
+    const liveSessionId = this.redis ? await this.getCurrentSessionId() : null;
+    const isCurrentLiveSession = liveSessionId != null && sessionId === liveSessionId;
+
+    const mapSqlCandles = (rows) =>
+      rows.map((row) => ({
+        timeMs: Number(row.bucket_start_ms || 0),
+        open: Number(row.open),
+        high: Number(row.high),
+        low: Number(row.low),
+        close: Number(row.close),
+        volume: Number(row.volume || 0),
+        source: row.source || "history",
+        isGapFill: Boolean(row.is_gap_fill)
+      }));
+
     const getCandlesForTimeframe = async (tf) => {
-      const redisCandles = await this.getCandles(sessionId, upper, tf);
-      if (redisCandles.length > 0 || !this.sqlite) return redisCandles;
-      const rows = this.sqlite
-        .prepare(
-          `
+      const sqlRows = this.sqlite
+        ? this.sqlite
+            .prepare(
+              `
             SELECT
               bucket_start_ms,
               open,
@@ -978,21 +993,23 @@ class SessionStore {
             WHERE session_id = ? AND symbol = ? AND timeframe = ?
             ORDER BY bucket_start_ms ASC
           `
-        )
-        .all(sessionId, upper, tf);
-      return rows.map((row) => ({
-        timeMs: Number(row.bucket_start_ms || 0),
-        open: Number(row.open),
-        high: Number(row.high),
-        low: Number(row.low),
-        close: Number(row.close),
-        volume: Number(row.volume || 0),
-        source: row.source || "history",
-        isGapFill: Boolean(row.is_gap_fill)
-      }));
+            )
+            .all(sessionId, upper, tf)
+        : [];
+      const sqlCandles = mapSqlCandles(sqlRows);
+      if (!isCurrentLiveSession && sqlCandles.length > 0) {
+        return sqlCandles;
+      }
+
+      const redisCandles = await this.getCandles(sessionId, upper, tf);
+      if (redisCandles.length > 0 || !this.sqlite) return redisCandles;
+      return sqlCandles;
     };
 
     const getGapsForTimeframe = async (tf, candles) => {
+      if (!isCurrentLiveSession && candles.length > 0) {
+        return detectGapRanges(candles, intervalForTimeframe(tf));
+      }
       const redisGaps = await this.getGaps(sessionId, upper, tf);
       if (redisGaps.length > 0 || !this.sqlite) return redisGaps;
       return detectGapRanges(candles, intervalForTimeframe(tf));
@@ -1480,6 +1497,24 @@ class SessionStore {
     });
   }
 
+  async resaveAllRedisSessions() {
+    if (!this.redis || !this.sqlite) return { ok: false, reason: "no_redis_or_sqlite" };
+    const metaKeys = await this.redis.keys("session:*:meta");
+    const results = [];
+    for (const key of metaKeys) {
+      const id = await this.redis.hget(key, "id");
+      if (!id) continue;
+      try {
+        const payload = await this.persistSessionToSql(id, { markClosed: false, savedAtMs: Date.now() });
+        results.push({ sessionId: id, ok: !!payload });
+      } catch (err) {
+        results.push({ sessionId: id, ok: false, error: err.message });
+      }
+    }
+    console.log(`[sessionStore] resaveAllRedisSessions: processed ${results.length} sessions`);
+    return { ok: true, sessions: results };
+  }
+
   async persistSessionToSql(sessionId, options = {}) {
     if (!this.redis || !sessionId) return null;
     const markClosed = Boolean(options.markClosed);
@@ -1504,10 +1539,14 @@ class SessionStore {
     let tickCount = 0;
 
     const insertTick = this.sqlite.prepare(
-      "INSERT OR IGNORE INTO session_ticks (session_id, symbol, ts_ms, price, size, source) VALUES (?, ?, ?, ?, ?, ?)"
+      "INSERT OR REPLACE INTO session_ticks (session_id, symbol, ts_ms, price, size, source) VALUES (?, ?, ?, ?, ?, ?)"
     );
     const insertCandle = this.sqlite.prepare(
-      "INSERT OR IGNORE INTO session_candles (session_id, symbol, timeframe, bucket_start_ms, open, high, low, close, volume, source, is_gap_fill) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      `INSERT INTO session_candles (session_id, symbol, timeframe, bucket_start_ms, open, high, low, close, volume, source, is_gap_fill)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_id, symbol, timeframe, bucket_start_ms) DO UPDATE SET
+         open=excluded.open, high=excluded.high, low=excluded.low, close=excluded.close,
+         volume=excluded.volume, source=excluded.source, is_gap_fill=excluded.is_gap_fill`
     );
     const upsertSession = this.sqlite.prepare(
       `INSERT INTO sessions (id, market_window_start, market_window_end, started_at_ms, ended_at_ms, status, break_reason, asset_count, tick_count, candle_count, last_saved_at_ms, active_streams_json)

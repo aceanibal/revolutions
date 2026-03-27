@@ -1,3 +1,14 @@
+import AppWorkspace from "./AppWorkspace";
+
+export default function App() {
+  return <AppWorkspace />;
+}
+/*
+import AppWorkspace from "./AppWorkspace";
+
+export default function App() {
+  return <AppWorkspace />;
+}
 import { useEffect, useMemo, useState } from "react";
 import { CandleChart } from "./components/CandleChart";
 import {
@@ -37,6 +48,7 @@ type BatchRunRow = {
 
 type OptimizationScenarioResult = {
   rr: number;
+  anchorHHMM: number;
   activeStartHHMM: number;
   activeEndHHMM: number;
   runCount: number;
@@ -95,6 +107,8 @@ type OptimizationAssetRow = {
   negativeRunRate: number;
   score: number;
 };
+
+type SimulatedTrade = BacktestRunResult["trades"][number];
 
 function tradeRiskPerUnit(side: string, entryPx: number, stopLoss?: number | null): number {
   if (!Number.isFinite(entryPx) || !Number.isFinite(stopLoss)) return 0;
@@ -175,6 +189,7 @@ export default function App() {
   const [strategyId, setStrategyId] = useState<StrategyId>("noop");
   const [optimizerSettings, setOptimizerSettings] = useState<BacktestOptimizerSettings>({
     takeProfitRR: 2,
+    vwapStartHHMM: 930,
     activeStartHHMM: 930,
     activeEndHHMM: 1600
   });
@@ -183,6 +198,7 @@ export default function App() {
     "5m": []
   });
   const [runResult, setRunResult] = useState<BacktestRunResult | null>(null);
+  const [selectedSimTradeIdx, setSelectedSimTradeIdx] = useState<number | null>(null);
   const [sessionTrades, setSessionTrades] = useState<SessionTrade[]>([]);
   const [scannerMetadata, setScannerMetadata] = useState<ScannerMetadataItem[]>([]);
   const [running, setRunning] = useState(false);
@@ -193,6 +209,9 @@ export default function App() {
   const [optimizerRrStart, setOptimizerRrStart] = useState(1);
   const [optimizerRrEnd, setOptimizerRrEnd] = useState(3);
   const [optimizerRrStep, setOptimizerRrStep] = useState(0.5);
+  const [optimizerVwapStartFrom, setOptimizerVwapStartFrom] = useState(930);
+  const [optimizerVwapStartTo, setOptimizerVwapStartTo] = useState(930);
+  const [optimizerVwapStartStepMinutes, setOptimizerVwapStartStepMinutes] = useState(15);
   const [optimizerActiveStartFrom, setOptimizerActiveStartFrom] = useState(930);
   const [optimizerActiveStartTo, setOptimizerActiveStartTo] = useState(1000);
   const [optimizerActiveStartStepMinutes, setOptimizerActiveStartStepMinutes] = useState(15);
@@ -306,6 +325,50 @@ export default function App() {
     return candles;
   }, [candlesByTimeframe, timeframe, mode, replayIndex]);
 
+  const modalCandles = useMemo(() => candlesByTimeframe[timeframe] || [], [candlesByTimeframe, timeframe]);
+
+  const selectedSimTrade = useMemo<SimulatedTrade | null>(() => {
+    if (selectedSimTradeIdx == null || !runResult?.trades) return null;
+    return runResult.trades[selectedSimTradeIdx] || null;
+  }, [selectedSimTradeIdx, runResult]);
+
+  const selectedSimTradeLevels = useMemo(() => {
+    if (!selectedSimTrade) return [];
+    return [
+      { title: "Entry", price: Number(selectedSimTrade.entryPx || 0), color: "#0ea5e9", lineStyle: 0 as const },
+      { title: "SL", price: Number(selectedSimTrade.stopLoss), color: "#dc2626", lineStyle: 2 as const },
+      { title: "TP", price: Number(selectedSimTrade.takeProfit), color: "#16a34a", lineStyle: 2 as const }
+    ].filter((level) => Number.isFinite(level.price) && level.price > 0);
+  }, [selectedSimTrade]);
+
+  const selectedSimTradeTimeMarkers = useMemo(() => {
+    if (!selectedSimTrade) return [];
+    const entryPrice = Number(selectedSimTrade.entryPx || 0);
+    const openedAtMs = Number(selectedSimTrade.openedAtMs || 0);
+    if (!Number.isFinite(entryPrice) || !Number.isFinite(openedAtMs) || entryPrice <= 0 || openedAtMs <= 0) return [];
+    return [
+      {
+        title: "Trade Taken",
+        timeMs: openedAtMs,
+        price: entryPrice,
+        color: "#7c3aed"
+      }
+    ];
+  }, [selectedSimTrade]);
+
+  useEffect(() => {
+    setSelectedSimTradeIdx(null);
+  }, [runResult]);
+
+  useEffect(() => {
+    if (selectedSimTradeIdx == null) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSelectedSimTradeIdx(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedSimTradeIdx]);
+
   const sourceStats = useMemo(() => {
     const candles = candlesByTimeframe[timeframe] || [];
     return candles.reduce(
@@ -337,6 +400,7 @@ export default function App() {
       "simple-momentum": {},
       "orb-avwap-930": {
         rr: Number(optimizerSettings.takeProfitRR),
+        anchorHHMM: Number(optimizerSettings.vwapStartHHMM),
         activeStartHHMM: Number(optimizerSettings.activeStartHHMM),
         activeEndHHMM: Number(optimizerSettings.activeEndHHMM)
       }
@@ -460,10 +524,16 @@ export default function App() {
           ? rangeBySamples(rrStart, rrEnd, Math.max(1, Number(optimizerConsistentSamples || 3)), 4)
           : rangeByStep(rrStart, rrEnd, rrStep, 4);
 
+      const vwapFromMin = hhmmToMinutes(Math.min(optimizerVwapStartFrom, optimizerVwapStartTo));
+      const vwapToMin = hhmmToMinutes(Math.max(optimizerVwapStartFrom, optimizerVwapStartTo));
       const startFromMin = hhmmToMinutes(Math.min(optimizerActiveStartFrom, optimizerActiveStartTo));
       const startToMin = hhmmToMinutes(Math.max(optimizerActiveStartFrom, optimizerActiveStartTo));
       const endFromMin = hhmmToMinutes(Math.min(optimizerActiveEndFrom, optimizerActiveEndTo));
       const endToMin = hhmmToMinutes(Math.max(optimizerActiveEndFrom, optimizerActiveEndTo));
+      const vwapMinValues =
+        optimizerStepMode === "consistent"
+          ? rangeBySamples(vwapFromMin, vwapToMin, Math.max(1, Number(optimizerConsistentSamples || 3)), 0)
+          : rangeByStep(vwapFromMin, vwapToMin, Math.max(1, Number(optimizerVwapStartStepMinutes || 15)), 0);
       const startMinValues =
         optimizerStepMode === "consistent"
           ? rangeBySamples(startFromMin, startToMin, Math.max(1, Number(optimizerConsistentSamples || 3)), 0)
@@ -472,14 +542,18 @@ export default function App() {
         optimizerStepMode === "consistent"
           ? rangeBySamples(endFromMin, endToMin, Math.max(1, Number(optimizerConsistentSamples || 3)), 0)
           : rangeByStep(endFromMin, endToMin, Math.max(1, Number(optimizerActiveEndStepMinutes || 15)), 0);
+      const vwapStartValues = vwapMinValues.map((m) => minutesToHHMM(m));
       const activeStartValues = startMinValues.map((m) => minutesToHHMM(m));
       const activeEndValues = endMinValues.map((m) => minutesToHHMM(m));
-      const variableCombos: Array<{ rr: number; activeStartHHMM: number; activeEndHHMM: number }> = [];
+      const variableCombos: Array<{ rr: number; anchorHHMM: number; activeStartHHMM: number; activeEndHHMM: number }> = [];
       for (const rr of rrValues) {
-        for (const activeStartHHMM of activeStartValues) {
-          for (const activeEndHHMM of activeEndValues) {
-            if (hhmmToMinutes(activeEndHHMM) <= hhmmToMinutes(activeStartHHMM)) continue;
-            variableCombos.push({ rr, activeStartHHMM, activeEndHHMM });
+        for (const anchorHHMM of vwapStartValues) {
+          for (const activeStartHHMM of activeStartValues) {
+            for (const activeEndHHMM of activeEndValues) {
+              if (hhmmToMinutes(activeEndHHMM) <= hhmmToMinutes(activeStartHHMM)) continue;
+              if (hhmmToMinutes(activeStartHHMM) < hhmmToMinutes(anchorHHMM)) continue;
+              variableCombos.push({ rr, anchorHHMM, activeStartHHMM, activeEndHHMM });
+            }
           }
         }
       }
@@ -543,7 +617,7 @@ export default function App() {
           setOptimizationProgress({
             done,
             total: totalRuns,
-            current: `RR ${rr.toFixed(2)} ${combo.activeStartHHMM}-${combo.activeEndHHMM} · ${target.sessionId}/${target.symbol}`
+            current: `RR ${rr.toFixed(2)} VWAP ${combo.anchorHHMM} active ${combo.activeStartHHMM}-${combo.activeEndHHMM} · ${target.sessionId}/${target.symbol}`
           });
           const result = await runBacktestApi({
             sessionId: target.sessionId,
@@ -555,6 +629,7 @@ export default function App() {
             strategyParams: {
               ...strategyVariables["orb-avwap-930"],
               rr,
+              anchorHHMM: combo.anchorHHMM,
               activeStartHHMM: combo.activeStartHHMM,
               activeEndHHMM: combo.activeEndHHMM
             }
@@ -608,6 +683,7 @@ export default function App() {
 
         scenarioAccumulator.push({
           rr,
+          anchorHHMM: combo.anchorHHMM,
           activeStartHHMM: combo.activeStartHHMM,
           activeEndHHMM: combo.activeEndHHMM,
           runCount,
@@ -621,7 +697,7 @@ export default function App() {
           drawdownRankScore: 0
         });
         rrAssetBreakdownAccumulator[
-          `${rr.toFixed(4)}:${combo.activeStartHHMM}:${combo.activeEndHHMM}`
+          `${rr.toFixed(4)}:${combo.anchorHHMM}:${combo.activeStartHHMM}:${combo.activeEndHHMM}`
         ] = assetRows;
       }
 
@@ -652,7 +728,7 @@ export default function App() {
       if (best) {
         const bestAssets = (
           rrAssetBreakdownAccumulator[
-            `${best.rr.toFixed(4)}:${best.activeStartHHMM}:${best.activeEndHHMM}`
+            `${best.rr.toFixed(4)}:${best.anchorHHMM}:${best.activeStartHHMM}:${best.activeEndHHMM}`
           ] || []
         )
           .slice(0, Math.max(1, Number(optimizerMixSize || 1)))
@@ -805,7 +881,7 @@ export default function App() {
     if (!bestOptimizationScenario) return [];
     const rows =
       optimizationAssetBreakdownsByRr[
-        `${bestOptimizationScenario.rr.toFixed(4)}:${bestOptimizationScenario.activeStartHHMM}:${bestOptimizationScenario.activeEndHHMM}`
+        `${bestOptimizationScenario.rr.toFixed(4)}:${bestOptimizationScenario.anchorHHMM}:${bestOptimizationScenario.activeStartHHMM}:${bestOptimizationScenario.activeEndHHMM}`
       ] || [];
     return rows.slice(0, Math.max(1, Number(optimizerMixSize || 1)));
   }, [bestOptimizationScenario, optimizationAssetBreakdownsByRr, optimizerMixSize]);
@@ -994,6 +1070,22 @@ export default function App() {
                   />
                 </label>
                 <label>
+                  VWAP Start (HHMM)
+                  <input
+                    type="number"
+                    min={0}
+                    max={2359}
+                    step={1}
+                    value={optimizerSettings.vwapStartHHMM}
+                    onChange={(e) =>
+                      setOptimizerSettings((prev) => ({
+                        ...prev,
+                        vwapStartHHMM: Math.max(0, Math.min(2359, Number(e.target.value || 930)))
+                      }))
+                    }
+                  />
+                </label>
+                <label>
                   Start (HHMM)
                   <input
                     type="number"
@@ -1026,8 +1118,9 @@ export default function App() {
                   />
                 </label>
                 <span className="sub">
-                  Current run: {Number(optimizerSettings.takeProfitRR).toFixed(1)}R ·{" "}
-                  {optimizerSettings.activeStartHHMM}-{optimizerSettings.activeEndHHMM} ET
+                  Current run: {Number(optimizerSettings.takeProfitRR).toFixed(1)}R · VWAP{" "}
+                  {optimizerSettings.vwapStartHHMM} · active {optimizerSettings.activeStartHHMM}-
+                  {optimizerSettings.activeEndHHMM} ET
                 </span>
               </div>
             </div>
@@ -1090,6 +1183,44 @@ export default function App() {
                     value={optimizerRrStep}
                     onChange={(e) => setOptimizerRrStep(Math.max(0.1, Number(e.target.value || 0.5)))}
                     style={{ width: 70 }}
+                    disabled={optimizerStepMode === "consistent"}
+                  />
+                </label>
+              </div>
+              <div className="filter-row" style={{ borderBottom: "none", padding: "0", marginBottom: 6 }}>
+                <label className="sub" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  VWAP from
+                  <input
+                    type="number"
+                    min={0}
+                    max={2359}
+                    step={1}
+                    value={optimizerVwapStartFrom}
+                    onChange={(e) => setOptimizerVwapStartFrom(Math.max(0, Math.min(2359, Number(e.target.value || 930))))}
+                    style={{ width: 80 }}
+                  />
+                </label>
+                <label className="sub" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  VWAP to
+                  <input
+                    type="number"
+                    min={0}
+                    max={2359}
+                    step={1}
+                    value={optimizerVwapStartTo}
+                    onChange={(e) => setOptimizerVwapStartTo(Math.max(0, Math.min(2359, Number(e.target.value || 930))))}
+                    style={{ width: 80 }}
+                  />
+                </label>
+                <label className="sub" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  VWAP step (min)
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={optimizerVwapStartStepMinutes}
+                    onChange={(e) => setOptimizerVwapStartStepMinutes(Math.max(1, Number(e.target.value || 15)))}
+                    style={{ width: 80 }}
                     disabled={optimizerStepMode === "consistent"}
                   />
                 </label>
@@ -1231,6 +1362,9 @@ export default function App() {
                     {bestOptimizationScenario.score.toFixed(3)}
                   </div>
                   <div className="sub">
+                    Best VWAP start (ET HHMM): {bestOptimizationScenario.anchorHHMM}
+                  </div>
+                  <div className="sub">
                     Best active window (ET): {bestOptimizationScenario.activeStartHHMM}-
                     {bestOptimizationScenario.activeEndHHMM}
                   </div>
@@ -1271,6 +1405,7 @@ export default function App() {
                   <thead>
                     <tr>
                       <th>RR</th>
+                      <th>VWAP Start (ET HHMM)</th>
                       <th>Start (ET HHMM)</th>
                       <th>End (ET HHMM)</th>
                       <th>Runs (All Assets)</th>
@@ -1287,8 +1422,9 @@ export default function App() {
                       .slice()
                       .sort((a, b) => b.score - a.score)
                       .map((row) => (
-                        <tr key={`opt-${row.rr}-${row.activeStartHHMM}-${row.activeEndHHMM}`}>
+                        <tr key={`opt-${row.rr}-${row.anchorHHMM}-${row.activeStartHHMM}-${row.activeEndHHMM}`}>
                           <td>{row.rr.toFixed(2)}</td>
+                          <td>{row.anchorHHMM}</td>
                           <td>{row.activeStartHHMM}</td>
                           <td>{row.activeEndHHMM}</td>
                           <td>{row.runCount}</td>
@@ -1311,29 +1447,29 @@ export default function App() {
               <div className="sub">
                 Top by balanced score:{" "}
                 {optimizationLeaderboards.byScore
-                  .map((x) => `${x.rr.toFixed(2)}@${x.activeStartHHMM}-${x.activeEndHHMM}`)
+                  .map((x) => `${x.rr.toFixed(2)}@v${x.anchorHHMM}/a${x.activeStartHHMM}-${x.activeEndHHMM}`)
                   .join(", ") || "--"}
               </div>
               <div className="sub">
                 Top by profit (Total R):{" "}
                 {optimizationLeaderboards.byProfit
-                  .map((x) => `${x.rr.toFixed(2)}@${x.activeStartHHMM}-${x.activeEndHHMM}`)
+                  .map((x) => `${x.rr.toFixed(2)}@v${x.anchorHHMM}/a${x.activeStartHHMM}-${x.activeEndHHMM}`)
                   .join(", ") || "--"}
               </div>
               <div className="sub">
                 Top by lowest drawdown:{" "}
                 {optimizationLeaderboards.byDrawdown
-                  .map((x) => `${x.rr.toFixed(2)}@${x.activeStartHHMM}-${x.activeEndHHMM}`)
+                  .map((x) => `${x.rr.toFixed(2)}@v${x.anchorHHMM}/a${x.activeStartHHMM}-${x.activeEndHHMM}`)
                   .join(", ") || "--"}
               </div>
               <div className="sub">
                 Balanced positive alternatives:{" "}
                 {optimizationLeaderboards.balancedAlt
-                  .map((x) => `${x.rr.toFixed(2)}@${x.activeStartHHMM}-${x.activeEndHHMM}`)
+                  .map((x) => `${x.rr.toFixed(2)}@v${x.anchorHHMM}/a${x.activeStartHHMM}-${x.activeEndHHMM}`)
                   .join(", ") || "--"}
               </div>
               <div className="sub">
-                Variables optimized: `rr`, `activeStartHHMM`, `activeEndHHMM` (per-variable steps or consistent samples).
+                Variables optimized: `rr`, `anchorHHMM`, `activeStartHHMM`, `activeEndHHMM` (per-variable steps or consistent samples).
               </div>
             </div>
           </section>
@@ -1552,7 +1688,12 @@ export default function App() {
                 </thead>
                 <tbody>
                   {runResult.trades.map((trade, idx) => (
-                    <tr key={`${trade.openedAtMs}-${trade.closedAtMs}-${idx}`}>
+                    <tr
+                      key={`${trade.openedAtMs}-${trade.closedAtMs}-${idx}`}
+                      className="trade-row"
+                      onClick={() => setSelectedSimTradeIdx(idx)}
+                      title="Click to open trade chart"
+                    >
                       <td>{formatDateTime(trade.openedAtMs)}</td>
                       <td>{formatDateTime(trade.closedAtMs)}</td>
                       <td>{String(trade.side || "").toUpperCase()}</td>
@@ -1581,6 +1722,39 @@ export default function App() {
             )}
           </div>
         </section>
+        {selectedSimTrade && (
+          <div className="modal-backdrop" onClick={() => setSelectedSimTradeIdx(null)}>
+            <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h3>Trade Replay Visual</h3>
+                <button type="button" onClick={() => setSelectedSimTradeIdx(null)}>
+                  Close
+                </button>
+              </div>
+              <div className="sub">
+                {runResult?.meta?.symbol || selectedSymbol} · {timeframe} · {String(selectedSimTrade.side || "").toUpperCase()} ·{" "}
+                Open {formatDateTime(selectedSimTrade.openedAtMs)} · Close {formatDateTime(selectedSimTrade.closedAtMs)}
+              </div>
+              <div className="sub">
+                Entry {Number(selectedSimTrade.entryPx || 0).toFixed(4)} · SL{" "}
+                {selectedSimTrade.stopLoss == null ? "--" : Number(selectedSimTrade.stopLoss).toFixed(4)} · TP{" "}
+                {selectedSimTrade.takeProfit == null ? "--" : Number(selectedSimTrade.takeProfit).toFixed(4)} · Exit{" "}
+                {Number(selectedSimTrade.exitPx || 0).toFixed(4)}
+              </div>
+              <div className="modal-chart">
+                {modalCandles.length > 0 ? (
+                  <CandleChart
+                    candles={modalCandles}
+                    priceLevels={selectedSimTradeLevels}
+                    timeMarkers={selectedSimTradeTimeMarkers}
+                  />
+                ) : (
+                  <div className="empty">No candles loaded for this asset/timeframe.</div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         <section className="grid2">
           <div className="card">
@@ -1606,6 +1780,9 @@ export default function App() {
                   <>
                     <div className="sub">
                       TP RR: {Number(runResult.meta.params?.rr || optimizerSettings.takeProfitRR).toFixed(2)}R
+                    </div>
+                    <div className="sub">
+                      VWAP start (ET): {Number(runResult.meta.params?.anchorHHMM || optimizerSettings.vwapStartHHMM)}
                     </div>
                     <div className="sub">
                       Active window (ET): {Number(runResult.meta.params?.activeStartHHMM || optimizerSettings.activeStartHHMM)}-
@@ -1732,3 +1909,4 @@ export default function App() {
     </div>
   );
 }
+*/

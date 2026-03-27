@@ -12,12 +12,35 @@ type ChartCandle = {
 
 interface CandleChartProps {
   candles: Candle[];
+  priceLevels?: Array<{
+    title: string;
+    price: number;
+    color: string;
+    lineStyle?: 0 | 1 | 2 | 3;
+  }>;
+  timeMarkers?: Array<{
+    title: string;
+    timeMs: number;
+    price: number;
+    color: string;
+  }>;
 }
 
-export function CandleChart({ candles }: CandleChartProps) {
+export function CandleChart({ candles, priceLevels = [], timeMarkers = [] }: CandleChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const priceLinesRef = useRef<Array<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]>>>([]);
+  const markerSeriesRef = useRef<ISeriesApi<"Line">[]>([]);
+
+  const safelyRemoveMarkerSeries = (chart: IChartApi, markerSeries: ISeriesApi<"Line"> | null | undefined) => {
+    if (!markerSeries) return;
+    try {
+      chart.removeSeries(markerSeries);
+    } catch {
+      // Series may already be detached after chart recreation/removal.
+    }
+  };
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -45,9 +68,13 @@ export function CandleChart({ candles }: CandleChartProps) {
       wickUpColor: "#16a34a",
       wickDownColor: "#dc2626"
     });
+    requestAnimationFrame(() => {
+      chart.timeScale().fitContent();
+    });
     chartRef.current = chart;
     seriesRef.current = series;
     return () => {
+      markerSeriesRef.current = [];
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
@@ -57,16 +84,91 @@ export function CandleChart({ candles }: CandleChartProps) {
   useEffect(() => {
     const series = seriesRef.current;
     if (!series) return;
-    const data: ChartCandle[] = candles.map((c) => ({
-      time: Math.floor(c.timeMs / 1000) as Time,
-      open: c.open,
-      high: c.high,
-      low: c.low,
-      close: c.close
-    }));
+    const data: ChartCandle[] = candles
+      .filter(
+        (c) =>
+          Number.isFinite(c.timeMs) &&
+          Number.isFinite(c.open) &&
+          Number.isFinite(c.high) &&
+          Number.isFinite(c.low) &&
+          Number.isFinite(c.close)
+      )
+      .map((c) => ({
+        time: Math.floor(c.timeMs / 1000) as Time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close
+      }));
     series.setData(data);
     chartRef.current?.timeScale().fitContent();
   }, [candles]);
 
-  return <div ref={containerRef} className="h-full w-full" />;
+  useEffect(() => {
+    const chart = chartRef.current;
+    const series = seriesRef.current;
+    if (!series || !chart) return;
+    for (const markerSeries of markerSeriesRef.current) {
+      safelyRemoveMarkerSeries(chart, markerSeries);
+    }
+    markerSeriesRef.current = [];
+    for (const marker of timeMarkers) {
+      if (!Number.isFinite(marker.timeMs) || !Number.isFinite(marker.price) || marker.timeMs <= 0) continue;
+      const markerSeries = chart.addLineSeries({
+        color: marker.color,
+        lineVisible: false,
+        pointMarkersVisible: true,
+        lastValueVisible: false,
+        priceLineVisible: false,
+        crosshairMarkerVisible: true,
+        crosshairMarkerRadius: 5,
+        crosshairMarkerBorderColor: marker.color,
+        crosshairMarkerBackgroundColor: marker.color,
+        title: marker.title
+      });
+      const markerTime = Math.floor(marker.timeMs / 1000);
+      if (!Number.isFinite(markerTime) || markerTime <= 0) continue;
+      markerSeries.setData([
+        {
+          time: markerTime as Time,
+          value: marker.price
+        }
+      ]);
+      markerSeriesRef.current.push(markerSeries);
+    }
+  }, [timeMarkers]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    return () => {
+      for (const markerSeries of markerSeriesRef.current) {
+        safelyRemoveMarkerSeries(chart, markerSeries);
+      }
+      markerSeriesRef.current = [];
+    };
+  }, []);
+
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series) return;
+    for (const line of priceLinesRef.current) {
+      series.removePriceLine(line);
+    }
+    priceLinesRef.current = [];
+    for (const level of priceLevels) {
+      if (!Number.isFinite(level.price)) continue;
+      const line = series.createPriceLine({
+        price: level.price,
+        color: level.color,
+        lineWidth: 2,
+        lineStyle: level.lineStyle ?? 0,
+        axisLabelVisible: true,
+        title: level.title
+      });
+      priceLinesRef.current.push(line);
+    }
+  }, [priceLevels]);
+
+  return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 }

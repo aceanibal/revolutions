@@ -3,6 +3,18 @@ const { createRunResult } = require("../results/schema");
 const { resolveStrategy } = require("./strategies");
 const { synthesizeTicksFromCandles } = require("./tickSynthesizer");
 
+/**
+ * Wall-clock time aligned with Study/chart candles: `bucket_start_ms` on candle events.
+ * `event.ts` may be end-of-bar (mixed mode) for ordering only.
+ */
+function chartAlignedTimeMs(event) {
+  if (event.kind === "candle" && event.candle != null) {
+    const bucket = Number(event.candle.timeMs || 0);
+    if (Number.isFinite(bucket) && bucket > 0) return bucket;
+  }
+  return Number(event.ts || 0);
+}
+
 function buildEvents({ mode, candles, ticks, timeframe, params = {}, symbol = "" }) {
   const tf = timeframe === "5m" ? "5m" : "1m";
   const tickPolicyRaw = String(params.tickPolicy || "real_then_synthetic").toLowerCase();
@@ -47,6 +59,7 @@ function buildEvents({ mode, candles, ticks, timeframe, params = {}, symbol = ""
     const candleEvents = (candles || []).map((candle) => ({
       kind: "candle",
       origin: "candle_close",
+      // End-of-bar ms so mixed streams sort after intra-bar ticks. Strategy + trades use `candle.timeMs`.
       ts: Number(candle.timeMs || 0) + intervalMs - 1,
       candle
     }));
@@ -136,6 +149,8 @@ function runBacktest({
       maxSeenPrice = Math.max(maxSeenPrice, price);
     }
 
+    const wallMs = chartAlignedTimeMs(event);
+
     const action = strategy.onEvent({
       event,
       state: { position, realizedPnL, lastPrice, equity, symbol, timeframe, mode }
@@ -147,13 +162,13 @@ function runBacktest({
         side: action.side || "long",
         entryPx: Number(action.price || price || 0),
         size: Number(action.size || 1),
-        openedAtMs: event.ts,
+        openedAtMs: wallMs,
         stopLoss: Number(action.stopLoss ?? NaN),
         takeProfit: Number(action.takeProfit ?? NaN)
       };
       if (debugLogsEnabled) {
         console.log(
-          `${runLabel} enter ts=${event.ts} side=${position.side} entryPx=${position.entryPx} size=${position.size}`
+          `${runLabel} enter ts=${wallMs} side=${position.side} entryPx=${position.entryPx} size=${position.size}`
         );
       }
     } else if (action?.type === "exit" && position) {
@@ -163,7 +178,7 @@ function runBacktest({
       realizedPnL += pnl;
       trades.push({
         openedAtMs: position.openedAtMs,
-        closedAtMs: event.ts,
+        closedAtMs: wallMs,
         side: position.side,
         size: position.size,
         entryPx: position.entryPx,
@@ -174,25 +189,27 @@ function runBacktest({
       });
       position = null;
       if (debugLogsEnabled) {
-        console.log(`${runLabel} exit ts=${event.ts} exitPx=${exitPx} pnl=${pnl.toFixed(6)} realized=${realizedPnL.toFixed(6)}`);
+        console.log(`${runLabel} exit ts=${wallMs} exitPx=${exitPx} pnl=${pnl.toFixed(6)} realized=${realizedPnL.toFixed(6)}`);
       }
     } else if (action) {
       ignoredActionCount += 1;
       if (debugLogsEnabled) {
-        console.log(`${runLabel} ignored action ts=${event.ts} reason=state_guard action=${JSON.stringify(action)}`);
+        console.log(`${runLabel} ignored action ts=${wallMs} reason=state_guard action=${JSON.stringify(action)}`);
       }
     }
 
-    pushEquity(event.ts, price);
+    pushEquity(wallMs, price);
   }
 
   if (position) {
+    const lastWallMs =
+      events.length > 0 ? chartAlignedTimeMs(events[events.length - 1]) : Date.now();
     const exitPx = Number(lastPrice || position.entryPx);
     const pnl = calcPnl(position.side, position.entryPx, exitPx, position.size);
     realizedPnL += pnl;
     trades.push({
       openedAtMs: position.openedAtMs,
-      closedAtMs: events[events.length - 1]?.ts || Date.now(),
+      closedAtMs: lastWallMs,
       side: position.side,
       size: position.size,
       entryPx: position.entryPx,
@@ -203,7 +220,7 @@ function runBacktest({
     });
     position = null;
     if (debugLogsEnabled) {
-      console.log(`${runLabel} forced_close ts=${events[events.length - 1]?.ts || Date.now()} exitPx=${exitPx} pnl=${pnl.toFixed(6)}`);
+      console.log(`${runLabel} forced_close ts=${lastWallMs} exitPx=${exitPx} pnl=${pnl.toFixed(6)}`);
     }
   }
 

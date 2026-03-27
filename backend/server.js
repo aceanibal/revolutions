@@ -939,6 +939,15 @@ app.post("/api/session/save", async (req, res) => {
   }
 });
 
+app.post("/api/session/resave-all", async (req, res) => {
+  try {
+    const result = await sessionStore.resaveAllRedisSessions();
+    return res.json(result);
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error.message || "Failed to resave sessions" });
+  }
+});
+
 app.get("/api/sessions", async (req, res) => {
   const date = String(req.query?.date || "today").toLowerCase();
   if (date !== "today") {

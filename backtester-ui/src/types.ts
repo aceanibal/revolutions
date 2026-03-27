@@ -119,6 +119,7 @@ export interface BacktestRunResult {
 
 export interface BacktestOptimizerSettings {
   takeProfitRR: number;
+  vwapStartHHMM: number;
   activeStartHHMM: number;
   activeEndHHMM: number;
 }
@@ -130,3 +131,39 @@ export interface ScannerMetadataItem {
   importedAtMs: number;
   payload: Record<string, unknown>;
 }
+
+export type BatchRunRow = {
+  sessionId: string;
+  symbol: string;
+  trades: number;
+  winRate: number;
+  pnlR: number;
+  status: "ok" | "error";
+  error?: string;
+};
+
+export type OptimizationScenarioResult = {
+  rr: number;
+  anchorHHMM: number;
+  activeStartHHMM: number;
+  activeEndHHMM: number;
+  runCount: number;
+  totalR: number;
+  avgRPerRun: number;
+  avgDrawdown: number;
+  negativeRunRate: number;
+  score: number;
+  rating: number;
+  profitRankScore: number;
+  drawdownRankScore: number;
+};
+
+export type OptimizationAssetRow = {
+  symbol: string;
+  runs: number;
+  totalR: number;
+  avgRPerRun: number;
+  avgDrawdown: number;
+  negativeRunRate: number;
+  score: number;
+};
