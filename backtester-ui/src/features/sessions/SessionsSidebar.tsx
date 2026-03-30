@@ -1,11 +1,13 @@
-import type { PaginationMeta, SavedSession } from "../../types";
+import type { PaginationMeta, SavedSession, SessionType } from "../../types";
 import { formatDuration } from "../../lib/backtestMath";
 
 interface SessionsSidebarProps {
   sessions: SavedSession[];
   selectedSessionId: string;
+  sessionTypeFilter: "all" | SessionType;
   backtestDateFilter: string;
   backtestPagination: PaginationMeta;
+  onSessionTypeFilterChange: (value: "all" | SessionType) => void;
   onDateFilterChange: (value: string) => void;
   onRefresh: (page?: number, date?: string) => Promise<void>;
   onSelectSession: (sessionId: string) => void;
@@ -14,8 +16,10 @@ interface SessionsSidebarProps {
 export function SessionsSidebar({
   sessions,
   selectedSessionId,
+  sessionTypeFilter,
   backtestDateFilter,
   backtestPagination,
+  onSessionTypeFilterChange,
   onDateFilterChange,
   onRefresh,
   onSelectSession
@@ -37,6 +41,14 @@ export function SessionsSidebar({
         </span>
       </div>
       <div className="filter-row">
+        <select
+          value={sessionTypeFilter}
+          onChange={(e) => onSessionTypeFilterChange((e.target.value as "all" | SessionType) || "all")}
+        >
+          <option value="all">All types</option>
+          <option value="live">Live</option>
+          <option value="historical">Historical</option>
+        </select>
         <input type="date" value={backtestDateFilter} onChange={(e) => onDateFilterChange(e.target.value)} />
         <button type="button" onClick={() => void onRefresh(1, backtestDateFilter)}>
           Filter
@@ -58,7 +70,10 @@ export function SessionsSidebar({
               >
                 <div className="row">
                   <strong>{new Date(session.startedAtMs).toLocaleTimeString()}</strong>
-                  <span>{formatDuration(session.startedAtMs, session.endedAtMs)}</span>
+                  <span>
+                    {session.sessionType === "historical" ? "[H] " : ""}
+                    {formatDuration(session.startedAtMs, session.endedAtMs)}
+                  </span>
                 </div>
                 <div className="sub">{session.id}</div>
                 <div className="sub">

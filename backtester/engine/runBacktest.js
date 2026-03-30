@@ -2,6 +2,7 @@ const { intervalForTimeframe } = require("../data/math");
 const { createRunResult } = require("../results/schema");
 const { resolveStrategy } = require("./strategies");
 const { synthesizeTicksFromCandles } = require("./tickSynthesizer");
+const { getEtDayKey, isWeekendEt, isUsHolidayOrEarlyCloseEt } = require("./marketCalendar");
 
 /**
  * Wall-clock time aligned with Study/chart candles: `bucket_start_ms` on candle events.
@@ -13,6 +14,18 @@ function chartAlignedTimeMs(event) {
     if (Number.isFinite(bucket) && bucket > 0) return bucket;
   }
   return Number(event.ts || 0);
+}
+
+function filterEventsByMarketDay(events = [], params = {}) {
+  const ignoreWeekends = Boolean(params.ignoreWeekends);
+  const ignoreUsHolidays = Boolean(params.ignoreUsHolidays);
+  if (!ignoreWeekends && !ignoreUsHolidays) return events;
+  return events.filter((event) => {
+    const dayKey = getEtDayKey(chartAlignedTimeMs(event));
+    if (ignoreWeekends && isWeekendEt(dayKey)) return false;
+    if (ignoreUsHolidays && isUsHolidayOrEarlyCloseEt(dayKey)) return false;
+    return true;
+  });
 }
 
 function buildEvents({ mode, candles, ticks, timeframe, params = {}, symbol = "" }) {
@@ -85,7 +98,7 @@ function runBacktest({
   sessionId,
   symbol,
   timeframe = "1m",
-  mode = "candle",
+  mode = "mixed",
   candles = [],
   ticks = [],
   strategyId = "noop",
@@ -94,7 +107,15 @@ function runBacktest({
   const debugLogsEnabled =
     String(process.env.BACKTESTER_SIM_DEBUG || "").toLowerCase() === "true" || Boolean(params.debug);
   const runLabel = `[sim] session=${sessionId} symbol=${symbol} mode=${mode} tf=${timeframe} strategy=${strategyId}`;
-  const events = buildEvents({ mode, candles, ticks, timeframe, params, symbol });
+  const builtEvents = buildEvents({ mode, candles, ticks, timeframe, params, symbol });
+  const events = filterEventsByMarketDay(builtEvents, params);
+  if (debugLogsEnabled && events.length !== builtEvents.length) {
+    console.log(
+      `${runLabel} filtered_events before=${builtEvents.length} after=${events.length} ignoreWeekends=${Boolean(
+        params.ignoreWeekends
+      )} ignoreUsHolidays=${Boolean(params.ignoreUsHolidays)}`
+    );
+  }
   if (events.length === 0) {
     console.warn(`[backtester] runBacktest produced zero events session=${sessionId} symbol=${symbol} mode=${mode}`);
   }
@@ -115,6 +136,7 @@ function runBacktest({
   let enterCount = 0;
   let exitCount = 0;
   let ignoredActionCount = 0;
+  let lastScannerFeatures = null;
 
   if (debugLogsEnabled) {
     console.log(
@@ -150,10 +172,22 @@ function runBacktest({
     }
 
     const wallMs = chartAlignedTimeMs(event);
+    if (event.kind === "candle" && event.candle?.features && typeof event.candle.features === "object") {
+      lastScannerFeatures = event.candle.features;
+    }
 
     const action = strategy.onEvent({
       event,
-      state: { position, realizedPnL, lastPrice, equity, symbol, timeframe, mode }
+      state: {
+        position,
+        realizedPnL,
+        lastPrice,
+        equity,
+        symbol,
+        timeframe,
+        mode,
+        scannerFeatures: lastScannerFeatures
+      }
     });
 
     if (action?.type === "enter" && !position) {

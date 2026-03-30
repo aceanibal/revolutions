@@ -78,6 +78,24 @@ This package mirrors the session schema used by the app and extends it with scan
 - `mixed`  
   Uses a unified timeline of ticks + candle-close events, preserving both granular and aggregate context.
 
+## Scanner integration (per-asset candle features)
+
+Scanner output is stored as per-asset candle-attached features in `session_candle_features`:
+
+- one row per `(session_id, symbol, timeframe, bucket_start_ms, feature_set, feature_version)`
+- payload is JSON (`payload_json`) and is attached to candle events during `/api/backtest/run`
+- strategies can read it from `event.candle.features[featureSet]`
+
+Primary scanner vars:
+
+- `anchorTsMs`, `lookbackHours`, `currentWindowHours`, `btcSymbol`, `featureSet`, `featureVersion`
+
+Primary outputs per asset:
+
+- `rvol`, `currentWindowVolumeUsd`, `baselineVolumeUsd`, `btcCorr`, `price`
+
+See full variable definitions and anti-lookahead rule in `docs/data-and-simulator.md` (Part 3).
+
 ## CLI usage
 
 From `backtester/`:
@@ -88,6 +106,7 @@ From `backtester/`:
   List imported sessions from backtester SQLite.
 - `npm run run -- --session <sessionId> --symbol <SYMBOL> [--timeframe 1m|5m] [--mode tick|candle|mixed] [--strategy noop|simple-momentum]`
 - `npm run import:scanner -- <sessionId> <payloadJsonPath> [toolName] [sourceId]`
+- `npm run run:scanner -- --session-id <sessionId> [--timeframe 1m|5m] [--anchor-ts-ms <ms>] [--lookback-hours <n>] [--current-window-hours <n>] [--btc-symbol BTC] [--feature-set rvol-scanner] [--feature-version v1]`
 
 ## HTTP API (served by backend)
 
@@ -99,6 +118,8 @@ When `backend/server.js` is running:
 - `GET /api/backtest/sessions/:id/trades`
 - `GET /api/backtest/sessions/:id/scanner-metadata`
 - `POST /api/backtest/scanner-metadata`
+- `POST /api/backtest/scanner/run`
+- `GET /api/backtest/sessions/:id/scanner/features`
 - `POST /api/backtest/run`
 
 ## Dev workflow

@@ -1,4 +1,4 @@
-import type { BacktestOptimizerSettings, OptimizationAssetRow, OptimizationScenarioResult } from "../../types";
+import type { BacktestOptimizerSettings, OptimizationAssetRow, OptimizationScenarioResult, SessionType } from "../../types";
 
 interface OptimizationLeaderboards {
   byScore: OptimizationScenarioResult[];
@@ -39,6 +39,12 @@ interface OptimizerWorkspaceProps {
   setOptimizerActiveEndTo: React.Dispatch<React.SetStateAction<number>>;
   optimizerActiveEndStepMinutes: number;
   setOptimizerActiveEndStepMinutes: React.Dispatch<React.SetStateAction<number>>;
+  optimizerDojiBodyToRangeMaxFrom: number;
+  setOptimizerDojiBodyToRangeMaxFrom: React.Dispatch<React.SetStateAction<number>>;
+  optimizerDojiBodyToRangeMaxTo: number;
+  setOptimizerDojiBodyToRangeMaxTo: React.Dispatch<React.SetStateAction<number>>;
+  optimizerDojiBodyToRangeMaxStep: number;
+  setOptimizerDojiBodyToRangeMaxStep: React.Dispatch<React.SetStateAction<number>>;
   optimizerMixSize: number;
   setOptimizerMixSize: React.Dispatch<React.SetStateAction<number>>;
   optimizerDrawdownWeight: number;
@@ -47,6 +53,11 @@ interface OptimizerWorkspaceProps {
   setOptimizerLossWeight: React.Dispatch<React.SetStateAction<number>>;
   optimizerAssetSelection: string;
   setOptimizerAssetSelection: React.Dispatch<React.SetStateAction<string>>;
+  optimizerSessionScope: "filtered" | "selected";
+  setOptimizerSessionScope: React.Dispatch<React.SetStateAction<"filtered" | "selected">>;
+  optimizerSessionTypeFilter: "all" | SessionType;
+  setOptimizerSessionTypeFilter: React.Dispatch<React.SetStateAction<"all" | SessionType>>;
+  optimizerTargetSessionCount: number;
   optimizeScenarios: () => void;
   optimizing: boolean;
   running: boolean;
@@ -90,6 +101,12 @@ export function OptimizerWorkspace({
   setOptimizerActiveEndTo,
   optimizerActiveEndStepMinutes,
   setOptimizerActiveEndStepMinutes,
+  optimizerDojiBodyToRangeMaxFrom,
+  setOptimizerDojiBodyToRangeMaxFrom,
+  optimizerDojiBodyToRangeMaxTo,
+  setOptimizerDojiBodyToRangeMaxTo,
+  optimizerDojiBodyToRangeMaxStep,
+  setOptimizerDojiBodyToRangeMaxStep,
   optimizerMixSize,
   setOptimizerMixSize,
   optimizerDrawdownWeight,
@@ -98,6 +115,11 @@ export function OptimizerWorkspace({
   setOptimizerLossWeight,
   optimizerAssetSelection,
   setOptimizerAssetSelection,
+  optimizerSessionScope,
+  setOptimizerSessionScope,
+  optimizerSessionTypeFilter,
+  setOptimizerSessionTypeFilter,
+  optimizerTargetSessionCount,
   optimizeScenarios,
   optimizing,
   running,
@@ -108,11 +130,16 @@ export function OptimizerWorkspace({
   optimizationResults,
   optimizationLeaderboards
 }: OptimizerWorkspaceProps) {
-  if (strategyId !== "orb-avwap-930") {
+  const isOrbStrategy = strategyId === "orb-avwap-930" || strategyId === "orb-avwap-930-open-avwap-sl";
+  const isOriginalOrbStrategy = strategyId === "orb-avwap-930";
+  const isOpenOrAvwapStopStrategy = strategyId === "orb-avwap-930-open-avwap-sl";
+  if (!isOrbStrategy) {
     return (
       <div className="card">
         <h3>Optimizer</h3>
-        <div className="sub">Switch strategy to `orb-avwap-930` to enable optimizer workspaces.</div>
+        <div className="sub">
+          Switch strategy to `orb-avwap-930` or `orb-avwap-930-open-avwap-sl` to enable optimizer workspaces.
+        </div>
       </div>
     );
   }
@@ -187,10 +214,81 @@ export function OptimizerWorkspace({
                 }
               />
             </label>
+            {isOriginalOrbStrategy && (
+              <label>
+                Doji body/range max
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={optimizerSettings.dojiBodyToRangeMax}
+                  onChange={(e) =>
+                    setOptimizerSettings((prev) => ({
+                      ...prev,
+                      dojiBodyToRangeMax: Math.max(0, Math.min(1, Number(e.target.value || 0.3)))
+                    }))
+                  }
+                />
+              </label>
+            )}
+            {isOpenOrAvwapStopStrategy && (
+              <label>
+                Stop Loss Source
+                <select
+                  value={optimizerSettings.stopLossSource}
+                  onChange={(e) =>
+                    setOptimizerSettings((prev) => ({
+                      ...prev,
+                      stopLossSource:
+                        (e.target.value as BacktestOptimizerSettings["stopLossSource"]) || "open"
+                    }))
+                  }
+                >
+                  <option value="open">open</option>
+                  <option value="avwap">avwap</option>
+                  <option value="extreme">candle low (long) / high (short)</option>
+                  <option value="low">candle low (long only)</option>
+                  <option value="high">candle high (short only)</option>
+                </select>
+              </label>
+            )}
+            <label className="sub" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <input
+                type="checkbox"
+                checked={optimizerSettings.ignoreWeekends}
+                onChange={(e) =>
+                  setOptimizerSettings((prev) => ({
+                    ...prev,
+                    ignoreWeekends: e.target.checked
+                  }))
+                }
+              />
+              Ignore weekends
+            </label>
+            <label className="sub" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <input
+                type="checkbox"
+                checked={optimizerSettings.ignoreUsHolidays}
+                onChange={(e) =>
+                  setOptimizerSettings((prev) => ({
+                    ...prev,
+                    ignoreUsHolidays: e.target.checked
+                  }))
+                }
+              />
+              Ignore US holidays
+            </label>
             <span className="sub">
               Current run: {Number(optimizerSettings.takeProfitRR).toFixed(1)}R · VWAP{" "}
               {optimizerSettings.vwapStartHHMM} · active {optimizerSettings.activeStartHHMM}-
-              {optimizerSettings.activeEndHHMM} ET
+              {optimizerSettings.activeEndHHMM} ET · weekends{" "}
+              {optimizerSettings.ignoreWeekends ? "off" : "on"} · holidays{" "}
+              {optimizerSettings.ignoreUsHolidays ? "off" : "on"}
+              {isOpenOrAvwapStopStrategy ? ` · stop ${optimizerSettings.stopLossSource}` : ""}
+              {isOriginalOrbStrategy
+                ? ` · doji=${Number(optimizerSettings.dojiBodyToRangeMax ?? 0.3).toFixed(2)}`
+                : ""}
             </span>
           </div>
         </div>
@@ -371,6 +469,48 @@ export function OptimizerWorkspace({
               />
             </label>
           </div>
+          {isOriginalOrbStrategy && (
+            <>
+              <div className="filter-row" style={{ borderBottom: "none", padding: "0", marginBottom: 6 }}>
+                <label className="sub" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  Doji from
+                  <input
+                    type="number"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={optimizerDojiBodyToRangeMaxFrom}
+                    onChange={(e) => setOptimizerDojiBodyToRangeMaxFrom(Math.max(0, Math.min(1, Number(e.target.value || 0.05))))}
+                    style={{ width: 80 }}
+                  />
+                </label>
+                <label className="sub" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  Doji to
+                  <input
+                    type="number"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={optimizerDojiBodyToRangeMaxTo}
+                    onChange={(e) => setOptimizerDojiBodyToRangeMaxTo(Math.max(0, Math.min(1, Number(e.target.value || 0.2))))}
+                    style={{ width: 80 }}
+                  />
+                </label>
+                <label className="sub" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  Doji step
+                  <input
+                    type="number"
+                    min={0.0001}
+                    step={0.01}
+                    value={optimizerDojiBodyToRangeMaxStep}
+                    onChange={(e) => setOptimizerDojiBodyToRangeMaxStep(Math.max(0.0001, Number(e.target.value || 0.05)))}
+                    style={{ width: 80 }}
+                    disabled={optimizerStepMode === "consistent"}
+                  />
+                </label>
+              </div>
+            </>
+          )}
           <div className="filter-row" style={{ borderBottom: "none", padding: "0", marginBottom: 6 }}>
             <label className="sub" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
               Mix size
@@ -407,6 +547,30 @@ export function OptimizerWorkspace({
             </label>
           </div>
           <div className="filter-row" style={{ borderBottom: "none", padding: "0", marginBottom: 6 }}>
+            <label className="sub" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              Session scope
+              <select
+                value={optimizerSessionScope}
+                onChange={(e) => setOptimizerSessionScope(e.target.value as "filtered" | "selected")}
+              >
+                <option value="filtered">All filtered sessions</option>
+                <option value="selected">Selected session only</option>
+              </select>
+            </label>
+            <label className="sub" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              Session type
+              <select
+                value={optimizerSessionTypeFilter}
+                onChange={(e) => setOptimizerSessionTypeFilter((e.target.value as "all" | SessionType) || "all")}
+              >
+                <option value="all">All types</option>
+                <option value="live">Live only</option>
+                <option value="historical">Historical only</option>
+              </select>
+            </label>
+            <span className="sub">Target sessions: {optimizerTargetSessionCount}</span>
+          </div>
+          <div className="filter-row" style={{ borderBottom: "none", padding: "0", marginBottom: 6 }}>
             <label className="sub" style={{ display: "inline-flex", alignItems: "center", gap: 6, width: "100%" }}>
               Assets (optional, comma-separated)
               <input
@@ -437,6 +601,9 @@ export function OptimizerWorkspace({
                 {bestOptimizationScenario.activeEndHHMM}
               </div>
               <div className="sub">
+                Doji body/range max: {Number(bestOptimizationScenario.dojiBodyToRangeMax ?? 0.3).toFixed(3)}
+              </div>
+              <div className="sub">
                 Scenario rating: {bestOptimizationScenario.rating.toFixed(1)}/100 · Profit rank:{" "}
                 {bestOptimizationScenario.profitRankScore.toFixed(1)} · Drawdown rank:{" "}
                 {bestOptimizationScenario.drawdownRankScore.toFixed(1)}
@@ -446,6 +613,7 @@ export function OptimizerWorkspace({
                 {bestOptimizationScenario.totalR.toFixed(3)}R
               </div>
               <div className="sub">
+                Win rate: {(bestOptimizationScenario.winRate * 100).toFixed(2)}% ·{" "}
                 Avg R/run: {bestOptimizationScenario.avgRPerRun.toFixed(3)}R · Avg DD:{" "}
                 {bestOptimizationScenario.avgDrawdown.toFixed(4)} · Neg run rate:{" "}
                 {(bestOptimizationScenario.negativeRunRate * 100).toFixed(2)}%
@@ -473,7 +641,9 @@ export function OptimizerWorkspace({
                   <th>VWAP Start (ET HHMM)</th>
                   <th>Start (ET HHMM)</th>
                   <th>End (ET HHMM)</th>
+                  <th>Doji max</th>
                   <th>Runs (All Assets)</th>
+                  <th>Win Rate</th>
                   <th>Total R</th>
                   <th>Avg R/Run</th>
                   <th>Avg DD</th>
@@ -487,12 +657,16 @@ export function OptimizerWorkspace({
                   .slice()
                   .sort((a, b) => b.score - a.score)
                   .map((row) => (
-                    <tr key={`opt-${row.rr}-${row.anchorHHMM}-${row.activeStartHHMM}-${row.activeEndHHMM}`}>
+                    <tr
+                      key={`opt-${row.rr}-${row.anchorHHMM}-${row.activeStartHHMM}-${row.activeEndHHMM}-${Number(row.dojiBodyToRangeMax ?? 0.3)}`}
+                    >
                       <td>{row.rr.toFixed(2)}</td>
                       <td>{row.anchorHHMM}</td>
                       <td>{row.activeStartHHMM}</td>
                       <td>{row.activeEndHHMM}</td>
+                      <td>{Number(row.dojiBodyToRangeMax ?? 0.3).toFixed(3)}</td>
                       <td>{row.runCount}</td>
+                      <td>{(row.winRate * 100).toFixed(2)}%</td>
                       <td>{row.totalR.toFixed(3)}R</td>
                       <td>{row.avgRPerRun.toFixed(3)}R</td>
                       <td>{row.avgDrawdown.toFixed(4)}</td>
@@ -512,30 +686,50 @@ export function OptimizerWorkspace({
           <div className="sub">
             Top by balanced score:{" "}
             {optimizationLeaderboards.byScore
-              .map((x) => `${x.rr.toFixed(2)}@v${x.anchorHHMM}/a${x.activeStartHHMM}-${x.activeEndHHMM}`)
+              .map(
+                (x) =>
+                  `${x.rr.toFixed(2)}@v${x.anchorHHMM}/a${x.activeStartHHMM}-${x.activeEndHHMM}/d${Number(
+                    x.dojiBodyToRangeMax ?? 0.3
+                  ).toFixed(2)}`
+              )
               .join(", ") || "--"}
           </div>
           <div className="sub">
             Top by profit (Total R):{" "}
             {optimizationLeaderboards.byProfit
-              .map((x) => `${x.rr.toFixed(2)}@v${x.anchorHHMM}/a${x.activeStartHHMM}-${x.activeEndHHMM}`)
+              .map(
+                (x) =>
+                  `${x.rr.toFixed(2)}@v${x.anchorHHMM}/a${x.activeStartHHMM}-${x.activeEndHHMM}/d${Number(
+                    x.dojiBodyToRangeMax ?? 0.3
+                  ).toFixed(2)}`
+              )
               .join(", ") || "--"}
           </div>
           <div className="sub">
             Top by lowest drawdown:{" "}
             {optimizationLeaderboards.byDrawdown
-              .map((x) => `${x.rr.toFixed(2)}@v${x.anchorHHMM}/a${x.activeStartHHMM}-${x.activeEndHHMM}`)
+              .map(
+                (x) =>
+                  `${x.rr.toFixed(2)}@v${x.anchorHHMM}/a${x.activeStartHHMM}-${x.activeEndHHMM}/d${Number(
+                    x.dojiBodyToRangeMax ?? 0.3
+                  ).toFixed(2)}`
+              )
               .join(", ") || "--"}
           </div>
           <div className="sub">
             Balanced positive alternatives:{" "}
             {optimizationLeaderboards.balancedAlt
-              .map((x) => `${x.rr.toFixed(2)}@v${x.anchorHHMM}/a${x.activeStartHHMM}-${x.activeEndHHMM}`)
+              .map(
+                (x) =>
+                  `${x.rr.toFixed(2)}@v${x.anchorHHMM}/a${x.activeStartHHMM}-${x.activeEndHHMM}/d${Number(
+                    x.dojiBodyToRangeMax ?? 0.3
+                  ).toFixed(2)}`
+              )
               .join(", ") || "--"}
           </div>
           <div className="sub">
-            Variables optimized: `rr`, `anchorHHMM`, `activeStartHHMM`, `activeEndHHMM` (per-variable steps or
-            consistent samples).
+            Variables optimized: `rr`, `anchorHHMM`, `activeStartHHMM`, `activeEndHHMM`, `dojiBodyToRangeMax`
+            (per-variable steps or consistent samples).
           </div>
         </div>
       </section>

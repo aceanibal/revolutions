@@ -7,9 +7,11 @@
   "scripts": {
     "server": "node server.js",
     "import": "node scripts/importSession.js",
+    "import:historical": "node scripts/importHistorical.js",
     "list": "node scripts/listSessions.js",
     "run": "node runner/cli.js",
-    "import:scanner": "node scripts/importScannerMetadata.js"
+    "import:scanner": "node scripts/importScannerMetadata.js",
+    "run:scanner": "node scripts/runSessionScanner.js"
   },
   "dependencies": {
     "dotenv": "^17.3.1",

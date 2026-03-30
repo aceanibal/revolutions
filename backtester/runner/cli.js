@@ -11,7 +11,7 @@ function parseArgs(argv) {
     sessionId: "",
     symbol: "",
     timeframe: "1m",
-    mode: "candle",
+    mode: "mixed",
     strategyId: "noop",
     persist: true
   };
@@ -20,7 +20,7 @@ function parseArgs(argv) {
     if (arg === "--session") out.sessionId = String(argv[i + 1] || "");
     if (arg === "--symbol") out.symbol = String(argv[i + 1] || "");
     if (arg === "--timeframe") out.timeframe = String(argv[i + 1] || "1m");
-    if (arg === "--mode") out.mode = String(argv[i + 1] || "candle");
+    if (arg === "--mode") out.mode = String(argv[i + 1] || "mixed");
     if (arg === "--strategy") out.strategyId = String(argv[i + 1] || "noop");
     if (arg === "--no-persist") out.persist = false;
   }

@@ -4,15 +4,19 @@ import {
   fetchBacktestSessionsPaged,
   fetchBacktestSnapshot,
   fetchBacktestSymbols,
+  fetchScannerFeatures,
   fetchBacktestTrades,
   fetchScannerMetadata,
   fetchSourceSessionsPaged,
   importSourceSession,
+  runSessionScannerApi,
   runBacktestApi
 } from "./lib/api";
 import {
   buildOptimizationLeaderboards,
   buildStrategyVariables,
+  applyWinStopOneRetryPerDay,
+  capTradesPerCalendarDay,
   formatDateTime,
   hhmmToMinutes,
   minutesToHHMM,
@@ -29,6 +33,8 @@ import { BatchRunsWorkspace } from "./features/runs/BatchRunsWorkspace";
 import { OptimizerWorkspace } from "./features/optimizer/OptimizerWorkspace";
 import { TradeDrilldownModal } from "./features/trades/TradeDrilldownModal";
 import { SessionDataWorkspace } from "./features/data/SessionDataWorkspace";
+import { ScannerWorkspace } from "./features/scanner/ScannerWorkspace";
+import { AboutWorkspace } from "./features/about/AboutWorkspace";
 import { WorkspaceContext } from "./state/WorkspaceContext";
 import type {
   BacktestOptimizerSettings,
@@ -39,8 +45,11 @@ import type {
   OptimizationScenarioResult,
   PaginationMeta,
   ReplayMode,
+  ScannerFeatureRow,
+  ScannerRunResult,
   SavedSession,
   ScannerMetadataItem,
+  SessionType,
   SessionTrade,
   StrategyId,
   TickPolicy,
@@ -48,6 +57,43 @@ import type {
 } from "./types";
 
 type SimulatedTrade = BacktestRunResult["trades"][number];
+
+const ET_PARTS_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false
+});
+
+function getEtParts(ms: number): { dayKey: string; hour: number; minute: number } {
+  const parts = ET_PARTS_FORMATTER.formatToParts(new Date(ms));
+  const map: Record<string, string> = {};
+  for (const part of parts) {
+    if (part.type !== "literal") map[part.type] = part.value;
+  }
+  const year = Number(map.year || 0);
+  const month = Number(map.month || 0);
+  const day = Number(map.day || 0);
+  const hour = Number(map.hour || 0);
+  const minute = Number(map.minute || 0);
+  return {
+    dayKey: `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
+    hour,
+    minute
+  };
+}
+
+function parseAnchorTimeToMinutes(value: string): number {
+  const raw = String(value || "").trim();
+  const m = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return 9 * 60;
+  const hh = Math.max(0, Math.min(23, Number(m[1] || 0)));
+  const mm = Math.max(0, Math.min(59, Number(m[2] || 0)));
+  return hh * 60 + mm;
+}
 
 export default function AppWorkspace() {
   const [activeSection, setActiveSection] = useState<NavSection>("overview");
@@ -68,28 +114,46 @@ export default function AppWorkspace() {
     totalPages: 1
   });
   const [backtestDateFilter, setBacktestDateFilter] = useState("");
+  const [sessionTypeFilter, setSessionTypeFilter] = useState<"all" | SessionType>("all");
   const [sessions, setSessions] = useState<SavedSession[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [symbols, setSymbols] = useState<string[]>([]);
   const [selectedSymbol, setSelectedSymbol] = useState("");
   const [timeframe, setTimeframe] = useState<Timeframe>("1m");
-  const [mode, setMode] = useState<ReplayMode>("candle");
+  const [mode, setMode] = useState<ReplayMode>("mixed");
   const [tickPolicy, setTickPolicy] = useState<TickPolicy>("real_then_synthetic");
   const [strategyId, setStrategyId] = useState<StrategyId>("noop");
   const [optimizerSettings, setOptimizerSettings] = useState<BacktestOptimizerSettings>({
     takeProfitRR: 2,
     vwapStartHHMM: 930,
     activeStartHHMM: 930,
-    activeEndHHMM: 1600
+    activeEndHHMM: 1600,
+    stopLossSource: "open",
+    dojiBodyToRangeMax: 0.3,
+    ignoreWeekends: false,
+    ignoreUsHolidays: false
   });
   const [candlesByTimeframe, setCandlesByTimeframe] = useState<Record<Timeframe, Candle[]>>({
     "1m": [],
     "5m": []
   });
   const [runResult, setRunResult] = useState<BacktestRunResult | null>(null);
+  const [capSimTradesTwoPerDay, setCapSimTradesTwoPerDay] = useState(false);
+  const [simWinStopRetryPerDay, setSimWinStopRetryPerDay] = useState(false);
   const [selectedSimTradeIdx, setSelectedSimTradeIdx] = useState<number | null>(null);
   const [sessionTrades, setSessionTrades] = useState<SessionTrade[]>([]);
   const [scannerMetadata, setScannerMetadata] = useState<ScannerMetadataItem[]>([]);
+  const [scannerRows, setScannerRows] = useState<ScannerFeatureRow[]>([]);
+  const [scannerLastRun, setScannerLastRun] = useState<ScannerRunResult | null>(null);
+  const [scannerRunning, setScannerRunning] = useState(false);
+  const [scannerUseForRuns, setScannerUseForRuns] = useState(true);
+  const [scannerTimeframe, setScannerTimeframe] = useState<Timeframe>("1m");
+  const [scannerAnchorInput, setScannerAnchorInput] = useState("09:00");
+  const [scannerLookbackHours, setScannerLookbackHours] = useState(120);
+  const [scannerCurrentWindowHours, setScannerCurrentWindowHours] = useState(12);
+  const [scannerBtcSymbol, setScannerBtcSymbol] = useState("BTC");
+  const [scannerFeatureSet, setScannerFeatureSet] = useState("rvol-scanner");
+  const [scannerFeatureVersion, setScannerFeatureVersion] = useState("v1");
   const [running, setRunning] = useState(false);
   const [batchRunning, setBatchRunning] = useState(false);
   const [batchResults, setBatchResults] = useState<BatchRunRow[]>([]);
@@ -113,6 +177,8 @@ export default function AppWorkspace() {
   const [optimizerDrawdownWeight, setOptimizerDrawdownWeight] = useState(1);
   const [optimizerLossWeight, setOptimizerLossWeight] = useState(1);
   const [optimizerAssetSelection, setOptimizerAssetSelection] = useState("");
+  const [optimizerSessionScope, setOptimizerSessionScope] = useState<"filtered" | "selected">("filtered");
+  const [optimizerSessionTypeFilter, setOptimizerSessionTypeFilter] = useState<"all" | SessionType>("all");
   const [optimizationResults, setOptimizationResults] = useState<OptimizationScenarioResult[]>([]);
   const [optimizationAssetBreakdownsByRr, setOptimizationAssetBreakdownsByRr] = useState<
     Record<string, OptimizationAssetRow[]>
@@ -129,13 +195,51 @@ export default function AppWorkspace() {
     () => sessions.find((session) => session.id === selectedSessionId) || null,
     [sessions, selectedSessionId]
   );
+  const scannerAnchorTsMs = useMemo(() => {
+    const candles = candlesByTimeframe[scannerTimeframe] || [];
+    if (candles.length === 0) return Number(selectedSession?.startedAtMs || 0);
+    const targetMinutes = parseAnchorTimeToMinutes(scannerAnchorInput);
+    const firstCandleTs = Number(candles[0]?.timeMs || 0);
+    const firstDayKey = getEtParts(firstCandleTs).dayKey;
+    const dayCandles = candles.filter((candle) => getEtParts(Number(candle.timeMs || 0)).dayKey === firstDayKey);
+    if (dayCandles.length === 0) return firstCandleTs;
+    let exact = 0;
+    let nearestTs = Number(dayCandles[0]?.timeMs || firstCandleTs);
+    let nearestDiff = Number.POSITIVE_INFINITY;
+    for (const candle of dayCandles) {
+      const ts = Number(candle.timeMs || 0);
+      if (!Number.isFinite(ts) || ts <= 0) continue;
+      const et = getEtParts(ts);
+      const candleMinutes = et.hour * 60 + et.minute;
+      if (candleMinutes === targetMinutes) {
+        exact = ts;
+        break;
+      }
+      const diff = Math.abs(candleMinutes - targetMinutes);
+      if (diff < nearestDiff) {
+        nearestDiff = diff;
+        nearestTs = ts;
+      }
+    }
+    return exact || nearestTs || firstCandleTs;
+  }, [candlesByTimeframe, scannerTimeframe, scannerAnchorInput, selectedSession?.startedAtMs]);
 
-  const refreshBacktestSessions = async (page = 1, date = backtestDateFilter) => {
-    const payload = await fetchBacktestSessionsPaged({ page, pageSize: 10, date: date || undefined });
+  const refreshBacktestSessions = async (
+    page = 1,
+    date = backtestDateFilter,
+    sessionType: "all" | SessionType = sessionTypeFilter
+  ) => {
+    const payload = await fetchBacktestSessionsPaged({
+      page,
+      pageSize: 10,
+      date: date || undefined,
+      sessionType: sessionType === "all" ? undefined : sessionType
+    });
     if (!payload) return;
     setSessions(payload.sessions);
     setBacktestPagination(payload.pagination);
     setBacktestDateFilter(date);
+    setSessionTypeFilter(sessionType);
     setSelectedSessionId((prev) =>
       prev && payload.sessions.some((x) => x.id === prev) ? prev : payload.sessions[0]?.id || ""
     );
@@ -149,13 +253,29 @@ export default function AppWorkspace() {
     setSourceDateFilter(date);
   };
 
+  const refreshScannerRows = async () => {
+    if (!selectedSessionId) {
+      setScannerRows([]);
+      return;
+    }
+    const rows = await fetchScannerFeatures({
+      sessionId: selectedSessionId,
+      timeframe: scannerTimeframe,
+      featureSet: scannerFeatureSet,
+      featureVersion: scannerFeatureVersion,
+      anchorTsMs: scannerAnchorTsMs > 0 ? scannerAnchorTsMs : undefined,
+      limit: 1000
+    });
+    setScannerRows(rows);
+  };
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const rows = await fetchBacktestSessions();
       if (cancelled) return;
       if (rows.length > 0) {
-        await refreshBacktestSessions(1, "");
+        await refreshBacktestSessions(1, "", "all");
       } else {
         setSessions([]);
       }
@@ -170,21 +290,30 @@ export default function AppWorkspace() {
     if (!selectedSessionId) return;
     let cancelled = false;
     (async () => {
-      const [nextSymbols, trades, metadata] = await Promise.all([
+      const [nextSymbols, trades, metadata, rows] = await Promise.all([
         fetchBacktestSymbols(selectedSessionId),
         fetchBacktestTrades(selectedSessionId),
-        fetchScannerMetadata(selectedSessionId)
+        fetchScannerMetadata(selectedSessionId),
+        fetchScannerFeatures({
+          sessionId: selectedSessionId,
+          timeframe: scannerTimeframe,
+          featureSet: scannerFeatureSet,
+          featureVersion: scannerFeatureVersion,
+          anchorTsMs: scannerAnchorTsMs > 0 ? scannerAnchorTsMs : undefined,
+          limit: 1000
+        })
       ]);
       if (cancelled) return;
       setSymbols(nextSymbols);
       setSelectedSymbol((prev) => (prev && nextSymbols.includes(prev) ? prev : nextSymbols[0] || ""));
       setSessionTrades(trades);
       setScannerMetadata(metadata);
+      setScannerRows(rows);
     })();
     return () => {
       cancelled = true;
     };
-  }, [selectedSessionId]);
+  }, [selectedSessionId, scannerTimeframe, scannerFeatureSet, scannerFeatureVersion, scannerAnchorTsMs]);
 
   useEffect(() => {
     if (!selectedSessionId || !selectedSymbol) return;
@@ -214,14 +343,27 @@ export default function AppWorkspace() {
     return candles;
   }, [candlesByTimeframe, timeframe, mode, replayIndex]);
 
+  const tradesForDisplay = useMemo(() => {
+    const raw = runResult?.trades;
+    if (!raw?.length) return [];
+    const ordered = [...raw].sort((a, b) => Number(a.openedAtMs) - Number(b.openedAtMs));
+    if (simWinStopRetryPerDay) return applyWinStopOneRetryPerDay(ordered);
+    if (capSimTradesTwoPerDay) return capTradesPerCalendarDay(ordered, 2);
+    return raw;
+  }, [runResult?.trades, capSimTradesTwoPerDay, simWinStopRetryPerDay]);
+
   const selectedSimTrade = useMemo<SimulatedTrade | null>(() => {
-    if (selectedSimTradeIdx == null || !runResult?.trades) return null;
-    return runResult.trades[selectedSimTradeIdx] || null;
-  }, [selectedSimTradeIdx, runResult]);
+    if (selectedSimTradeIdx == null) return null;
+    return tradesForDisplay[selectedSimTradeIdx] || null;
+  }, [selectedSimTradeIdx, tradesForDisplay]);
 
   useEffect(() => {
     setSelectedSimTradeIdx(null);
   }, [runResult]);
+
+  useEffect(() => {
+    setSelectedSimTradeIdx(null);
+  }, [capSimTradesTwoPerDay, simWinStopRetryPerDay]);
 
   useEffect(() => {
     if (selectedSimTradeIdx == null) return;
@@ -253,7 +395,27 @@ export default function AppWorkspace() {
     return { count: candles.length, from: first.timeMs, to: last.timeMs };
   }, [candlesByTimeframe, timeframe]);
 
-  const strategyVariables = useMemo(() => buildStrategyVariables(optimizerSettings), [optimizerSettings]);
+  const strategyVariables = useMemo(() => {
+    const base = buildStrategyVariables(optimizerSettings);
+    if (!scannerUseForRuns || !scannerFeatureSet) return base;
+    const scannerParams: Record<string, unknown> = {
+      scannerFeatureSet,
+      scannerFeatureVersion,
+      scannerAnchorTsMs
+    };
+    return {
+      noop: { ...base.noop, ...scannerParams },
+      "simple-momentum": { ...base["simple-momentum"], ...scannerParams },
+      "orb-avwap-930": { ...base["orb-avwap-930"], ...scannerParams },
+      "orb-avwap-930-open-avwap-sl": { ...base["orb-avwap-930-open-avwap-sl"], ...scannerParams }
+    };
+  }, [
+    optimizerSettings,
+    scannerUseForRuns,
+    scannerFeatureSet,
+    scannerFeatureVersion,
+    scannerAnchorTsMs
+  ]);
 
   const handleRun = async () => {
     if (!selectedSessionId || !selectedSymbol || running) return;
@@ -284,7 +446,8 @@ export default function AppWorkspace() {
         const payload = await fetchBacktestSessionsPaged({
           page,
           pageSize: 50,
-          date: backtestDateFilter || undefined
+          date: backtestDateFilter || undefined,
+          sessionType: sessionTypeFilter === "all" ? undefined : sessionTypeFilter
         });
         if (!payload) break;
         allSessions.push(...payload.sessions);
@@ -351,7 +514,14 @@ export default function AppWorkspace() {
   };
 
   const optimizeScenarios = async () => {
-    if (running || batchRunning || optimizing || strategyId !== "orb-avwap-930") return;
+    if (
+      running ||
+      batchRunning ||
+      optimizing ||
+      (strategyId !== "orb-avwap-930" && strategyId !== "orb-avwap-930-open-avwap-sl")
+    ) {
+      return;
+    }
     setOptimizing(true);
     setOptimizationResults([]);
     setOptimizationAssetBreakdownsByRr({});
@@ -401,20 +571,33 @@ export default function AppWorkspace() {
       }
       if (variableCombos.length === 0) return;
 
-      const allSessions: SavedSession[] = [];
-      let page = 1;
-      let totalPages = 1;
-      do {
-        const payload = await fetchBacktestSessionsPaged({
-          page,
-          pageSize: 50,
-          date: backtestDateFilter || undefined
-        });
-        if (!payload) break;
-        allSessions.push(...payload.sessions);
-        totalPages = payload.pagination.totalPages || 1;
-        page += 1;
-      } while (page <= totalPages);
+      let allSessions: SavedSession[] = [];
+      if (optimizerSessionScope === "selected") {
+        const selected = sessions.find((session) => session.id === selectedSessionId);
+        allSessions = selected ? [selected] : [];
+      } else {
+        let page = 1;
+        let totalPages = 1;
+        do {
+          const payload = await fetchBacktestSessionsPaged({
+            page,
+            pageSize: 50,
+            date: backtestDateFilter || undefined,
+            sessionType: sessionTypeFilter === "all" ? undefined : sessionTypeFilter
+          });
+          if (!payload) break;
+          allSessions.push(...payload.sessions);
+          totalPages = payload.pagination.totalPages || 1;
+          page += 1;
+        } while (page <= totalPages);
+      }
+      if (optimizerSessionTypeFilter !== "all") {
+        allSessions = allSessions.filter((session) => session.sessionType === optimizerSessionTypeFilter);
+      }
+      if (allSessions.length === 0) {
+        setOptimizationProgress({ done: 0, total: 0, current: "No sessions match optimizer scope/filter." });
+        return;
+      }
 
       const targets: Array<{ sessionId: string; symbol: string }> = [];
       for (const session of allSessions) {
@@ -446,6 +629,8 @@ export default function AppWorkspace() {
         const rr = combo.rr;
         const assetStats = new Map<string, { runs: number; totalR: number; totalDrawdown: number; negativeRuns: number }>();
         let rrRunCount = 0;
+        let rrTotalTrades = 0;
+        let rrWinRateNumerator = 0;
         let rrTotalR = 0;
         let rrTotalDrawdown = 0;
         let rrNegativeRuns = 0;
@@ -464,7 +649,7 @@ export default function AppWorkspace() {
             strategyId,
             tickPolicy,
             strategyParams: {
-              ...strategyVariables["orb-avwap-930"],
+              ...strategyVariables[strategyId],
               rr,
               anchorHHMM: combo.anchorHHMM,
               activeStartHHMM: combo.activeStartHHMM,
@@ -475,7 +660,11 @@ export default function AppWorkspace() {
           if (!result) continue;
           const totalR = runTotalR(result.trades);
           const dd = Number(result.metrics.maxDrawdown || 0);
+          const tradeCount = Number(result.metrics.tradeCount || 0);
+          const runWinRate = Number(result.metrics.winRate || 0);
           rrRunCount += 1;
+          rrTotalTrades += tradeCount;
+          rrWinRateNumerator += runWinRate * tradeCount;
           rrTotalR += totalR;
           rrTotalDrawdown += dd;
           if (totalR < 0) rrNegativeRuns += 1;
@@ -499,6 +688,7 @@ export default function AppWorkspace() {
           .sort((a, b) => b.score - a.score);
 
         const runCount = rrRunCount;
+        const winRate = rrTotalTrades > 0 ? rrWinRateNumerator / rrTotalTrades : 0;
         const totalR = rrTotalR;
         const avgRPerRun = runCount > 0 ? totalR / runCount : 0;
         const avgDrawdown = runCount > 0 ? rrTotalDrawdown / runCount : 0;
@@ -512,6 +702,7 @@ export default function AppWorkspace() {
           activeStartHHMM: combo.activeStartHHMM,
           activeEndHHMM: combo.activeEndHHMM,
           runCount,
+          winRate,
           totalR,
           avgRPerRun,
           avgDrawdown,
@@ -651,6 +842,18 @@ export default function AppWorkspace() {
 
   const optimizationLeaderboards = useMemo(() => buildOptimizationLeaderboards(optimizationResults), [optimizationResults]);
 
+  const optimizerTargetSessionCount = useMemo(() => {
+    if (optimizerSessionScope === "selected") {
+      const selected = sessions.find((session) => session.id === selectedSessionId);
+      if (!selected) return 0;
+      if (optimizerSessionTypeFilter === "all") return 1;
+      return selected.sessionType === optimizerSessionTypeFilter ? 1 : 0;
+    }
+    return sessions.filter((session) =>
+      optimizerSessionTypeFilter === "all" ? true : session.sessionType === optimizerSessionTypeFilter
+    ).length;
+  }, [optimizerSessionScope, optimizerSessionTypeFilter, sessions, selectedSessionId]);
+
   const bestRrAssetMix = useMemo(() => {
     if (!bestOptimizationScenario) return [];
     const rows =
@@ -673,20 +876,43 @@ export default function AppWorkspace() {
     const ok = await importSourceSession(sessionId);
     if (ok) {
       setImportFeedback(`Imported ${sessionId}`);
-      await refreshBacktestSessions(1, backtestDateFilter);
+      await refreshBacktestSessions(1, backtestDateFilter, sessionTypeFilter);
     } else {
       setImportFeedback(`Import failed for ${sessionId}`);
     }
     setImportingId("");
   };
 
+  const handleRunScanner = async () => {
+    if (!selectedSessionId || scannerRunning) return;
+    setScannerRunning(true);
+    try {
+      const result = await runSessionScannerApi({
+        sessionId: selectedSessionId,
+        timeframe: scannerTimeframe,
+        anchorTsMs: scannerAnchorTsMs,
+        lookbackHours: Math.max(1, Number(scannerLookbackHours || 120)),
+        currentWindowHours: Math.max(1, Number(scannerCurrentWindowHours || 12)),
+        btcSymbol: String(scannerBtcSymbol || "BTC").toUpperCase(),
+        featureSet: scannerFeatureSet,
+        featureVersion: scannerFeatureVersion
+      });
+      setScannerLastRun(result);
+      await Promise.all([refreshScannerRows(), fetchScannerMetadata(selectedSessionId).then(setScannerMetadata)]);
+    } finally {
+      setScannerRunning(false);
+    }
+  };
+
   const sectionMeta: Record<NavSection, { title: string; description: string }> = {
     overview: { title: "Overview", description: "High-level view of sessions, runs, and data in one workspace." },
     sessions: { title: "Sessions", description: "Select session, run strategy, and drill into simulated trades." },
+    scanner: { title: "Scanner", description: "Run per-asset RVOL scanner on this session and attach candle features." },
     "runs-batch": { title: "Batch Runs", description: "Execute strategy across all filtered sessions and symbols." },
     "runs-optimizer": { title: "Optimizer Runs", description: "Sweep strategy variables and compare scenario quality." },
     trades: { title: "Trades", description: "Inspect simulated trades and open detailed chart replays." },
-    data: { title: "Data", description: "Manage import queue, session trades, scanner metadata, and provenance." }
+    data: { title: "Data", description: "Manage import queue, session trades, scanner metadata, and provenance." },
+    about: { title: "About", description: "How the simulator works — architecture, replay modes, tick policy, and strategies." }
   };
 
   const selectTopAssets = (count: number) => {
@@ -753,9 +979,51 @@ export default function AppWorkspace() {
               chartCandles={chartCandles}
               candleRange={candleRange}
               runResult={runResult}
+              tradesForDisplay={tradesForDisplay}
+              capTradesTwoPerDay={capSimTradesTwoPerDay}
+              onCapTradesTwoPerDayChange={(v) => {
+                setCapSimTradesTwoPerDay(v);
+                if (v) setSimWinStopRetryPerDay(false);
+              }}
+              simWinStopRetryPerDay={simWinStopRetryPerDay}
+              onSimWinStopRetryPerDayChange={(v) => {
+                setSimWinStopRetryPerDay(v);
+                if (v) setCapSimTradesTwoPerDay(false);
+              }}
               optimizerSettings={optimizerSettings}
               onOptimizerSettingChange={(patch) => setOptimizerSettings((prev) => ({ ...prev, ...patch }))}
               onTradeClick={setSelectedSimTradeIdx}
+            />
+          </>
+        );
+      case "scanner":
+        return (
+          <>
+            {controls}
+            <ScannerWorkspace
+              selectedSessionId={selectedSessionId}
+              scannerTimeframe={scannerTimeframe}
+              scannerAnchorInput={scannerAnchorInput}
+              scannerResolvedAnchorTsMs={scannerAnchorTsMs}
+              scannerLookbackHours={scannerLookbackHours}
+              scannerCurrentWindowHours={scannerCurrentWindowHours}
+              scannerBtcSymbol={scannerBtcSymbol}
+              scannerFeatureSet={scannerFeatureSet}
+              scannerFeatureVersion={scannerFeatureVersion}
+              scannerUseForRuns={scannerUseForRuns}
+              scannerRunning={scannerRunning}
+              scannerRows={scannerRows}
+              scannerLastRun={scannerLastRun}
+              onScannerTimeframeChange={setScannerTimeframe}
+              onScannerAnchorInputChange={setScannerAnchorInput}
+              onScannerLookbackHoursChange={setScannerLookbackHours}
+              onScannerCurrentWindowHoursChange={setScannerCurrentWindowHours}
+              onScannerBtcSymbolChange={setScannerBtcSymbol}
+              onScannerFeatureSetChange={setScannerFeatureSet}
+              onScannerFeatureVersionChange={setScannerFeatureVersion}
+              onScannerUseForRunsChange={setScannerUseForRuns}
+              onRunScanner={handleRunScanner}
+              onRefreshScannerRows={refreshScannerRows}
             />
           </>
         );
@@ -772,6 +1040,17 @@ export default function AppWorkspace() {
               chartCandles={chartCandles}
               candleRange={candleRange}
               runResult={runResult}
+              tradesForDisplay={tradesForDisplay}
+              capTradesTwoPerDay={capSimTradesTwoPerDay}
+              onCapTradesTwoPerDayChange={(v) => {
+                setCapSimTradesTwoPerDay(v);
+                if (v) setSimWinStopRetryPerDay(false);
+              }}
+              simWinStopRetryPerDay={simWinStopRetryPerDay}
+              onSimWinStopRetryPerDayChange={(v) => {
+                setSimWinStopRetryPerDay(v);
+                if (v) setCapSimTradesTwoPerDay(false);
+              }}
               optimizerSettings={optimizerSettings}
               onOptimizerSettingChange={(patch) => setOptimizerSettings((prev) => ({ ...prev, ...patch }))}
               onTradeClick={setSelectedSimTradeIdx}
@@ -847,6 +1126,11 @@ export default function AppWorkspace() {
               setOptimizerLossWeight={setOptimizerLossWeight}
               optimizerAssetSelection={optimizerAssetSelection}
               setOptimizerAssetSelection={setOptimizerAssetSelection}
+              optimizerSessionScope={optimizerSessionScope}
+              setOptimizerSessionScope={setOptimizerSessionScope}
+              optimizerSessionTypeFilter={optimizerSessionTypeFilter}
+              setOptimizerSessionTypeFilter={setOptimizerSessionTypeFilter}
+              optimizerTargetSessionCount={optimizerTargetSessionCount}
               optimizeScenarios={optimizeScenarios}
               optimizing={optimizing}
               running={running}
@@ -879,6 +1163,8 @@ export default function AppWorkspace() {
             />
           </>
         );
+      case "about":
+        return <AboutWorkspace />;
       case "overview":
       default:
         return (
@@ -893,6 +1179,17 @@ export default function AppWorkspace() {
               chartCandles={chartCandles}
               candleRange={candleRange}
               runResult={runResult}
+              tradesForDisplay={tradesForDisplay}
+              capTradesTwoPerDay={capSimTradesTwoPerDay}
+              onCapTradesTwoPerDayChange={(v) => {
+                setCapSimTradesTwoPerDay(v);
+                if (v) setSimWinStopRetryPerDay(false);
+              }}
+              simWinStopRetryPerDay={simWinStopRetryPerDay}
+              onSimWinStopRetryPerDayChange={(v) => {
+                setSimWinStopRetryPerDay(v);
+                if (v) setCapSimTradesTwoPerDay(false);
+              }}
               optimizerSettings={optimizerSettings}
               onOptimizerSettingChange={(patch) => setOptimizerSettings((prev) => ({ ...prev, ...patch }))}
               onTradeClick={setSelectedSimTradeIdx}
@@ -932,8 +1229,12 @@ export default function AppWorkspace() {
           <SessionsSidebar
             sessions={sessions}
             selectedSessionId={selectedSessionId}
+            sessionTypeFilter={sessionTypeFilter}
             backtestDateFilter={backtestDateFilter}
             backtestPagination={backtestPagination}
+            onSessionTypeFilterChange={(value) => {
+              void refreshBacktestSessions(1, backtestDateFilter, value);
+            }}
             onDateFilterChange={setBacktestDateFilter}
             onRefresh={refreshBacktestSessions}
             onSelectSession={setSelectedSessionId}
@@ -947,6 +1248,8 @@ export default function AppWorkspace() {
         symbol={runResult?.meta?.symbol || selectedSymbol}
         timeframeLabel={timeframe}
         candles={candlesByTimeframe[timeframe] || []}
+        strategyId={runResult?.meta?.strategyId || strategyId}
+        strategyParams={(runResult?.meta?.params as Record<string, unknown> | null) || null}
         onClose={() => setSelectedSimTradeIdx(null)}
       />
     </WorkspaceContext.Provider>

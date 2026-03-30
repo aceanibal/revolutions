@@ -64,9 +64,9 @@ export function RunControlsBar({
       <label>
         Replay
         <select value={mode} onChange={(e) => onSetMode(e.target.value as ReplayMode)}>
+          <option value="mixed">mixed</option>
           <option value="candle">candle</option>
           <option value="tick">tick</option>
-          <option value="mixed">mixed</option>
         </select>
       </label>
       <label>
@@ -83,6 +83,7 @@ export function RunControlsBar({
           <option value="noop">noop</option>
           <option value="simple-momentum">simple-momentum</option>
           <option value="orb-avwap-930">orb-avwap-930</option>
+          <option value="orb-avwap-930-open-avwap-sl">orb-avwap-930-open-avwap-sl</option>
         </select>
       </label>
       <button onClick={onRun} disabled={running || !selectedSymbol} type="button">

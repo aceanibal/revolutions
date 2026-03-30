@@ -3,6 +3,10 @@ import type {
   PaginationMeta,
   ReplayMode,
   SavedSession,
+  ScannerFeatureRow,
+  ScannerRunInput,
+  ScannerRunResult,
+  SessionType,
   ScannerMetadataItem,
   SessionSnapshot,
   SessionTrade,
@@ -33,12 +37,14 @@ export async function fetchBacktestSessionsPaged(options: {
   page: number;
   pageSize: number;
   date?: string;
+  sessionType?: SessionType;
 }): Promise<{ sessions: SavedSession[]; pagination: PaginationMeta } | null> {
   const params = new URLSearchParams({
     page: String(options.page),
     pageSize: String(options.pageSize)
   });
   if (options.date) params.set("date", options.date);
+  if (options.sessionType) params.set("sessionType", options.sessionType);
   const payload = await readJson<{ ok: boolean; sessions: SavedSession[]; pagination: PaginationMeta }>(
     `${BACKEND_BASE_URL}/api/backtest/sessions/all?${params.toString()}`
   );
@@ -153,4 +159,45 @@ export async function runBacktestApi(input: {
     }
   );
   return payload?.ok ? payload.result : null;
+}
+
+export async function runSessionScannerApi(input: ScannerRunInput): Promise<ScannerRunResult | null> {
+  const payload = await readJson<{ ok: boolean; result: ScannerRunResult }>(
+    `${BACKEND_BASE_URL}/api/backtest/scanner/run`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input)
+    }
+  );
+  return payload?.ok ? payload.result : null;
+}
+
+export async function fetchScannerFeatures(input: {
+  sessionId: string;
+  symbol?: string;
+  timeframe?: Timeframe;
+  featureSet?: string;
+  featureVersion?: string;
+  anchorTsMs?: number;
+  limit?: number;
+}): Promise<ScannerFeatureRow[]> {
+  const params = new URLSearchParams();
+  if (input.symbol) params.set("symbol", input.symbol);
+  if (input.timeframe) params.set("timeframe", input.timeframe);
+  if (input.featureSet) params.set("featureSet", input.featureSet);
+  if (input.featureVersion) params.set("featureVersion", input.featureVersion);
+  if (Number.isFinite(input.anchorTsMs || 0) && Number(input.anchorTsMs || 0) > 0) {
+    params.set("anchorTsMs", String(Number(input.anchorTsMs)));
+  }
+  if (Number.isFinite(input.limit || 0) && Number(input.limit || 0) > 0) {
+    params.set("limit", String(Number(input.limit)));
+  }
+  const query = params.toString();
+  const payload = await readJson<{ ok: boolean; rows: ScannerFeatureRow[] }>(
+    `${BACKEND_BASE_URL}/api/backtest/sessions/${encodeURIComponent(input.sessionId)}/scanner/features${
+      query ? `?${query}` : ""
+    }`
+  );
+  return payload?.ok ? payload.rows : [];
 }

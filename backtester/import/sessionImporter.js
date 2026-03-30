@@ -65,6 +65,7 @@ function listSourceSessions(options = {}) {
     return {
       sessions: rows.map((row) => ({
         id: String(row.id || ""),
+        sessionType: "live",
         status: String(row.status || "closed"),
         startedAtMs: Number(row.started_at_ms || 0),
         endedAtMs: row.ended_at_ms == null ? null : Number(row.ended_at_ms),

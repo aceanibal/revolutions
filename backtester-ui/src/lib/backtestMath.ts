@@ -1,4 +1,4 @@
-import type { BacktestRunResult, OptimizationScenarioResult, StrategyId } from "../types";
+import type { BacktestRunResult, Candle, IndicatorSeries, OptimizationScenarioResult, StrategyId } from "../types";
 
 export function hhmmToMinutes(hhmm: number): number {
   const clean = Math.max(0, Math.min(2359, Number(hhmm || 0)));
@@ -88,16 +88,33 @@ export function formatDuration(startedAtMs: number, endedAtMs: number | null): s
 }
 
 export function buildStrategyVariables(
-  optimizerSettings: { takeProfitRR: number; vwapStartHHMM: number; activeStartHHMM: number; activeEndHHMM: number }
+  optimizerSettings: {
+    takeProfitRR: number;
+    vwapStartHHMM: number;
+    activeStartHHMM: number;
+    activeEndHHMM: number;
+    dojiBodyToRangeMax: number;
+    stopLossSource: "open" | "avwap" | "extreme" | "low" | "high";
+    ignoreWeekends: boolean;
+    ignoreUsHolidays: boolean;
+  }
 ): Record<StrategyId, Record<string, unknown>> {
+  const baseOrbParams = {
+    rr: Number(optimizerSettings.takeProfitRR),
+    anchorHHMM: Number(optimizerSettings.vwapStartHHMM),
+    activeStartHHMM: Number(optimizerSettings.activeStartHHMM),
+    activeEndHHMM: Number(optimizerSettings.activeEndHHMM),
+    dojiBodyToRangeMax: Number(optimizerSettings.dojiBodyToRangeMax),
+    ignoreWeekends: Boolean(optimizerSettings.ignoreWeekends),
+    ignoreUsHolidays: Boolean(optimizerSettings.ignoreUsHolidays)
+  };
   return {
     noop: {},
     "simple-momentum": {},
-    "orb-avwap-930": {
-      rr: Number(optimizerSettings.takeProfitRR),
-      anchorHHMM: Number(optimizerSettings.vwapStartHHMM),
-      activeStartHHMM: Number(optimizerSettings.activeStartHHMM),
-      activeEndHHMM: Number(optimizerSettings.activeEndHHMM)
+    "orb-avwap-930": baseOrbParams,
+    "orb-avwap-930-open-avwap-sl": {
+      ...baseOrbParams,
+      stopLossSource: optimizerSettings.stopLossSource
     }
   };
 }
@@ -125,6 +142,169 @@ export function buildOptimizationLeaderboards(optimizationResults: OptimizationS
   return { byScore, byProfit, byDrawdown, balancedAlt };
 }
 
+export function displayMetricsFromTrades(
+  trades: BacktestRunResult["trades"]
+): { tradeCount: number; winRate: number; maxDrawdown: number } {
+  const tradeCount = trades.length;
+  if (tradeCount === 0) return { tradeCount: 0, winRate: 0, maxDrawdown: 0 };
+
+  const winners = trades.filter((t) => t.pnl > 0).length;
+  const winRate = winners / tradeCount;
+
+  let peak = 0;
+  let cumPnl = 0;
+  let maxDrawdown = 0;
+  for (const t of trades) {
+    const r = tradePnlInR(t);
+    cumPnl += r ?? 0;
+    if (cumPnl > peak) peak = cumPnl;
+    const dd = peak - cumPnl;
+    if (dd > maxDrawdown) maxDrawdown = dd;
+  }
+  return { tradeCount, winRate, maxDrawdown };
+}
+
+export function capTradesPerCalendarDay(
+  trades: BacktestRunResult["trades"],
+  maxPerDay: number
+): BacktestRunResult["trades"] {
+  const counts = new Map<string, number>();
+  return trades.filter((t) => {
+    const { dayKey } = etParts(t.openedAtMs);
+    const prev = counts.get(dayKey) ?? 0;
+    if (prev >= maxPerDay) return false;
+    counts.set(dayKey, prev + 1);
+    return true;
+  });
+}
+
+/** ET calendar day, first open only if it wins (pnl > 0); else first open + one retry (second open). Trades should be sorted by `openedAtMs`. */
+export function applyWinStopOneRetryPerDay(trades: BacktestRunResult["trades"]): BacktestRunResult["trades"] {
+  if (trades.length === 0) return [];
+  const byDay = new Map<string, BacktestRunResult["trades"]>();
+  for (const t of trades) {
+    const { dayKey } = etParts(t.openedAtMs);
+    const list = byDay.get(dayKey);
+    if (list) list.push(t);
+    else byDay.set(dayKey, [t]);
+  }
+  const out: BacktestRunResult["trades"] = [];
+  for (const dayTrades of byDay.values()) {
+    const first = dayTrades[0];
+    out.push(first);
+    if (Number(first.pnl) > 0) continue;
+    if (dayTrades.length > 1) out.push(dayTrades[1]);
+  }
+  return out;
+}
+
 export function runResultTradeCount(result: BacktestRunResult | null): number {
   return result?.trades?.length || 0;
+}
+
+const ET_PARTS_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false
+});
+
+function etParts(ms: number): { dayKey: string; hhmm: number } {
+  const parts = ET_PARTS_FORMATTER.formatToParts(new Date(ms));
+  const map: Record<string, string> = {};
+  for (const part of parts) {
+    if (part.type !== "literal") map[part.type] = part.value;
+  }
+  const year = Number(map.year || 0);
+  const month = Number(map.month || 0);
+  const day = Number(map.day || 0);
+  const hour = Number(map.hour || 0);
+  const minute = Number(map.minute || 0);
+  const dayKey = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  return { dayKey, hhmm: hour * 100 + minute };
+}
+
+export function buildTradeReplayCandlesWindow(
+  candles: Candle[],
+  trade: { openedAtMs: number; closedAtMs: number } | null,
+  contextCandles = 10
+): Candle[] {
+  if (!trade || candles.length === 0) return candles;
+  const findClosestIndex = (targetMs: number) => {
+    let closestIdx = -1;
+    let closestDiff = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < candles.length; i += 1) {
+      const diff = Math.abs(Number(candles[i]?.timeMs || 0) - targetMs);
+      if (diff < closestDiff) {
+        closestDiff = diff;
+        closestIdx = i;
+      }
+    }
+    return closestIdx;
+  };
+  const openIdx = findClosestIndex(Number(trade.openedAtMs || 0));
+  const closeIdx = findClosestIndex(Number(trade.closedAtMs || 0));
+  if (openIdx < 0 && closeIdx < 0) return candles;
+  const span = Math.max(0, Math.floor(contextCandles));
+  const includeIndexes = new Set<number>();
+  const includeRange = (centerIdx: number) => {
+    if (centerIdx < 0) return;
+    const start = Math.max(0, centerIdx - span);
+    const end = Math.min(candles.length - 1, centerIdx + span);
+    for (let i = start; i <= end; i += 1) includeIndexes.add(i);
+  };
+  includeRange(openIdx);
+  includeRange(closeIdx);
+  return candles.filter((_, idx) => includeIndexes.has(idx));
+}
+
+export function buildReplayIndicatorSeries(input: {
+  strategyId: string;
+  strategyParams?: Record<string, unknown> | null;
+  allCandles: Candle[];
+  visibleCandles: Candle[];
+}): IndicatorSeries[] {
+  const strategyId = String(input.strategyId || "");
+  if (strategyId !== "orb-avwap-930" && strategyId !== "orb-avwap-930-open-avwap-sl") return [];
+  if (input.allCandles.length === 0 || input.visibleCandles.length === 0) return [];
+  const anchorHHMM = Number(input.strategyParams?.anchorHHMM || 930);
+  const sessionEndHHMM = Number(input.strategyParams?.sessionEndHHMM || 1600);
+  let dayKey = "";
+  let cumulativePV = 0;
+  let cumulativeV = 0;
+  const allValues: Array<{ timeMs: number; value: number }> = [];
+  for (const candle of input.allCandles) {
+    const timeMs = Number(candle.timeMs || 0);
+    const high = Number(candle.high);
+    const low = Number(candle.low);
+    const close = Number(candle.close);
+    if (!Number.isFinite(timeMs) || !Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) continue;
+    const et = etParts(timeMs);
+    if (et.dayKey !== dayKey) {
+      dayKey = et.dayKey;
+      cumulativePV = 0;
+      cumulativeV = 0;
+    }
+    if (et.hhmm < anchorHHMM || et.hhmm >= sessionEndHHMM) continue;
+    const volume = Number.isFinite(Number(candle.volume)) ? Number(candle.volume) : 0;
+    const typical = (high + low + close) / 3;
+    cumulativePV += typical * volume;
+    cumulativeV += volume;
+    const anchoredVwap = cumulativeV > 0 ? cumulativePV / cumulativeV : typical;
+    if (!Number.isFinite(anchoredVwap)) continue;
+    allValues.push({ timeMs, value: anchoredVwap });
+  }
+  const visibleFrom = Number(input.visibleCandles[0]?.timeMs || 0);
+  const visibleTo = Number(input.visibleCandles[input.visibleCandles.length - 1]?.timeMs || 0);
+  return [
+    {
+      key: "orb-avwap",
+      title: "AVWAP",
+      color: "#7c3aed",
+      values: allValues.filter((point) => point.timeMs >= visibleFrom && point.timeMs <= visibleTo)
+    }
+  ].filter((series) => series.values.length > 0);
 }

@@ -1,5 +1,5 @@
 import { CandleChart } from "../../components/CandleChart";
-import { formatDateTime, runTotalR, tradePnlInR } from "../../lib/backtestMath";
+import { displayMetricsFromTrades, formatDateTime, runTotalR, tradePnlInR } from "../../lib/backtestMath";
 import type {
   BacktestOptimizerSettings,
   BacktestRunResult,
@@ -17,6 +17,11 @@ interface SingleRunWorkspaceProps {
   chartCandles: Candle[];
   candleRange: { count: number; from: number; to: number } | null;
   runResult: BacktestRunResult | null;
+  tradesForDisplay: BacktestRunResult["trades"];
+  capTradesTwoPerDay: boolean;
+  onCapTradesTwoPerDayChange: (value: boolean) => void;
+  simWinStopRetryPerDay: boolean;
+  onSimWinStopRetryPerDayChange: (value: boolean) => void;
   optimizerSettings: BacktestOptimizerSettings;
   onOptimizerSettingChange: (patch: Partial<BacktestOptimizerSettings>) => void;
   onTradeClick: (index: number) => void;
@@ -31,16 +36,27 @@ export function SingleRunWorkspace({
   chartCandles,
   candleRange,
   runResult,
+  tradesForDisplay,
+  capTradesTwoPerDay,
+  onCapTradesTwoPerDayChange,
+  simWinStopRetryPerDay,
+  onSimWinStopRetryPerDayChange,
   optimizerSettings,
   onOptimizerSettingChange,
   onTradeClick
 }: SingleRunWorkspaceProps) {
+  const isOrbStrategy = strategyId === "orb-avwap-930" || strategyId === "orb-avwap-930-open-avwap-sl";
+  const isOriginalOrbStrategy = strategyId === "orb-avwap-930";
+  const isOpenOrAvwapStopStrategy = strategyId === "orb-avwap-930-open-avwap-sl";
+  const fullTradeCount = runResult?.trades?.length ?? 0;
+  const displayMetricsCap = displayMetricsFromTrades(tradesForDisplay);
+  const useDisplayAdjustedMetrics = capTradesTwoPerDay || simWinStopRetryPerDay;
   return (
     <>
       <section className="grid2">
         <div className="card">
           <h3>Strategy Variables (Single Run)</h3>
-          {strategyId === "orb-avwap-930" ? (
+          {isOrbStrategy ? (
             <div className="optimizer-row">
               <label>
                 Take Profit (R)
@@ -102,6 +118,67 @@ export function SingleRunWorkspace({
                   }
                 />
               </label>
+              {isOriginalOrbStrategy && (
+                <label>
+                  Doji body/range max
+                  <input
+                    type="number"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={optimizerSettings.dojiBodyToRangeMax}
+                    onChange={(e) =>
+                      onOptimizerSettingChange({
+                        dojiBodyToRangeMax: Math.max(0, Math.min(1, Number(e.target.value || 0.3)))
+                      })
+                    }
+                  />
+                </label>
+              )}
+              {isOpenOrAvwapStopStrategy && (
+                <label>
+                  Stop Loss Source
+                  <select
+                    value={optimizerSettings.stopLossSource}
+                    onChange={(e) =>
+                      onOptimizerSettingChange({
+                        stopLossSource:
+                          (e.target.value as BacktestOptimizerSettings["stopLossSource"]) || "open"
+                      })
+                    }
+                  >
+                    <option value="open">open</option>
+                    <option value="avwap">avwap</option>
+                    <option value="extreme">candle low (long) / high (short)</option>
+                    <option value="low">candle low (long only)</option>
+                    <option value="high">candle high (short only)</option>
+                  </select>
+                </label>
+              )}
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={optimizerSettings.ignoreWeekends}
+                  onChange={(e) =>
+                    onOptimizerSettingChange({
+                      ignoreWeekends: Boolean(e.target.checked)
+                    })
+                  }
+                />
+                Ignore weekends
+              </label>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={optimizerSettings.ignoreUsHolidays}
+                  onChange={(e) =>
+                    onOptimizerSettingChange({
+                      ignoreUsHolidays: Boolean(e.target.checked)
+                    })
+                  }
+                />
+                Ignore US holidays + early close days
+              </label>
             </div>
           ) : (
             <div className="sub">This strategy does not expose configurable variables for single-run editing yet.</div>
@@ -138,8 +215,35 @@ export function SingleRunWorkspace({
           )}
         </div>
         <div className="card table-card">
-          <h3>Simulated Trades ({runResult?.trades?.length || 0})</h3>
-          {runResult?.trades?.length ? (
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <h3 style={{ margin: 0 }}>Simulated Trades ({tradesForDisplay.length || 0})</h3>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: "0.9rem", whiteSpace: "nowrap" }}>
+                <input
+                  type="checkbox"
+                  checked={capTradesTwoPerDay}
+                  onChange={(e) => onCapTradesTwoPerDayChange(Boolean(e.target.checked))}
+                />
+                Cap 2 / day (ET)
+              </label>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: "0.9rem", whiteSpace: "nowrap" }}>
+                <input
+                  type="checkbox"
+                  checked={simWinStopRetryPerDay}
+                  onChange={(e) => onSimWinStopRetryPerDayChange(Boolean(e.target.checked))}
+                />
+                Win stops day · loss → 1 retry
+              </label>
+            </div>
+          </div>
+          {(capTradesTwoPerDay || simWinStopRetryPerDay) && fullTradeCount > tradesForDisplay.length ? (
+            <div className="sub" style={{ marginTop: 6 }}>
+              Showing {tradesForDisplay.length} of {fullTradeCount}
+              {capTradesTwoPerDay ? " · max 2 opens per ET day" : ""}
+              {simWinStopRetryPerDay ? " · if first open of day wins (PnL > 0), no second; otherwise allow one more." : ""}
+            </div>
+          ) : null}
+          {tradesForDisplay.length ? (
             <table>
               <thead>
                 <tr>
@@ -154,7 +258,7 @@ export function SingleRunWorkspace({
                 </tr>
               </thead>
               <tbody>
-                {runResult.trades.map((trade, idx) => (
+                {tradesForDisplay.map((trade, idx) => (
                   <tr
                     key={`${trade.openedAtMs}-${trade.closedAtMs}-${idx}`}
                     className="trade-row"
@@ -195,14 +299,23 @@ export function SingleRunWorkspace({
           <h3>Run Metrics</h3>
           {runResult ? (
             <>
-              <div className="sub">Trades: {runResult.metrics.tradeCount}</div>
-              <div className="sub">Win rate: {(runResult.metrics.winRate * 100).toFixed(2)}%</div>
-              <div className="sub">PnL (R): {runTotalR(runResult.trades).toFixed(3)}R</div>
-              <div className="sub">Max drawdown: {runResult.metrics.maxDrawdown.toFixed(4)}</div>
+              <div className="sub">
+                Trades: {useDisplayAdjustedMetrics ? displayMetricsCap.tradeCount : runResult.metrics.tradeCount}
+              </div>
+              <div className="sub">
+                Win rate:{" "}
+                {((useDisplayAdjustedMetrics ? displayMetricsCap.winRate : runResult.metrics.winRate) * 100).toFixed(2)}%
+              </div>
+              <div className="sub">PnL (R): {runTotalR(tradesForDisplay).toFixed(3)}R</div>
+              <div className="sub">
+                Max drawdown:{" "}
+                {(useDisplayAdjustedMetrics ? displayMetricsCap.maxDrawdown : runResult.metrics.maxDrawdown).toFixed(4)}
+              </div>
               <div className="sub">Real tick events: {runResult.meta.eventStats.realTickEvents}</div>
               <div className="sub">Synthetic tick events: {runResult.meta.eventStats.syntheticTickEvents}</div>
               <div className="sub">Candle events: {runResult.meta.eventStats.candleEvents}</div>
-              {runResult.meta.strategyId === "orb-avwap-930" && (
+              {(runResult.meta.strategyId === "orb-avwap-930" ||
+                runResult.meta.strategyId === "orb-avwap-930-open-avwap-sl") && (
                 <>
                   <div className="sub">
                     TP RR: {Number(runResult.meta.params?.rr || optimizerSettings.takeProfitRR).toFixed(2)}R
@@ -214,6 +327,28 @@ export function SingleRunWorkspace({
                     Active window (ET):{" "}
                     {Number(runResult.meta.params?.activeStartHHMM || optimizerSettings.activeStartHHMM)}-
                     {Number(runResult.meta.params?.activeEndHHMM || optimizerSettings.activeEndHHMM)}
+                  </div>
+                  {runResult.meta.strategyId === "orb-avwap-930" && (
+                    <div className="sub">
+                      Doji body/range max:{" "}
+                      {Number(
+                        runResult.meta.params?.dojiBodyToRangeMax ?? optimizerSettings.dojiBodyToRangeMax
+                      ).toFixed(3)}
+                    </div>
+                  )}
+                  {runResult.meta.strategyId === "orb-avwap-930-open-avwap-sl" && (
+                    <div className="sub">
+                      Stop loss source:{" "}
+                      {String(runResult.meta.params?.stopLossSource || optimizerSettings.stopLossSource)}
+                    </div>
+                  )}
+                  <div className="sub">
+                    Ignore weekends:{" "}
+                    {Boolean(runResult.meta.params?.ignoreWeekends ?? optimizerSettings.ignoreWeekends) ? "yes" : "no"}
+                  </div>
+                  <div className="sub">
+                    Ignore US holidays + early close days:{" "}
+                    {Boolean(runResult.meta.params?.ignoreUsHolidays ?? optimizerSettings.ignoreUsHolidays) ? "yes" : "no"}
                   </div>
                 </>
               )}

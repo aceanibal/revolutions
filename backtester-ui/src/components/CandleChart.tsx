@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { ColorType, createChart, type IChartApi, type ISeriesApi, type Time } from "lightweight-charts";
-import type { Candle } from "../types";
+import type { Candle, IndicatorSeries } from "../types";
 
 type ChartCandle = {
   time: Time;
@@ -24,14 +24,16 @@ interface CandleChartProps {
     price: number;
     color: string;
   }>;
+  indicatorSeries?: IndicatorSeries[];
 }
 
-export function CandleChart({ candles, priceLevels = [], timeMarkers = [] }: CandleChartProps) {
+export function CandleChart({ candles, priceLevels = [], timeMarkers = [], indicatorSeries = [] }: CandleChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const priceLinesRef = useRef<Array<ReturnType<ISeriesApi<"Candlestick">["createPriceLine"]>>>([]);
   const markerSeriesRef = useRef<ISeriesApi<"Line">[]>([]);
+  const indicatorSeriesRef = useRef<ISeriesApi<"Line">[]>([]);
 
   const safelyRemoveMarkerSeries = (chart: IChartApi, markerSeries: ISeriesApi<"Line"> | null | undefined) => {
     if (!markerSeries) return;
@@ -75,6 +77,7 @@ export function CandleChart({ candles, priceLevels = [], timeMarkers = [] }: Can
     seriesRef.current = series;
     return () => {
       markerSeriesRef.current = [];
+      indicatorSeriesRef.current = [];
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
@@ -141,11 +144,43 @@ export function CandleChart({ candles, priceLevels = [], timeMarkers = [] }: Can
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
+    for (const lineSeries of indicatorSeriesRef.current) {
+      safelyRemoveMarkerSeries(chart, lineSeries);
+    }
+    indicatorSeriesRef.current = [];
+    for (const indicator of indicatorSeries) {
+      const lineSeries = chart.addLineSeries({
+        color: indicator.color,
+        lineWidth: 2,
+        title: indicator.title,
+        crosshairMarkerVisible: false,
+        lastValueVisible: true,
+        priceLineVisible: false
+      });
+      lineSeries.setData(
+        indicator.values
+          .filter((point) => Number.isFinite(point.timeMs) && Number.isFinite(point.value) && point.timeMs > 0)
+          .map((point) => ({
+            time: Math.floor(point.timeMs / 1000) as Time,
+            value: point.value
+          }))
+      );
+      indicatorSeriesRef.current.push(lineSeries);
+    }
+  }, [indicatorSeries]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
     return () => {
       for (const markerSeries of markerSeriesRef.current) {
         safelyRemoveMarkerSeries(chart, markerSeries);
       }
       markerSeriesRef.current = [];
+      for (const lineSeries of indicatorSeriesRef.current) {
+        safelyRemoveMarkerSeries(chart, lineSeries);
+      }
+      indicatorSeriesRef.current = [];
     };
   }, []);
 

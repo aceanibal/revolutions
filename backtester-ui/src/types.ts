@@ -1,7 +1,12 @@
 export type Timeframe = "1m" | "5m";
 export type ReplayMode = "tick" | "candle" | "mixed";
-export type StrategyId = "noop" | "simple-momentum" | "orb-avwap-930";
+export type StrategyId =
+  | "noop"
+  | "simple-momentum"
+  | "orb-avwap-930"
+  | "orb-avwap-930-open-avwap-sl";
 export type TickPolicy = "real_only" | "real_then_synthetic" | "synthetic_only";
+export type SessionType = "live" | "historical";
 
 export interface Candle {
   timeMs: number;
@@ -12,6 +17,19 @@ export interface Candle {
   volume: number;
   source?: "history" | "live" | "gap_fill" | "mixed";
   isGapFill?: boolean;
+  features?: Record<string, Record<string, unknown>>;
+}
+
+export interface IndicatorPoint {
+  timeMs: number;
+  value: number;
+}
+
+export interface IndicatorSeries {
+  key: string;
+  title: string;
+  color: string;
+  values: IndicatorPoint[];
 }
 
 export interface GapRange {
@@ -22,6 +40,7 @@ export interface GapRange {
 
 export interface SavedSession {
   id: string;
+  sessionType: SessionType;
   status: string;
   startedAtMs: number;
   endedAtMs: number | null;
@@ -122,6 +141,10 @@ export interface BacktestOptimizerSettings {
   vwapStartHHMM: number;
   activeStartHHMM: number;
   activeEndHHMM: number;
+  stopLossSource: "open" | "avwap" | "extreme" | "low" | "high";
+  dojiBodyToRangeMax: number;
+  ignoreWeekends: boolean;
+  ignoreUsHolidays: boolean;
 }
 
 export interface ScannerMetadataItem {
@@ -130,6 +153,45 @@ export interface ScannerMetadataItem {
   sourceId: string;
   importedAtMs: number;
   payload: Record<string, unknown>;
+}
+
+export interface ScannerFeatureRow {
+  sessionId: string;
+  symbol: string;
+  timeframe: Timeframe;
+  bucketStartMs: number;
+  featureSet: string;
+  featureVersion: string;
+  createdAtMs: number;
+  payload: Record<string, unknown>;
+}
+
+export interface ScannerRunInput {
+  sessionId: string;
+  timeframe: Timeframe;
+  anchorTsMs: number;
+  lookbackHours: number;
+  currentWindowHours: number;
+  btcSymbol: string;
+  featureSet: string;
+  featureVersion: string;
+}
+
+export interface ScannerRunResult {
+  sessionId: string;
+  featureSet: string;
+  featureVersion: string;
+  anchorTsMs: number;
+  timeframe: Timeframe;
+  lookbackHours: number;
+  currentWindowHours: number;
+  barsPerHour: number;
+  lookbackBars: number;
+  windowBars: number;
+  symbolCount: number;
+  computedCount: number;
+  btcSymbol: string | null;
+  upserted: number;
 }
 
 export type BatchRunRow = {
@@ -147,7 +209,9 @@ export type OptimizationScenarioResult = {
   anchorHHMM: number;
   activeStartHHMM: number;
   activeEndHHMM: number;
+  dojiBodyToRangeMax?: number;
   runCount: number;
+  winRate: number;
   totalR: number;
   avgRPerRun: number;
   avgDrawdown: number;

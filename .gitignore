@@ -16,3 +16,4 @@ data/
 backend/data/
 backend/account-settings.json
 .env*
+/binance-public-data
