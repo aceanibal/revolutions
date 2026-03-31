@@ -210,6 +210,15 @@ body {
   width: 90px;
 }
 
+.optimizer-row input[type="checkbox"] {
+  width: auto;
+  min-width: 1rem;
+  padding: 0;
+  margin-left: 0;
+  margin-right: 6px;
+  cursor: pointer;
+}
+
 .toolbar button {
   cursor: pointer;
 }

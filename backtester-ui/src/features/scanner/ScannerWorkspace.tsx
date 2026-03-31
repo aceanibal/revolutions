@@ -11,6 +11,7 @@ interface ScannerWorkspaceProps {
   scannerBtcSymbol: string;
   scannerFeatureSet: string;
   scannerFeatureVersion: string;
+  scannerScanFullSession: boolean;
   scannerUseForRuns: boolean;
   scannerRunning: boolean;
   scannerRows: ScannerFeatureRow[];
@@ -22,6 +23,7 @@ interface ScannerWorkspaceProps {
   onScannerBtcSymbolChange: (value: string) => void;
   onScannerFeatureSetChange: (value: string) => void;
   onScannerFeatureVersionChange: (value: string) => void;
+  onScannerScanFullSessionChange: (value: boolean) => void;
   onScannerUseForRunsChange: (value: boolean) => void;
   onRunScanner: () => Promise<void>;
   onRefreshScannerRows: () => Promise<void>;
@@ -108,6 +110,14 @@ export function ScannerWorkspace(props: ScannerWorkspaceProps) {
             <label className="sub" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
               <input
                 type="checkbox"
+                checked={props.scannerScanFullSession}
+                onChange={(e) => props.onScannerScanFullSessionChange(Boolean(e.target.checked))}
+              />
+              Scan full session (every bar — marks each candle; longer run)
+            </label>
+            <label className="sub" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <input
+                type="checkbox"
                 checked={props.scannerUseForRuns}
                 onChange={(e) => props.onScannerUseForRunsChange(Boolean(e.target.checked))}
               />
@@ -129,7 +139,15 @@ export function ScannerWorkspace(props: ScannerWorkspaceProps) {
           <div className="sub">
             Variables: `anchorTsMs`, `lookbackHours`, `currentWindowHours`, `btcSymbol`, `featureSet`, `featureVersion`.
           </div>
-          <div className="sub">Resolved anchor candle (ET): {formatDateTime(props.scannerResolvedAnchorTsMs)}</div>
+          <div className="sub">
+            Resolved anchor candle (ET, single mode): {formatDateTime(props.scannerResolvedAnchorTsMs)}
+          </div>
+          {props.scannerScanFullSession ? (
+            <div className="sub">
+              Full-session mode uses the longest symbol series as the timeline and writes one feature row per
+              symbol per bar (after enough lookback exists). The table shows up to 8000 rows.
+            </div>
+          ) : null}
           <div className="sub">
             Output fields per asset: `rvol`, `currentWindowVolumeUsd`, `baselineVolumeUsd`, `btcCorr`, `price`.
           </div>
@@ -139,7 +157,24 @@ export function ScannerWorkspace(props: ScannerWorkspaceProps) {
           {props.scannerLastRun ? (
             <>
               <div className="sub">Session: {props.scannerLastRun.sessionId}</div>
-              <div className="sub">Anchor: {formatDateTime(props.scannerLastRun.anchorTsMs)}</div>
+              <div className="sub">
+                Mode: {props.scannerLastRun.scanMode === "session_bars" ? "session bars" : "single anchor"}
+                {props.scannerLastRun.scanMode === "session_bars" && props.scannerLastRun.anchorCount != null
+                  ? ` · anchors processed: ${props.scannerLastRun.anchorCount}`
+                  : ""}
+              </div>
+              <div className="sub">
+                Last anchor (ET): {formatDateTime(props.scannerLastRun.anchorTsMs)}
+              </div>
+              {props.scannerLastRun.anchorClamped &&
+              Number.isFinite(props.scannerLastRun.anchorRequestedTsMs) &&
+              props.scannerLastRun.anchorRequestedTsMs != null &&
+              props.scannerLastRun.anchorRequestedTsMs > 0 ? (
+                <div className="sub">
+                  Anchor shifted forward from {formatDateTime(props.scannerLastRun.anchorRequestedTsMs)} so the
+                  session has enough bars before the anchor for lookback and RVOL baseline.
+                </div>
+              ) : null}
               <div className="sub">
                 Timeframe: {props.scannerLastRun.timeframe} · lookback: {props.scannerLastRun.lookbackHours}h ·
                 window: {props.scannerLastRun.currentWindowHours}h

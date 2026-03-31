@@ -22,6 +22,7 @@ import {
   minutesToHHMM,
   rangeBySamples,
   rangeByStep,
+  resolveScannerEffectiveAnchorTsMs,
   runTotalR
 } from "./lib/backtestMath";
 import { AppShell } from "./layout/AppShell";
@@ -154,6 +155,7 @@ export default function AppWorkspace() {
   const [scannerBtcSymbol, setScannerBtcSymbol] = useState("BTC");
   const [scannerFeatureSet, setScannerFeatureSet] = useState("rvol-scanner");
   const [scannerFeatureVersion, setScannerFeatureVersion] = useState("v1");
+  const [scannerScanFullSession, setScannerScanFullSession] = useState(true);
   const [running, setRunning] = useState(false);
   const [batchRunning, setBatchRunning] = useState(false);
   const [batchResults, setBatchResults] = useState<BatchRunRow[]>([]);
@@ -221,8 +223,22 @@ export default function AppWorkspace() {
         nearestTs = ts;
       }
     }
-    return exact || nearestTs || firstCandleTs;
-  }, [candlesByTimeframe, scannerTimeframe, scannerAnchorInput, selectedSession?.startedAtMs]);
+    const raw = exact || nearestTs || firstCandleTs;
+    return resolveScannerEffectiveAnchorTsMs(
+      candles,
+      raw,
+      scannerTimeframe,
+      scannerLookbackHours,
+      scannerCurrentWindowHours
+    );
+  }, [
+    candlesByTimeframe,
+    scannerTimeframe,
+    scannerAnchorInput,
+    selectedSession?.startedAtMs,
+    scannerLookbackHours,
+    scannerCurrentWindowHours
+  ]);
 
   const refreshBacktestSessions = async (
     page = 1,
@@ -263,8 +279,9 @@ export default function AppWorkspace() {
       timeframe: scannerTimeframe,
       featureSet: scannerFeatureSet,
       featureVersion: scannerFeatureVersion,
-      anchorTsMs: scannerAnchorTsMs > 0 ? scannerAnchorTsMs : undefined,
-      limit: 1000
+      anchorTsMs:
+        scannerScanFullSession || !(scannerAnchorTsMs > 0) ? undefined : scannerAnchorTsMs,
+      limit: scannerScanFullSession ? 8000 : 1000
     });
     setScannerRows(rows);
   };
@@ -299,8 +316,9 @@ export default function AppWorkspace() {
           timeframe: scannerTimeframe,
           featureSet: scannerFeatureSet,
           featureVersion: scannerFeatureVersion,
-          anchorTsMs: scannerAnchorTsMs > 0 ? scannerAnchorTsMs : undefined,
-          limit: 1000
+          anchorTsMs:
+            scannerScanFullSession || !(scannerAnchorTsMs > 0) ? undefined : scannerAnchorTsMs,
+          limit: scannerScanFullSession ? 8000 : 1000
         })
       ]);
       if (cancelled) return;
@@ -313,7 +331,14 @@ export default function AppWorkspace() {
     return () => {
       cancelled = true;
     };
-  }, [selectedSessionId, scannerTimeframe, scannerFeatureSet, scannerFeatureVersion, scannerAnchorTsMs]);
+  }, [
+    selectedSessionId,
+    scannerTimeframe,
+    scannerFeatureSet,
+    scannerFeatureVersion,
+    scannerAnchorTsMs,
+    scannerScanFullSession
+  ]);
 
   useEffect(() => {
     if (!selectedSessionId || !selectedSymbol) return;
@@ -401,7 +426,8 @@ export default function AppWorkspace() {
     const scannerParams: Record<string, unknown> = {
       scannerFeatureSet,
       scannerFeatureVersion,
-      scannerAnchorTsMs
+      /** 0 = load all buckets for this symbol (per-candle / full-session scan). */
+      scannerAnchorTsMs: scannerScanFullSession ? 0 : scannerAnchorTsMs
     };
     return {
       noop: { ...base.noop, ...scannerParams },
@@ -414,7 +440,8 @@ export default function AppWorkspace() {
     scannerUseForRuns,
     scannerFeatureSet,
     scannerFeatureVersion,
-    scannerAnchorTsMs
+    scannerAnchorTsMs,
+    scannerScanFullSession
   ]);
 
   const handleRun = async () => {
@@ -895,7 +922,8 @@ export default function AppWorkspace() {
         currentWindowHours: Math.max(1, Number(scannerCurrentWindowHours || 12)),
         btcSymbol: String(scannerBtcSymbol || "BTC").toUpperCase(),
         featureSet: scannerFeatureSet,
-        featureVersion: scannerFeatureVersion
+        featureVersion: scannerFeatureVersion,
+        scanMode: scannerScanFullSession ? "session_bars" : "single"
       });
       setScannerLastRun(result);
       await Promise.all([refreshScannerRows(), fetchScannerMetadata(selectedSessionId).then(setScannerMetadata)]);
@@ -977,6 +1005,8 @@ export default function AppWorkspace() {
               selectedSessionId={selectedSessionId}
               selectedSymbol={selectedSymbol}
               chartCandles={chartCandles}
+              tradeWindowCandles={candlesByTimeframe[timeframe] || []}
+              oneMinuteCandles={candlesByTimeframe["1m"] || []}
               candleRange={candleRange}
               runResult={runResult}
               tradesForDisplay={tradesForDisplay}
@@ -1010,6 +1040,7 @@ export default function AppWorkspace() {
               scannerBtcSymbol={scannerBtcSymbol}
               scannerFeatureSet={scannerFeatureSet}
               scannerFeatureVersion={scannerFeatureVersion}
+              scannerScanFullSession={scannerScanFullSession}
               scannerUseForRuns={scannerUseForRuns}
               scannerRunning={scannerRunning}
               scannerRows={scannerRows}
@@ -1021,6 +1052,7 @@ export default function AppWorkspace() {
               onScannerBtcSymbolChange={setScannerBtcSymbol}
               onScannerFeatureSetChange={setScannerFeatureSet}
               onScannerFeatureVersionChange={setScannerFeatureVersion}
+              onScannerScanFullSessionChange={setScannerScanFullSession}
               onScannerUseForRunsChange={setScannerUseForRuns}
               onRunScanner={handleRunScanner}
               onRefreshScannerRows={refreshScannerRows}
@@ -1038,6 +1070,8 @@ export default function AppWorkspace() {
               selectedSessionId={selectedSessionId}
               selectedSymbol={selectedSymbol}
               chartCandles={chartCandles}
+              tradeWindowCandles={candlesByTimeframe[timeframe] || []}
+              oneMinuteCandles={candlesByTimeframe["1m"] || []}
               candleRange={candleRange}
               runResult={runResult}
               tradesForDisplay={tradesForDisplay}
@@ -1177,6 +1211,8 @@ export default function AppWorkspace() {
               selectedSessionId={selectedSessionId}
               selectedSymbol={selectedSymbol}
               chartCandles={chartCandles}
+              tradeWindowCandles={candlesByTimeframe[timeframe] || []}
+              oneMinuteCandles={candlesByTimeframe["1m"] || []}
               candleRange={candleRange}
               runResult={runResult}
               tradesForDisplay={tradesForDisplay}
@@ -1248,6 +1284,7 @@ export default function AppWorkspace() {
         symbol={runResult?.meta?.symbol || selectedSymbol}
         timeframeLabel={timeframe}
         candles={candlesByTimeframe[timeframe] || []}
+        oneMinuteCandles={candlesByTimeframe["1m"] || []}
         strategyId={runResult?.meta?.strategyId || strategyId}
         strategyParams={(runResult?.meta?.params as Record<string, unknown> | null) || null}
         onClose={() => setSelectedSimTradeIdx(null)}

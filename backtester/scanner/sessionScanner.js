@@ -18,12 +18,14 @@ function computeDollarVolume(candles) {
   }, 0);
 }
 
-function computeWindowMetrics(candles, windowBars) {
+function computeWindowMetrics(candles, windowBars, opts = {}) {
   const bars = Math.max(1, Number(windowBars || 1));
   if (!Array.isArray(candles) || candles.length < bars * 2) {
     return null;
   }
-  const sorted = [...candles].sort((a, b) => Number(a.timeMs || 0) - Number(b.timeMs || 0));
+  const sorted = opts.alreadySorted
+    ? candles
+    : [...candles].sort((a, b) => Number(a.timeMs || 0) - Number(b.timeMs || 0));
   const current = sorted.slice(sorted.length - bars);
   const historical = sorted.slice(0, sorted.length - bars);
   const baselineChunks = chunkArray(historical, bars).filter((chunk) => chunk.length === bars);
@@ -118,29 +120,145 @@ function boundedCandles(candles, anchorTsMs, lookbackBars) {
   return past.length <= bars ? past : past.slice(past.length - bars);
 }
 
-function computeScannerRows({
-  candlesBySymbol,
-  anchorTsMs,
-  timeframe = "1m",
-  lookbackHours = 120,
-  currentWindowHours = 12,
-  preferredBtcSymbol = "BTC",
-  minAlignedReturns = 12
-}) {
+function rightmostIndexLE(sorted, timeMs) {
+  if (!Array.isArray(sorted) || sorted.length === 0) return -1;
+  const tEnd = Number(timeMs || 0);
+  let lo = 0;
+  let hi = sorted.length - 1;
+  let ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const t = Number(sorted[mid].timeMs || 0);
+    if (t <= tEnd) {
+      ans = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return ans;
+}
+
+function boundedCandlesSorted(sorted, anchorTsMs, lookbackBars) {
+  const bars = Math.max(1, Number(lookbackBars || 1));
+  const end = rightmostIndexLE(sorted, anchorTsMs);
+  if (end < 0) return [];
+  const start = Math.max(0, end - bars + 1);
+  return sorted.slice(start, end + 1);
+}
+
+function sortCandlesBySymbol(candlesBySymbol) {
+  const out = {};
+  for (const key of Object.keys(candlesBySymbol || {})) {
+    const sym = normalizeSymbol(key);
+    if (!sym) continue;
+    const raw = candlesBySymbol[key];
+    if (!Array.isArray(raw) || raw.length === 0) {
+      out[sym] = [];
+      continue;
+    }
+    out[sym] = [...raw].sort((a, b) => Number(a.timeMs || 0) - Number(b.timeMs || 0));
+  }
+  return out;
+}
+
+function globalMinAnchorTsMs(sortedMap, lookbackBars, windowBars) {
+  const lb = Math.max(2, Number(lookbackBars || 2));
+  const wb = Math.max(1, Number(windowBars || 1));
+  const minSamplesForMetrics = wb * 2;
+  let minAnchorTs = 0;
+  for (const symbol of Object.keys(sortedMap || {})) {
+    const sorted = sortedMap[symbol];
+    if (!Array.isArray(sorted) || sorted.length === 0) continue;
+    if (sorted.length < minSamplesForMetrics || sorted.length < lb) continue;
+    const tsAtIdx = Number(sorted[lb - 1]?.timeMs || 0);
+    if (!Number.isFinite(tsAtIdx) || tsAtIdx <= 0) continue;
+    minAnchorTs = minAnchorTs === 0 ? tsAtIdx : Math.max(minAnchorTs, tsAtIdx);
+  }
+  return minAnchorTs;
+}
+
+function pickTimelineSymbol(sortedMap) {
+  let best = "";
+  let bestLen = -1;
+  for (const key of Object.keys(sortedMap || {})) {
+    const sym = normalizeSymbol(key);
+    if (!sym) continue;
+    const len = (sortedMap[key] || []).length;
+    if (len > bestLen) {
+      bestLen = len;
+      best = sym;
+    }
+  }
+  return best;
+}
+
+/**
+ * The scanner only uses candles with timeMs <= anchor. If the requested anchor is too early
+ * (e.g. first bar of the session), there are not enough bars for lookback / RVOL baseline.
+ * Clamp anchor forward to the earliest time that has `lookbackBars` bars ending at or before it
+ * on every symbol that has sufficient data; also cap to the latest candle time across symbols.
+ */
+function resolveEffectiveAnchorTsMs(candlesBySymbol, requestedAnchorTsMs, timeframe, lookbackHours, currentWindowHours) {
   const barsPerHour = timeframeBarsPerHour(timeframe);
   const lookbackBars = Math.max(2, Math.floor(Number(lookbackHours || 120) * barsPerHour));
   const windowBars = Math.max(1, Math.floor(Number(currentWindowHours || 12) * barsPerHour));
-  const symbols = Object.keys(candlesBySymbol || {}).map((value) => normalizeSymbol(value)).filter(Boolean);
+  const minSamplesForMetrics = windowBars * 2;
+
+  const requested = Number(requestedAnchorTsMs || 0);
+  if (!Number.isFinite(requested) || requested <= 0) {
+    return { effectiveAnchorTsMs: requested, anchorRequestedTsMs: requested, anchorClamped: false };
+  }
+
+  let minAnchorTs = 0;
+  let maxLastTs = 0;
+
+  for (const symbol of Object.keys(candlesBySymbol || {})) {
+    const raw = candlesBySymbol[symbol];
+    if (!Array.isArray(raw) || raw.length === 0) continue;
+    const sorted = [...raw].sort((a, b) => Number(a.timeMs || 0) - Number(b.timeMs || 0));
+    const lastTs = Number(sorted[sorted.length - 1]?.timeMs || 0);
+    if (Number.isFinite(lastTs) && lastTs > 0) maxLastTs = Math.max(maxLastTs, lastTs);
+
+    if (sorted.length < minSamplesForMetrics || sorted.length < lookbackBars) continue;
+    const tsAtIdx = Number(sorted[lookbackBars - 1]?.timeMs || 0);
+    if (!Number.isFinite(tsAtIdx) || tsAtIdx <= 0) continue;
+    minAnchorTs = minAnchorTs === 0 ? tsAtIdx : Math.max(minAnchorTs, tsAtIdx);
+  }
+
+  if (maxLastTs <= 0) {
+    return { effectiveAnchorTsMs: requested, anchorRequestedTsMs: requested, anchorClamped: false };
+  }
+
+  let effective = requested;
+  if (minAnchorTs > 0) effective = Math.max(effective, minAnchorTs);
+  effective = Math.min(effective, maxLastTs);
+
+  const anchorClamped = effective !== requested;
+  return { effectiveAnchorTsMs: effective, anchorRequestedTsMs: requested, anchorClamped };
+}
+
+function computeScannerRowsFromSorted(sortedMap, anchorTsMs, options = {}) {
+  const {
+    timeframe = "1m",
+    lookbackHours = 120,
+    currentWindowHours = 12,
+    preferredBtcSymbol = "BTC",
+    minAlignedReturns = 12
+  } = options;
+  const barsPerHour = timeframeBarsPerHour(timeframe);
+  const lookbackBars = Math.max(2, Math.floor(Number(lookbackHours || 120) * barsPerHour));
+  const windowBars = Math.max(1, Math.floor(Number(currentWindowHours || 12) * barsPerHour));
+  const symbols = Object.keys(sortedMap || {}).map((value) => normalizeSymbol(value)).filter(Boolean);
   const btcSymbol = resolveBtcSymbol(symbols, preferredBtcSymbol);
-  const btcCandles = btcSymbol
-    ? boundedCandles(candlesBySymbol[btcSymbol] || [], anchorTsMs, lookbackBars)
-    : [];
+  const btcSorted = btcSymbol ? sortedMap[btcSymbol] || [] : [];
+  const btcCandles = btcSymbol ? boundedCandlesSorted(btcSorted, anchorTsMs, lookbackBars) : [];
 
   const rows = [];
   for (const symbol of symbols) {
-    const candles = boundedCandles(candlesBySymbol[symbol] || [], anchorTsMs, lookbackBars);
+    const candles = boundedCandlesSorted(sortedMap[symbol] || [], anchorTsMs, lookbackBars);
     const latest = candles[candles.length - 1] || null;
-    const metrics = computeWindowMetrics(candles, windowBars);
+    const metrics = computeWindowMetrics(candles, windowBars, { alreadySorted: true });
     if (!latest || !metrics) continue;
     const btcCorr = symbol === btcSymbol ? 1 : computeBtcCorrelation(candles, btcCandles, minAlignedReturns);
     rows.push({
@@ -182,6 +300,133 @@ function computeScannerRows({
   };
 }
 
+function computeScannerRows({
+  candlesBySymbol,
+  anchorTsMs,
+  timeframe = "1m",
+  lookbackHours = 120,
+  currentWindowHours = 12,
+  preferredBtcSymbol = "BTC",
+  minAlignedReturns = 12
+}) {
+  const sortedMap = sortCandlesBySymbol(candlesBySymbol);
+  return computeScannerRowsFromSorted(sortedMap, anchorTsMs, {
+    timeframe,
+    lookbackHours,
+    currentWindowHours,
+    preferredBtcSymbol,
+    minAlignedReturns
+  });
+}
+
+const UPSERT_BATCH_SIZE = 5000;
+
+function runSessionScannerAllBars(repo, options) {
+  const sessionId = String(options.sessionId || "").trim();
+  const timeframe = String(options.timeframe || "1m").trim().toLowerCase();
+  const candlesBySymbol = options.candlesBySymbol || {};
+  const sortedMap = sortCandlesBySymbol(candlesBySymbol);
+  const lookbackHours = Number(options.lookbackHours || 120);
+  const currentWindowHours = Number(options.currentWindowHours || 12);
+  const preferredBtcSymbol = String(options.preferredBtcSymbol || "BTC");
+  const minAlignedReturns = Number(options.minAlignedReturns || 12);
+  const featureSet = String(options.featureSet || "rvol-scanner").trim();
+  const featureVersion = String(options.featureVersion || "v1").trim();
+  const createdAtMs = Number(options.createdAtMs || Date.now());
+
+  const barsPerHour = timeframeBarsPerHour(timeframe);
+  const lookbackBars = Math.max(2, Math.floor(lookbackHours * barsPerHour));
+  const windowBars = Math.max(1, Math.floor(currentWindowHours * barsPerHour));
+
+  const minAnchorTs = globalMinAnchorTsMs(sortedMap, lookbackBars, windowBars);
+  if (!Number.isFinite(minAnchorTs) || minAnchorTs <= 0) {
+    throw new Error(
+      "runSessionScanner: session_bars — not enough overlapping candle history for lookback/window (try shorter lookback or a longer session)"
+    );
+  }
+
+  const timelineSym = pickTimelineSymbol(sortedMap);
+  const timeline = sortedMap[timelineSym] || [];
+  if (timeline.length === 0) {
+    throw new Error("runSessionScanner: session_bars — no candles on timeline");
+  }
+
+  let startIdx = 0;
+  while (startIdx < timeline.length && Number(timeline[startIdx].timeMs || 0) < minAnchorTs) {
+    startIdx += 1;
+  }
+
+  const scanOpts = {
+    timeframe,
+    lookbackHours,
+    currentWindowHours,
+    preferredBtcSymbol,
+    minAlignedReturns
+  };
+
+  let totalUpserted = 0;
+  let batch = [];
+  let anchorCount = 0;
+  let lastAnchor = 0;
+  let totalComputedRows = 0;
+
+  for (let i = startIdx; i < timeline.length; i += 1) {
+    const anchorTsMs = Number(timeline[i].timeMs || 0);
+    if (!Number.isFinite(anchorTsMs) || anchorTsMs <= 0) continue;
+    const computed = computeScannerRowsFromSorted(sortedMap, anchorTsMs, scanOpts);
+    anchorCount += 1;
+    lastAnchor = anchorTsMs;
+    totalComputedRows += computed.rows.length;
+    batch.push(...computed.rows);
+    if (batch.length >= UPSERT_BATCH_SIZE) {
+      const save = repo.upsertSessionCandleFeatures({
+        sessionId,
+        timeframe,
+        featureSet,
+        featureVersion,
+        rows: batch,
+        createdAtMs
+      });
+      totalUpserted += Number(save.upserted || 0);
+      batch = [];
+    }
+  }
+
+  if (batch.length > 0) {
+    const save = repo.upsertSessionCandleFeatures({
+      sessionId,
+      timeframe,
+      featureSet,
+      featureVersion,
+      rows: batch,
+      createdAtMs
+    });
+    totalUpserted += Number(save.upserted || 0);
+  }
+
+  const symbols = Object.keys(sortedMap).filter((s) => (sortedMap[s] || []).length > 0);
+  const btcSymbol = resolveBtcSymbol(symbols, preferredBtcSymbol);
+
+  return {
+    sessionId,
+    featureSet,
+    featureVersion,
+    scanMode: "session_bars",
+    anchorTsMs: lastAnchor,
+    anchorCount,
+    timeframe,
+    lookbackHours,
+    currentWindowHours,
+    barsPerHour,
+    lookbackBars,
+    windowBars,
+    symbolCount: symbols.length,
+    computedCount: totalComputedRows,
+    btcSymbol: btcSymbol || null,
+    upserted: totalUpserted
+  };
+}
+
 function runSessionScanner(repo, options = {}) {
   if (!repo) throw new Error("runSessionScanner: repo is required");
   const sessionId = String(options.sessionId || "").trim();
@@ -189,12 +434,7 @@ function runSessionScanner(repo, options = {}) {
   const timeframe = String(options.timeframe || "1m").trim().toLowerCase();
   const session = repo.getSessionById(sessionId);
   if (!session) throw new Error(`runSessionScanner: session not found (${sessionId})`);
-  const anchorTsMs = Number(
-    options.anchorTsMs || session.market_window_start || session.started_at_ms || Date.now()
-  );
-  if (!Number.isFinite(anchorTsMs) || anchorTsMs <= 0) {
-    throw new Error("runSessionScanner: anchorTsMs is invalid");
-  }
+  const scanMode = String(options.scanMode || "single").trim().toLowerCase();
 
   const symbols = repo.listSessionSymbols(sessionId);
   const candlesBySymbol = {};
@@ -202,12 +442,46 @@ function runSessionScanner(repo, options = {}) {
     candlesBySymbol[symbol] = repo.getCandles(sessionId, symbol, timeframe);
   }
 
-  const computed = computeScannerRows({
+  const lookbackHours = Number(options.lookbackHours || 120);
+  const currentWindowHours = Number(options.currentWindowHours || 12);
+
+  if (scanMode === "session_bars") {
+    return runSessionScannerAllBars(repo, {
+      sessionId,
+      timeframe,
+      candlesBySymbol,
+      lookbackHours,
+      currentWindowHours,
+      preferredBtcSymbol: String(options.preferredBtcSymbol || "BTC"),
+      minAlignedReturns: Number(options.minAlignedReturns || 12),
+      featureSet: String(options.featureSet || "rvol-scanner").trim(),
+      featureVersion: String(options.featureVersion || "v1").trim(),
+      createdAtMs: Number(options.createdAtMs || Date.now())
+    });
+  }
+
+  const anchorTsMs = Number(
+    options.anchorTsMs || session.market_window_start || session.started_at_ms || Date.now()
+  );
+  if (!Number.isFinite(anchorTsMs) || anchorTsMs <= 0) {
+    throw new Error("runSessionScanner: anchorTsMs is invalid");
+  }
+
+  const resolvedAnchor = resolveEffectiveAnchorTsMs(
     candlesBySymbol,
     anchorTsMs,
     timeframe,
-    lookbackHours: Number(options.lookbackHours || 120),
-    currentWindowHours: Number(options.currentWindowHours || 12),
+    lookbackHours,
+    currentWindowHours
+  );
+  const effectiveAnchorTsMs = resolvedAnchor.effectiveAnchorTsMs;
+
+  const computed = computeScannerRows({
+    candlesBySymbol,
+    anchorTsMs: effectiveAnchorTsMs,
+    timeframe,
+    lookbackHours,
+    currentWindowHours,
     preferredBtcSymbol: String(options.preferredBtcSymbol || "BTC"),
     minAlignedReturns: Number(options.minAlignedReturns || 12)
   });
@@ -228,7 +502,10 @@ function runSessionScanner(repo, options = {}) {
     sessionId,
     featureSet,
     featureVersion,
-    anchorTsMs,
+    scanMode: "single",
+    anchorTsMs: effectiveAnchorTsMs,
+    anchorRequestedTsMs: resolvedAnchor.anchorRequestedTsMs,
+    anchorClamped: Boolean(resolvedAnchor.anchorClamped),
     ...computed.summary,
     upserted: Number(save.upserted || 0)
   };
@@ -236,5 +513,7 @@ function runSessionScanner(repo, options = {}) {
 
 module.exports = {
   computeScannerRows,
+  computeScannerRowsFromSorted,
+  resolveEffectiveAnchorTsMs,
   runSessionScanner
 };

@@ -125,6 +125,14 @@ export interface BacktestRunResult {
     pnl: number;
     stopLoss?: number | null;
     takeProfit?: number | null;
+    /** ET calendar date (YYYY-MM-DD) for the trade open (America/New_York). */
+    tradingDayEt?: string;
+    /**
+     * Candle `features` map at entry (from enriched session candles), e.g. `{ "rvol-scanner": { rvol, ... } }`.
+     */
+    scannerAtEntry?: Record<string, Record<string, unknown>> | null;
+    /** Same shape at exit (last scanner snapshot before exit fill). */
+    scannerAtExit?: Record<string, Record<string, unknown>> | null;
   }>;
   metrics: {
     tradeCount: number;
@@ -175,13 +183,21 @@ export interface ScannerRunInput {
   btcSymbol: string;
   featureSet: string;
   featureVersion: string;
+  /** `single` — one anchor; `session_bars` — every bar on the longest series (marks each candle). */
+  scanMode?: "single" | "session_bars";
 }
 
 export interface ScannerRunResult {
   sessionId: string;
   featureSet: string;
   featureVersion: string;
+  scanMode?: "single" | "session_bars";
+  /** Number of anchor timestamps processed (session_bars only). */
+  anchorCount?: number;
   anchorTsMs: number;
+  /** Original anchor before server-side clamp (when anchor was too early for lookback). */
+  anchorRequestedTsMs?: number;
+  anchorClamped?: boolean;
   timeframe: Timeframe;
   lookbackHours: number;
   currentWindowHours: number;

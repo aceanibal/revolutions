@@ -1,5 +1,15 @@
 import { CandleChart } from "../../components/CandleChart";
-import { displayMetricsFromTrades, formatDateTime, runTotalR, tradePnlInR } from "../../lib/backtestMath";
+import {
+  buildSimulatedTradesCsv,
+  buildSimulatedTradesWithOneMinuteCandlesCsv,
+  buildSimulatedTradesWithOneMinuteCandlesJson,
+  displayMetricsFromTrades,
+  formatDateTime,
+  pickNestedScannerPayload,
+  runTotalR,
+  tradeOutcomeFromPnl,
+  tradePnlInR
+} from "../../lib/backtestMath";
 import type {
   BacktestOptimizerSettings,
   BacktestRunResult,
@@ -15,6 +25,8 @@ interface SingleRunWorkspaceProps {
   selectedSessionId: string;
   selectedSymbol: string;
   chartCandles: Candle[];
+  tradeWindowCandles: Candle[];
+  oneMinuteCandles: Candle[];
   candleRange: { count: number; from: number; to: number } | null;
   runResult: BacktestRunResult | null;
   tradesForDisplay: BacktestRunResult["trades"];
@@ -34,6 +46,8 @@ export function SingleRunWorkspace({
   selectedSessionId,
   selectedSymbol,
   chartCandles,
+  tradeWindowCandles,
+  oneMinuteCandles,
   candleRange,
   runResult,
   tradesForDisplay,
@@ -51,6 +65,61 @@ export function SingleRunWorkspace({
   const fullTradeCount = runResult?.trades?.length ?? 0;
   const displayMetricsCap = displayMetricsFromTrades(tradesForDisplay);
   const useDisplayAdjustedMetrics = capTradesTwoPerDay || simWinStopRetryPerDay;
+  const scannerFeatureSet = String(
+    (runResult?.meta?.params as Record<string, unknown> | undefined)?.scannerFeatureSet || "rvol-scanner"
+  );
+
+  const exportTradesCsv = () => {
+    if (!runResult?.trades?.length) return;
+    const csv = buildSimulatedTradesCsv(runResult.trades, runResult.meta);
+    const safeSession = String(runResult.meta.sessionId || "session").replace(/[^a-zA-Z0-9_-]+/g, "_");
+    const safeSymbol = String(runResult.meta.symbol || "symbol").replace(/[^a-zA-Z0-9_-]+/g, "_");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `sim-trades_${safeSession}_${safeSymbol}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  const exportTradesWithOneMinuteCandlesCsv = () => {
+    if (!runResult?.trades?.length) return;
+    const csv = buildSimulatedTradesWithOneMinuteCandlesCsv({
+      trades: runResult.trades,
+      meta: runResult.meta,
+      tradeWindowCandles,
+      oneMinuteCandles,
+      contextCandles: 10
+    });
+    const safeSession = String(runResult.meta.sessionId || "session").replace(/[^a-zA-Z0-9_-]+/g, "_");
+    const safeSymbol = String(runResult.meta.symbol || "symbol").replace(/[^a-zA-Z0-9_-]+/g, "_");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `sim-trades_with-1m-window_${safeSession}_${safeSymbol}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  const exportTradesWithOneMinuteCandlesJson = () => {
+    if (!runResult?.trades?.length) return;
+    const json = buildSimulatedTradesWithOneMinuteCandlesJson({
+      trades: runResult.trades,
+      meta: runResult.meta,
+      tradeWindowCandles,
+      oneMinuteCandles,
+      contextCandles: 10
+    });
+    const safeSession = String(runResult.meta.sessionId || "session").replace(/[^a-zA-Z0-9_-]+/g, "_");
+    const safeSymbol = String(runResult.meta.symbol || "symbol").replace(/[^a-zA-Z0-9_-]+/g, "_");
+    const blob = new Blob([json], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `sim-trades_full_${safeSession}_${safeSymbol}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
   return (
     <>
       <section className="grid2">
@@ -218,6 +287,31 @@ export function SingleRunWorkspace({
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
             <h3 style={{ margin: 0 }}>Simulated Trades ({tradesForDisplay.length || 0})</h3>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+              {runResult?.trades?.length ? (
+                <button type="button" className="toolbar" style={{ padding: "6px 10px" }} onClick={exportTradesCsv}>
+                  Export all trades (CSV + scanner)
+                </button>
+              ) : null}
+              {runResult?.trades?.length ? (
+                <button
+                  type="button"
+                  className="toolbar"
+                  style={{ padding: "6px 10px" }}
+                  onClick={exportTradesWithOneMinuteCandlesJson}
+                >
+                  Export full session JSON (scanner + 1m candles)
+                </button>
+              ) : null}
+              {runResult?.trades?.length ? (
+                <button
+                  type="button"
+                  className="toolbar"
+                  style={{ padding: "6px 10px" }}
+                  onClick={exportTradesWithOneMinuteCandlesCsv}
+                >
+                  Export session + 1m candles (drilldown window)
+                </button>
+              ) : null}
               <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: "0.9rem", whiteSpace: "nowrap" }}>
                 <input
                   type="checkbox"
@@ -241,12 +335,15 @@ export function SingleRunWorkspace({
               Showing {tradesForDisplay.length} of {fullTradeCount}
               {capTradesTwoPerDay ? " · max 2 opens per ET day" : ""}
               {simWinStopRetryPerDay ? " · if first open of day wins (PnL > 0), no second; otherwise allow one more." : ""}
+              {" "}
+              · CSV export uses the full run ({fullTradeCount} trades).
             </div>
           ) : null}
           {tradesForDisplay.length ? (
             <table>
               <thead>
                 <tr>
+                  <th>Day (ET)</th>
                   <th>Opened (ET)</th>
                   <th>Closed (ET)</th>
                   <th>Side</th>
@@ -254,17 +351,27 @@ export function SingleRunWorkspace({
                   <th>Exit</th>
                   <th>SL</th>
                   <th>TP</th>
+                  <th>W/L</th>
                   <th>PnL (R)</th>
+                  <th title={`Scanner at entry (${scannerFeatureSet})`}>RVOL in</th>
+                  <th title={`Scanner at entry (${scannerFeatureSet})`}>BTC ρ in</th>
+                  <th title={`Scanner at exit (${scannerFeatureSet})`}>RVOL out</th>
                 </tr>
               </thead>
               <tbody>
-                {tradesForDisplay.map((trade, idx) => (
+                {tradesForDisplay.map((trade, idx) => {
+                  const en = pickNestedScannerPayload(trade.scannerAtEntry, scannerFeatureSet);
+                  const ex = pickNestedScannerPayload(trade.scannerAtExit, scannerFeatureSet);
+                  const fmt = (v: unknown) =>
+                    typeof v === "number" && Number.isFinite(v) ? v.toFixed(3) : "--";
+                  return (
                   <tr
                     key={`${trade.openedAtMs}-${trade.closedAtMs}-${idx}`}
                     className="trade-row"
                     onClick={() => onTradeClick(idx)}
                     title="Click to open trade chart"
                   >
+                    <td>{trade.tradingDayEt || "--"}</td>
                     <td>{formatDateTime(trade.openedAtMs)}</td>
                     <td>{formatDateTime(trade.closedAtMs)}</td>
                     <td>{String(trade.side || "").toUpperCase()}</td>
@@ -272,6 +379,7 @@ export function SingleRunWorkspace({
                     <td>{Number(trade.exitPx || 0).toFixed(4)}</td>
                     <td>{trade.stopLoss == null ? "--" : Number(trade.stopLoss).toFixed(4)}</td>
                     <td>{trade.takeProfit == null ? "--" : Number(trade.takeProfit).toFixed(4)}</td>
+                    <td>{tradeOutcomeFromPnl(Number(trade.pnl))}</td>
                     <td>
                       {(() => {
                         const r = tradePnlInR({
@@ -284,8 +392,12 @@ export function SingleRunWorkspace({
                         return r == null ? "--" : `${r.toFixed(3)}R`;
                       })()}
                     </td>
+                    <td>{fmt(en?.rvol)}</td>
+                    <td>{fmt(en?.btcCorr)}</td>
+                    <td>{fmt(ex?.rvol)}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           ) : (

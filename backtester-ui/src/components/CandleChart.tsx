@@ -60,7 +60,22 @@ export function CandleChart({ candles, priceLevels = [], timeMarkers = [], indic
         borderColor: "#cbd5e1"
       },
       timeScale: {
-        borderColor: "#cbd5e1"
+        borderColor: "#cbd5e1",
+        timeVisible: true,
+        secondsVisible: false
+      },
+      localization: {
+        timeFormatter: (time: Time) => {
+          const asNumber = Number(time);
+          if (!Number.isFinite(asNumber) || asNumber <= 0) return "";
+          return new Date(asNumber * 1000).toLocaleString("en-US", {
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false
+          });
+        }
       }
     });
     const series = chart.addCandlestickSeries({

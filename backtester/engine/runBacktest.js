@@ -4,6 +4,15 @@ const { resolveStrategy } = require("./strategies");
 const { synthesizeTicksFromCandles } = require("./tickSynthesizer");
 const { getEtDayKey, isWeekendEt, isUsHolidayOrEarlyCloseEt } = require("./marketCalendar");
 
+function cloneJsonSafe(value) {
+  if (value == null) return null;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Wall-clock time aligned with Study/chart candles: `bucket_start_ms` on candle events.
  * `event.ts` may be end-of-bar (mixed mode) for ordering only.
@@ -198,7 +207,8 @@ function runBacktest({
         size: Number(action.size || 1),
         openedAtMs: wallMs,
         stopLoss: Number(action.stopLoss ?? NaN),
-        takeProfit: Number(action.takeProfit ?? NaN)
+        takeProfit: Number(action.takeProfit ?? NaN),
+        scannerFeaturesAtEntry: cloneJsonSafe(lastScannerFeatures)
       };
       if (debugLogsEnabled) {
         console.log(
@@ -219,7 +229,10 @@ function runBacktest({
         exitPx,
         pnl,
         stopLoss: Number.isFinite(position.stopLoss) ? position.stopLoss : null,
-        takeProfit: Number.isFinite(position.takeProfit) ? position.takeProfit : null
+        takeProfit: Number.isFinite(position.takeProfit) ? position.takeProfit : null,
+        tradingDayEt: getEtDayKey(position.openedAtMs),
+        scannerAtEntry: position.scannerFeaturesAtEntry ?? null,
+        scannerAtExit: cloneJsonSafe(lastScannerFeatures)
       });
       position = null;
       if (debugLogsEnabled) {
@@ -250,7 +263,10 @@ function runBacktest({
       exitPx,
       pnl,
       stopLoss: Number.isFinite(position.stopLoss) ? position.stopLoss : null,
-      takeProfit: Number.isFinite(position.takeProfit) ? position.takeProfit : null
+      takeProfit: Number.isFinite(position.takeProfit) ? position.takeProfit : null,
+      tradingDayEt: getEtDayKey(position.openedAtMs),
+      scannerAtEntry: position.scannerFeaturesAtEntry ?? null,
+      scannerAtExit: cloneJsonSafe(lastScannerFeatures)
     });
     position = null;
     if (debugLogsEnabled) {

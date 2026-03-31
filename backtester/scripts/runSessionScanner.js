@@ -37,7 +37,8 @@ function usage() {
       "  --current-window-hours <N>       RVOL current window size in hours (default: 12)",
       "  --btc-symbol <SYMBOL>            Preferred BTC reference symbol (default: BTC)",
       "  --feature-set <name>             Feature namespace (default: rvol-scanner)",
-      "  --feature-version <version>      Feature version tag (default: v1)"
+      "  --feature-version <version>      Feature version tag (default: v1)",
+      "  --scan-mode <single|session_bars>  single = one anchor; session_bars = every bar (default: single)"
     ].join("\n")
   );
 }
@@ -60,7 +61,8 @@ async function main() {
       currentWindowHours: Number(args["current-window-hours"] || 12),
       preferredBtcSymbol: String(args["btc-symbol"] || "BTC").trim().toUpperCase(),
       featureSet: String(args["feature-set"] || "rvol-scanner").trim(),
-      featureVersion: String(args["feature-version"] || "v1").trim()
+      featureVersion: String(args["feature-version"] || "v1").trim(),
+      scanMode: String(args["scan-mode"] || "single").trim().toLowerCase()
     });
     console.log(JSON.stringify({ ok: true, result }, null, 2));
   } finally {

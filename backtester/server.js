@@ -273,7 +273,8 @@ app.post("/api/backtest/scanner/run", (req, res) => {
       currentWindowHours: Number(req.body?.currentWindowHours || 12),
       preferredBtcSymbol: String(req.body?.btcSymbol || "BTC").trim().toUpperCase(),
       featureSet: String(req.body?.featureSet || "rvol-scanner").trim(),
-      featureVersion: String(req.body?.featureVersion || "v1").trim()
+      featureVersion: String(req.body?.featureVersion || "v1").trim(),
+      scanMode: String(req.body?.scanMode || "single").trim().toLowerCase()
     });
     return res.json({ ok: true, result });
   } catch (error) {
