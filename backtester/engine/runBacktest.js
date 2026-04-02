@@ -199,20 +199,28 @@ function runBacktest({
       }
     });
 
+    const signalBucketStartMsFromMeta =
+      action?.meta != null && typeof action.meta === "object"
+        ? Number(action.meta.signalBucketStartMs)
+        : NaN;
+    const tradeTimeMsForAction = Number.isFinite(signalBucketStartMsFromMeta)
+      ? signalBucketStartMsFromMeta
+      : wallMs;
+
     if (action?.type === "enter" && !position) {
       enterCount += 1;
       position = {
         side: action.side || "long",
         entryPx: Number(action.price || price || 0),
         size: Number(action.size || 1),
-        openedAtMs: wallMs,
+        openedAtMs: tradeTimeMsForAction,
         stopLoss: Number(action.stopLoss ?? NaN),
         takeProfit: Number(action.takeProfit ?? NaN),
         scannerFeaturesAtEntry: cloneJsonSafe(lastScannerFeatures)
       };
       if (debugLogsEnabled) {
         console.log(
-          `${runLabel} enter ts=${wallMs} side=${position.side} entryPx=${position.entryPx} size=${position.size}`
+          `${runLabel} enter ts=${tradeTimeMsForAction} side=${position.side} entryPx=${position.entryPx} size=${position.size}`
         );
       }
     } else if (action?.type === "exit" && position) {
@@ -222,7 +230,7 @@ function runBacktest({
       realizedPnL += pnl;
       trades.push({
         openedAtMs: position.openedAtMs,
-        closedAtMs: wallMs,
+        closedAtMs: tradeTimeMsForAction,
         side: position.side,
         size: position.size,
         entryPx: position.entryPx,
@@ -236,7 +244,7 @@ function runBacktest({
       });
       position = null;
       if (debugLogsEnabled) {
-        console.log(`${runLabel} exit ts=${wallMs} exitPx=${exitPx} pnl=${pnl.toFixed(6)} realized=${realizedPnL.toFixed(6)}`);
+        console.log(`${runLabel} exit ts=${tradeTimeMsForAction} exitPx=${exitPx} pnl=${pnl.toFixed(6)} realized=${realizedPnL.toFixed(6)}`);
       }
     } else if (action) {
       ignoredActionCount += 1;

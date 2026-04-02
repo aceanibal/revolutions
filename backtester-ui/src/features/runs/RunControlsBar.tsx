@@ -1,4 +1,4 @@
-import type { ReplayMode, SavedSession, StrategyId, TickPolicy, Timeframe } from "../../types";
+import type { ReplayMode, SavedSession, StrategyDefinition, StrategyId, TickPolicy, Timeframe } from "../../types";
 import { formatDateTime } from "../../lib/backtestMath";
 
 interface RunControlsBarProps {
@@ -9,6 +9,7 @@ interface RunControlsBarProps {
   mode: ReplayMode;
   tickPolicy: TickPolicy;
   strategyId: StrategyId;
+  strategies: StrategyDefinition[];
   running: boolean;
   batchRunning: boolean;
   onSelectSymbol: (symbol: string) => void;
@@ -29,6 +30,7 @@ export function RunControlsBar({
   mode,
   tickPolicy,
   strategyId,
+  strategies,
   running,
   batchRunning,
   onSelectSymbol,
@@ -80,10 +82,15 @@ export function RunControlsBar({
       <label>
         Strategy
         <select value={strategyId} onChange={(e) => onSetStrategyId(e.target.value as StrategyId)}>
-          <option value="noop">noop</option>
-          <option value="simple-momentum">simple-momentum</option>
-          <option value="orb-avwap-930">orb-avwap-930</option>
-          <option value="orb-avwap-930-open-avwap-sl">orb-avwap-930-open-avwap-sl</option>
+          {strategies.length > 0 ? (
+            strategies.map((strategy) => (
+              <option key={strategy.id} value={strategy.id}>
+                {strategy.label || strategy.id}
+              </option>
+            ))
+          ) : (
+            <option value="noop">noop</option>
+          )}
         </select>
       </label>
       <button onClick={onRun} disabled={running || !selectedSymbol} type="button">

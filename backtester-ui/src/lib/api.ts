@@ -10,6 +10,7 @@ import type {
   ScannerMetadataItem,
   SessionSnapshot,
   SessionTrade,
+  StrategyDefinition,
   StrategyId,
   Tick,
   TickPolicy,
@@ -31,6 +32,13 @@ async function readJson<T>(url: string, init?: RequestInit): Promise<T | null> {
 export async function fetchBacktestSessions(): Promise<SavedSession[]> {
   const payload = await readJson<{ ok: boolean; sessions: SavedSession[] }>(`${BACKEND_BASE_URL}/api/backtest/sessions/all`);
   return payload?.ok ? payload.sessions : [];
+}
+
+export async function fetchStrategyDefinitions(): Promise<StrategyDefinition[]> {
+  const payload = await readJson<{ ok: boolean; strategies: StrategyDefinition[] }>(
+    `${BACKEND_BASE_URL}/api/backtest/strategies`
+  );
+  return payload?.ok ? payload.strategies : [];
 }
 
 export async function fetchBacktestSessionsPaged(options: {

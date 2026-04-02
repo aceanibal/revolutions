@@ -7,6 +7,7 @@ import {
   fetchScannerFeatures,
   fetchBacktestTrades,
   fetchScannerMetadata,
+  fetchStrategyDefinitions,
   fetchSourceSessionsPaged,
   importSourceSession,
   runSessionScannerApi,
@@ -14,7 +15,6 @@ import {
 } from "./lib/api";
 import {
   buildOptimizationLeaderboards,
-  buildStrategyVariables,
   applyWinStopOneRetryPerDay,
   capTradesPerCalendarDay,
   formatDateTime,
@@ -50,6 +50,7 @@ import type {
   ScannerRunResult,
   SavedSession,
   ScannerMetadataItem,
+  StrategyDefinition,
   SessionType,
   SessionTrade,
   StrategyId,
@@ -96,6 +97,15 @@ function parseAnchorTimeToMinutes(value: string): number {
   return hh * 60 + mm;
 }
 
+function defaultsFromDefinition(definition: StrategyDefinition | null): Record<string, unknown> {
+  if (!definition) return {};
+  const out: Record<string, unknown> = {};
+  for (const param of definition.params || []) {
+    out[param.key] = param.defaultValue;
+  }
+  return out;
+}
+
 export default function AppWorkspace() {
   const [activeSection, setActiveSection] = useState<NavSection>("overview");
   const [importingId, setImportingId] = useState("");
@@ -124,6 +134,8 @@ export default function AppWorkspace() {
   const [mode, setMode] = useState<ReplayMode>("mixed");
   const [tickPolicy, setTickPolicy] = useState<TickPolicy>("real_then_synthetic");
   const [strategyId, setStrategyId] = useState<StrategyId>("noop");
+  const [strategyCatalog, setStrategyCatalog] = useState<StrategyDefinition[]>([]);
+  const [strategyParamOverrides, setStrategyParamOverrides] = useState<Record<string, Record<string, unknown>>>({});
   const [optimizerSettings, setOptimizerSettings] = useState<BacktestOptimizerSettings>({
     takeProfitRR: 2,
     vwapStartHHMM: 930,
@@ -173,6 +185,9 @@ export default function AppWorkspace() {
   const [optimizerActiveEndFrom, setOptimizerActiveEndFrom] = useState(1500);
   const [optimizerActiveEndTo, setOptimizerActiveEndTo] = useState(1600);
   const [optimizerActiveEndStepMinutes, setOptimizerActiveEndStepMinutes] = useState(15);
+  const [optimizerDojiBodyToRangeMaxFrom, setOptimizerDojiBodyToRangeMaxFrom] = useState(0.05);
+  const [optimizerDojiBodyToRangeMaxTo, setOptimizerDojiBodyToRangeMaxTo] = useState(0.3);
+  const [optimizerDojiBodyToRangeMaxStep, setOptimizerDojiBodyToRangeMaxStep] = useState(0.05);
   const [optimizerStepMode, setOptimizerStepMode] = useState<"per_variable" | "consistent">("per_variable");
   const [optimizerConsistentSamples, setOptimizerConsistentSamples] = useState(3);
   const [optimizerMixSize, setOptimizerMixSize] = useState(3);
@@ -289,8 +304,12 @@ export default function AppWorkspace() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const rows = await fetchBacktestSessions();
+      const [rows, strategies] = await Promise.all([fetchBacktestSessions(), fetchStrategyDefinitions()]);
       if (cancelled) return;
+      if (strategies.length > 0) {
+        setStrategyCatalog(strategies);
+        setStrategyId((prev) => (strategies.some((strategy) => strategy.id === prev) ? prev : strategies[0].id));
+      }
       if (rows.length > 0) {
         await refreshBacktestSessions(1, "", "all");
       } else {
@@ -339,6 +358,20 @@ export default function AppWorkspace() {
     scannerAnchorTsMs,
     scannerScanFullSession
   ]);
+
+  useEffect(() => {
+    if (strategyCatalog.length === 0) return;
+    setStrategyParamOverrides((prev) => {
+      const next = { ...prev };
+      for (const definition of strategyCatalog) {
+        if (!next[definition.id]) next[definition.id] = defaultsFromDefinition(definition);
+      }
+      return next;
+    });
+    setStrategyId((prev) =>
+      strategyCatalog.some((definition) => definition.id === prev) ? prev : strategyCatalog[0].id
+    );
+  }, [strategyCatalog]);
 
   useEffect(() => {
     if (!selectedSessionId || !selectedSymbol) return;
@@ -420,22 +453,61 @@ export default function AppWorkspace() {
     return { count: candles.length, from: first.timeMs, to: last.timeMs };
   }, [candlesByTimeframe, timeframe]);
 
+  const activeStrategyDefinition = useMemo(
+    () => strategyCatalog.find((definition) => definition.id === strategyId) || null,
+    [strategyCatalog, strategyId]
+  );
+
   const strategyVariables = useMemo(() => {
-    const base = buildStrategyVariables(optimizerSettings);
-    if (!scannerUseForRuns || !scannerFeatureSet) return base;
-    const scannerParams: Record<string, unknown> = {
-      scannerFeatureSet,
-      scannerFeatureVersion,
-      /** 0 = load all buckets for this symbol (per-candle / full-session scan). */
-      scannerAnchorTsMs: scannerScanFullSession ? 0 : scannerAnchorTsMs
+    const byId: Record<string, Record<string, unknown>> = {};
+    for (const definition of strategyCatalog) {
+      byId[definition.id] = {
+        ...defaultsFromDefinition(definition),
+        ...(strategyParamOverrides[definition.id] || {})
+      };
+    }
+
+    // Keep legacy optimizer controls in sync for ORB-family strategies.
+    const orbBase = {
+      rr: Number(optimizerSettings.takeProfitRR),
+      anchorHHMM: Number(optimizerSettings.vwapStartHHMM),
+      activeStartHHMM: Number(optimizerSettings.activeStartHHMM),
+      activeEndHHMM: Number(optimizerSettings.activeEndHHMM),
+      dojiBodyToRangeMax: Number(optimizerSettings.dojiBodyToRangeMax),
+      ignoreWeekends: Boolean(optimizerSettings.ignoreWeekends),
+      ignoreUsHolidays: Boolean(optimizerSettings.ignoreUsHolidays)
     };
-    return {
-      noop: { ...base.noop, ...scannerParams },
-      "simple-momentum": { ...base["simple-momentum"], ...scannerParams },
-      "orb-avwap-930": { ...base["orb-avwap-930"], ...scannerParams },
-      "orb-avwap-930-open-avwap-sl": { ...base["orb-avwap-930-open-avwap-sl"], ...scannerParams }
-    };
+    if (byId["orb-avwap-930"]) byId["orb-avwap-930"] = { ...byId["orb-avwap-930"], ...orbBase };
+    if (byId["orb-avwap-930-open-avwap-sl"]) {
+      byId["orb-avwap-930-open-avwap-sl"] = {
+        ...byId["orb-avwap-930-open-avwap-sl"],
+        ...orbBase,
+        stopLossSource: optimizerSettings.stopLossSource
+      };
+    }
+    if (byId["orb-avwap-930-open-avwap-sl-1m"]) {
+      byId["orb-avwap-930-open-avwap-sl-1m"] = {
+        ...byId["orb-avwap-930-open-avwap-sl-1m"],
+        ...orbBase,
+        stopLossSource: optimizerSettings.stopLossSource
+      };
+    }
+
+    if (scannerUseForRuns && scannerFeatureSet) {
+      const scannerParams: Record<string, unknown> = {
+        scannerFeatureSet,
+        scannerFeatureVersion,
+        /** 0 = load all buckets for this symbol (per-candle / full-session scan). */
+        scannerAnchorTsMs: scannerScanFullSession ? 0 : scannerAnchorTsMs
+      };
+      for (const key of Object.keys(byId)) {
+        byId[key] = { ...byId[key], ...scannerParams };
+      }
+    }
+    return byId;
   }, [
+    strategyCatalog,
+    strategyParamOverrides,
     optimizerSettings,
     scannerUseForRuns,
     scannerFeatureSet,
@@ -454,10 +526,41 @@ export default function AppWorkspace() {
       mode,
       strategyId,
       tickPolicy,
-      strategyParams: strategyVariables[strategyId]
+      strategyParams: strategyVariables[strategyId] || {}
     });
     setRunResult(result);
     setRunning(false);
+  };
+
+  const handleStrategyParamChange = (key: string, value: unknown) => {
+    setStrategyParamOverrides((prev) => ({
+      ...prev,
+      [strategyId]: {
+        ...(prev[strategyId] || {}),
+        [key]: value
+      }
+    }));
+    // Mirror known ORB variables to optimizer settings so optimizer/runs stay aligned.
+    if (key === "rr" && Number.isFinite(Number(value))) {
+      setOptimizerSettings((prev) => ({ ...prev, takeProfitRR: Math.max(0.1, Number(value)) }));
+    } else if (key === "anchorHHMM" && Number.isFinite(Number(value))) {
+      setOptimizerSettings((prev) => ({ ...prev, vwapStartHHMM: Math.max(0, Math.min(2359, Number(value))) }));
+    } else if (key === "activeStartHHMM" && Number.isFinite(Number(value))) {
+      setOptimizerSettings((prev) => ({ ...prev, activeStartHHMM: Math.max(0, Math.min(2359, Number(value))) }));
+    } else if (key === "activeEndHHMM" && Number.isFinite(Number(value))) {
+      setOptimizerSettings((prev) => ({ ...prev, activeEndHHMM: Math.max(0, Math.min(2359, Number(value))) }));
+    } else if (key === "dojiBodyToRangeMax" && Number.isFinite(Number(value))) {
+      setOptimizerSettings((prev) => ({ ...prev, dojiBodyToRangeMax: Math.max(0, Math.min(1, Number(value))) }));
+    } else if (key === "stopLossSource") {
+      setOptimizerSettings((prev) => ({
+        ...prev,
+        stopLossSource: String(value || "open") as BacktestOptimizerSettings["stopLossSource"]
+      }));
+    } else if (key === "ignoreWeekends") {
+      setOptimizerSettings((prev) => ({ ...prev, ignoreWeekends: Boolean(value) }));
+    } else if (key === "ignoreUsHolidays") {
+      setOptimizerSettings((prev) => ({ ...prev, ignoreUsHolidays: Boolean(value) }));
+    }
   };
 
   const runBatch = async () => {
@@ -504,7 +607,7 @@ export default function AppWorkspace() {
           mode,
           strategyId,
           tickPolicy,
-          strategyParams: strategyVariables[strategyId]
+          strategyParams: strategyVariables[strategyId] || {}
         });
         if (result) {
           const totalR = runTotalR(result.trades);
@@ -676,7 +779,7 @@ export default function AppWorkspace() {
             strategyId,
             tickPolicy,
             strategyParams: {
-              ...strategyVariables[strategyId],
+              ...(strategyVariables[strategyId] || {}),
               rr,
               anchorHHMM: combo.anchorHHMM,
               activeStartHHMM: combo.activeStartHHMM,
@@ -979,6 +1082,7 @@ export default function AppWorkspace() {
       mode={mode}
       tickPolicy={tickPolicy}
       strategyId={strategyId}
+      strategies={strategyCatalog}
       running={running}
       batchRunning={batchRunning}
       onSelectSymbol={setSelectedSymbol}
@@ -1022,6 +1126,9 @@ export default function AppWorkspace() {
               }}
               optimizerSettings={optimizerSettings}
               onOptimizerSettingChange={(patch) => setOptimizerSettings((prev) => ({ ...prev, ...patch }))}
+              strategyDefinition={activeStrategyDefinition}
+              strategyParams={strategyVariables[strategyId] || {}}
+              onStrategyParamChange={handleStrategyParamChange}
               onTradeClick={setSelectedSimTradeIdx}
             />
           </>
@@ -1087,6 +1194,9 @@ export default function AppWorkspace() {
               }}
               optimizerSettings={optimizerSettings}
               onOptimizerSettingChange={(patch) => setOptimizerSettings((prev) => ({ ...prev, ...patch }))}
+              strategyDefinition={activeStrategyDefinition}
+              strategyParams={strategyVariables[strategyId] || {}}
+              onStrategyParamChange={handleStrategyParamChange}
               onTradeClick={setSelectedSimTradeIdx}
             />
           </>
@@ -1152,6 +1262,12 @@ export default function AppWorkspace() {
               setOptimizerActiveEndTo={setOptimizerActiveEndTo}
               optimizerActiveEndStepMinutes={optimizerActiveEndStepMinutes}
               setOptimizerActiveEndStepMinutes={setOptimizerActiveEndStepMinutes}
+              optimizerDojiBodyToRangeMaxFrom={optimizerDojiBodyToRangeMaxFrom}
+              setOptimizerDojiBodyToRangeMaxFrom={setOptimizerDojiBodyToRangeMaxFrom}
+              optimizerDojiBodyToRangeMaxTo={optimizerDojiBodyToRangeMaxTo}
+              setOptimizerDojiBodyToRangeMaxTo={setOptimizerDojiBodyToRangeMaxTo}
+              optimizerDojiBodyToRangeMaxStep={optimizerDojiBodyToRangeMaxStep}
+              setOptimizerDojiBodyToRangeMaxStep={setOptimizerDojiBodyToRangeMaxStep}
               optimizerMixSize={optimizerMixSize}
               setOptimizerMixSize={setOptimizerMixSize}
               optimizerDrawdownWeight={optimizerDrawdownWeight}
@@ -1228,6 +1344,9 @@ export default function AppWorkspace() {
               }}
               optimizerSettings={optimizerSettings}
               onOptimizerSettingChange={(patch) => setOptimizerSettings((prev) => ({ ...prev, ...patch }))}
+              strategyDefinition={activeStrategyDefinition}
+              strategyParams={strategyVariables[strategyId] || {}}
+              onStrategyParamChange={handleStrategyParamChange}
               onTradeClick={setSelectedSimTradeIdx}
             />
             <BatchRunsWorkspace

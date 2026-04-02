@@ -106,6 +106,19 @@ function createFiveMinuteAnchoredVwapFromOneMinuteState(options = {}) {
       return oneMinuteTypical;
     },
 
+    currentAnchoredVwap(fallbackTypical) {
+      const basePV = cumulativePV;
+      const baseV = cumulativeV;
+      if (partialFiveMinute) {
+        const partialTypical = typicalPrice(partialFiveMinute.high, partialFiveMinute.low, partialFiveMinute.close);
+        const partialVolume = Number(partialFiveMinute.volume || 0);
+        const totalV = baseV + partialVolume;
+        if (totalV > 0) return (basePV + partialTypical * partialVolume) / totalV;
+      }
+      if (baseV > 0) return basePV / baseV;
+      return fallbackTypical;
+    },
+
     resetDay() {
       cumulativePV = 0;
       cumulativeV = 0;

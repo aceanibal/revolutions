@@ -2,6 +2,9 @@ const { DateTime } = require("luxon");
 const {
   createOrbAvwap930OpenOrAvwapStopStrategy
 } = require("./orbAvwap930OpenOrAvwapStopStrategy");
+const {
+  createOrbAvwap930OpenOrAvwapStopStrategy1m
+} = require("./orbAvwap930OpenOrAvwapStopStrategy1m");
 
 function readScannerFeature(event, state, featureSet = "rvol-scanner") {
   const setName = String(featureSet || "rvol-scanner").trim();
@@ -309,8 +312,117 @@ function createSimpleMomentumStrategy(options = {}) {
 function resolveStrategy(strategyId = "noop", params = {}) {
   if (strategyId === "orb-avwap-930") return createOrbAvwap930Strategy(params);
   if (strategyId === "orb-avwap-930-open-avwap-sl") return createOrbAvwap930OpenOrAvwapStopStrategy(params);
+  if (strategyId === "orb-avwap-930-open-avwap-sl-1m") return createOrbAvwap930OpenOrAvwapStopStrategy1m(params);
   if (strategyId === "simple-momentum") return createSimpleMomentumStrategy(params);
   return createNoopStrategy();
+}
+
+const STRATEGY_DEFINITIONS = [
+  {
+    id: "noop",
+    label: "No-op",
+    description: "Does not place any orders.",
+    params: []
+  },
+  {
+    id: "simple-momentum",
+    label: "Simple Momentum",
+    description: "Enters on strong green candle body and exits on strong red body.",
+    params: [
+      {
+        key: "minBodyBps",
+        label: "Min body (bps)",
+        type: "number",
+        defaultValue: 2,
+        min: 0,
+        step: 0.5
+      }
+    ]
+  },
+  {
+    id: "orb-avwap-930",
+    label: "ORB AVWAP 9:30",
+    description: "Cross above/below anchored VWAP with doji filter and fixed RR exits.",
+    params: [
+      { key: "rr", label: "Take Profit (R)", type: "number", defaultValue: 2, min: 0.1, step: 0.1 },
+      { key: "anchorHHMM", label: "VWAP start (HHMM)", type: "number", defaultValue: 930, min: 0, max: 2359, step: 1 },
+      { key: "confirmAfterHHMM", label: "Confirm after (HHMM)", type: "number", defaultValue: 1000, min: 0, max: 2359, step: 1 },
+      { key: "activeStartHHMM", label: "Active start (HHMM)", type: "number", defaultValue: 930, min: 0, max: 2359, step: 1 },
+      { key: "activeEndHHMM", label: "Active end (HHMM)", type: "number", defaultValue: 1600, min: 0, max: 2359, step: 1 },
+      { key: "sessionEndHHMM", label: "Session end (HHMM)", type: "number", defaultValue: 1600, min: 0, max: 2359, step: 1 },
+      {
+        key: "dojiBodyToRangeMax",
+        label: "Doji body/range max",
+        type: "number",
+        defaultValue: 0.3,
+        min: 0,
+        max: 1,
+        step: 0.01
+      },
+      { key: "ignoreWeekends", label: "Ignore weekends", type: "boolean", defaultValue: false },
+      { key: "ignoreUsHolidays", label: "Ignore US holidays + early closes", type: "boolean", defaultValue: false }
+    ]
+  },
+  {
+    id: "orb-avwap-930-open-avwap-sl",
+    label: "ORB AVWAP 9:30 (Open/AVWAP SL)",
+    description: "ORB AVWAP entry logic with configurable stop-loss source.",
+    params: [
+      { key: "rr", label: "Take Profit (R)", type: "number", defaultValue: 2, min: 0.1, step: 0.1 },
+      { key: "anchorHHMM", label: "VWAP start (HHMM)", type: "number", defaultValue: 930, min: 0, max: 2359, step: 1 },
+      { key: "confirmAfterHHMM", label: "Confirm after (HHMM)", type: "number", defaultValue: 1000, min: 0, max: 2359, step: 1 },
+      { key: "activeStartHHMM", label: "Active start (HHMM)", type: "number", defaultValue: 930, min: 0, max: 2359, step: 1 },
+      { key: "activeEndHHMM", label: "Active end (HHMM)", type: "number", defaultValue: 1600, min: 0, max: 2359, step: 1 },
+      { key: "sessionEndHHMM", label: "Session end (HHMM)", type: "number", defaultValue: 1600, min: 0, max: 2359, step: 1 },
+      {
+        key: "stopLossSource",
+        label: "Stop-loss source",
+        type: "select",
+        defaultValue: "open",
+        options: [
+          { value: "open", label: "open" },
+          { value: "avwap", label: "avwap" },
+          { value: "extreme", label: "candle low/high" },
+          { value: "low", label: "low (long only)" },
+          { value: "high", label: "high (short only)" }
+        ]
+      },
+      { key: "ignoreWeekends", label: "Ignore weekends", type: "boolean", defaultValue: false },
+      { key: "ignoreUsHolidays", label: "Ignore US holidays + early closes", type: "boolean", defaultValue: false }
+    ]
+  },
+  {
+    id: "orb-avwap-930-open-avwap-sl-1m",
+    label: "ORB AVWAP 9:30 (1m AVWAP)",
+    description: "Computes AVWAP from 1m bars and trades cross logic with configurable stop source.",
+    params: [
+      { key: "rr", label: "Take Profit (R)", type: "number", defaultValue: 2, min: 0.1, step: 0.1 },
+      { key: "anchorHHMM", label: "VWAP start (HHMM)", type: "number", defaultValue: 930, min: 0, max: 2359, step: 1 },
+      { key: "confirmAfterHHMM", label: "Confirm after (HHMM)", type: "number", defaultValue: 1000, min: 0, max: 2359, step: 1 },
+      { key: "activeStartHHMM", label: "Active start (HHMM)", type: "number", defaultValue: 930, min: 0, max: 2359, step: 1 },
+      { key: "activeEndHHMM", label: "Active end (HHMM)", type: "number", defaultValue: 1600, min: 0, max: 2359, step: 1 },
+      { key: "sessionEndHHMM", label: "Session end (HHMM)", type: "number", defaultValue: 1600, min: 0, max: 2359, step: 1 },
+      {
+        key: "stopLossSource",
+        label: "Stop-loss source",
+        type: "select",
+        defaultValue: "open",
+        options: [
+          { value: "open", label: "open" },
+          { value: "avwap", label: "avwap" },
+          { value: "extreme", label: "candle low/high" },
+          { value: "low", label: "low (long only)" },
+          { value: "high", label: "high (short only)" }
+        ]
+      },
+      { key: "ignoreWeekends", label: "Ignore weekends", type: "boolean", defaultValue: false },
+      { key: "ignoreUsHolidays", label: "Ignore US holidays + early closes", type: "boolean", defaultValue: false }
+    ]
+  }
+];
+
+function listStrategies() {
+  return STRATEGY_DEFINITIONS;
 }
 
 module.exports = {
@@ -318,5 +430,7 @@ module.exports = {
   createSimpleMomentumStrategy,
   createOrbAvwap930Strategy,
   createOrbAvwap930OpenOrAvwapStopStrategy,
-  resolveStrategy
+  createOrbAvwap930OpenOrAvwapStopStrategy1m,
+  resolveStrategy,
+  listStrategies
 };

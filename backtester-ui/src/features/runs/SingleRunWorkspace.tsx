@@ -14,7 +14,9 @@ import type {
   BacktestOptimizerSettings,
   BacktestRunResult,
   Candle,
+  StrategyDefinition,
   StrategyId,
+  StrategyParamDefinition,
   Timeframe
 } from "../../types";
 
@@ -36,6 +38,9 @@ interface SingleRunWorkspaceProps {
   onSimWinStopRetryPerDayChange: (value: boolean) => void;
   optimizerSettings: BacktestOptimizerSettings;
   onOptimizerSettingChange: (patch: Partial<BacktestOptimizerSettings>) => void;
+  strategyDefinition: StrategyDefinition | null;
+  strategyParams: Record<string, unknown>;
+  onStrategyParamChange: (key: string, value: unknown) => void;
   onTradeClick: (index: number) => void;
 }
 
@@ -57,11 +62,11 @@ export function SingleRunWorkspace({
   onSimWinStopRetryPerDayChange,
   optimizerSettings,
   onOptimizerSettingChange,
+  strategyDefinition,
+  strategyParams,
+  onStrategyParamChange,
   onTradeClick
 }: SingleRunWorkspaceProps) {
-  const isOrbStrategy = strategyId === "orb-avwap-930" || strategyId === "orb-avwap-930-open-avwap-sl";
-  const isOriginalOrbStrategy = strategyId === "orb-avwap-930";
-  const isOpenOrAvwapStopStrategy = strategyId === "orb-avwap-930-open-avwap-sl";
   const fullTradeCount = runResult?.trades?.length ?? 0;
   const displayMetricsCap = displayMetricsFromTrades(tradesForDisplay);
   const useDisplayAdjustedMetrics = capTradesTwoPerDay || simWinStopRetryPerDay;
@@ -120,134 +125,66 @@ export function SingleRunWorkspace({
     a.click();
     URL.revokeObjectURL(url);
   };
+
+  const renderParamInput = (param: StrategyParamDefinition) => {
+    const value = strategyParams[param.key];
+    if (param.type === "boolean") {
+      return (
+        <label key={param.key} style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={Boolean(value)}
+            onChange={(e) => onStrategyParamChange(param.key, Boolean(e.target.checked))}
+          />
+          {param.label}
+        </label>
+      );
+    }
+    if (param.type === "select") {
+      return (
+        <label key={param.key}>
+          {param.label}
+          <select value={String(value ?? "")} onChange={(e) => onStrategyParamChange(param.key, e.target.value)}>
+            {(param.options || []).map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      );
+    }
+    if (param.type === "number") {
+      return (
+        <label key={param.key}>
+          {param.label}
+          <input
+            type="number"
+            min={param.min}
+            max={param.max}
+            step={param.step}
+            value={Number(value ?? 0)}
+            onChange={(e) => onStrategyParamChange(param.key, Number(e.target.value))}
+          />
+        </label>
+      );
+    }
+    return (
+      <label key={param.key}>
+        {param.label}
+        <input type="text" value={String(value ?? "")} onChange={(e) => onStrategyParamChange(param.key, e.target.value)} />
+      </label>
+    );
+  };
+
   return (
     <>
       <section className="grid2">
         <div className="card">
           <h3>Strategy Variables (Single Run)</h3>
-          {isOrbStrategy ? (
+          {strategyDefinition?.params?.length ? (
             <div className="optimizer-row">
-              <label>
-                Take Profit (R)
-                <input
-                  type="number"
-                  min={0.1}
-                  max={20}
-                  step={0.1}
-                  value={optimizerSettings.takeProfitRR}
-                  onChange={(e) =>
-                    onOptimizerSettingChange({
-                      takeProfitRR: Math.max(0.1, Number(e.target.value || 2))
-                    })
-                  }
-                />
-              </label>
-              <label>
-                VWAP Start (HHMM)
-                <input
-                  type="number"
-                  min={0}
-                  max={2359}
-                  step={1}
-                  value={optimizerSettings.vwapStartHHMM}
-                  onChange={(e) =>
-                    onOptimizerSettingChange({
-                      vwapStartHHMM: Math.max(0, Math.min(2359, Number(e.target.value || 930)))
-                    })
-                  }
-                />
-              </label>
-              <label>
-                Active Start (HHMM)
-                <input
-                  type="number"
-                  min={0}
-                  max={2359}
-                  step={1}
-                  value={optimizerSettings.activeStartHHMM}
-                  onChange={(e) =>
-                    onOptimizerSettingChange({
-                      activeStartHHMM: Math.max(0, Math.min(2359, Number(e.target.value || 930)))
-                    })
-                  }
-                />
-              </label>
-              <label>
-                Active End (HHMM)
-                <input
-                  type="number"
-                  min={0}
-                  max={2359}
-                  step={1}
-                  value={optimizerSettings.activeEndHHMM}
-                  onChange={(e) =>
-                    onOptimizerSettingChange({
-                      activeEndHHMM: Math.max(0, Math.min(2359, Number(e.target.value || 1600)))
-                    })
-                  }
-                />
-              </label>
-              {isOriginalOrbStrategy && (
-                <label>
-                  Doji body/range max
-                  <input
-                    type="number"
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    value={optimizerSettings.dojiBodyToRangeMax}
-                    onChange={(e) =>
-                      onOptimizerSettingChange({
-                        dojiBodyToRangeMax: Math.max(0, Math.min(1, Number(e.target.value || 0.3)))
-                      })
-                    }
-                  />
-                </label>
-              )}
-              {isOpenOrAvwapStopStrategy && (
-                <label>
-                  Stop Loss Source
-                  <select
-                    value={optimizerSettings.stopLossSource}
-                    onChange={(e) =>
-                      onOptimizerSettingChange({
-                        stopLossSource:
-                          (e.target.value as BacktestOptimizerSettings["stopLossSource"]) || "open"
-                      })
-                    }
-                  >
-                    <option value="open">open</option>
-                    <option value="avwap">avwap</option>
-                    <option value="extreme">candle low (long) / high (short)</option>
-                    <option value="low">candle low (long only)</option>
-                    <option value="high">candle high (short only)</option>
-                  </select>
-                </label>
-              )}
-              <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                <input
-                  type="checkbox"
-                  checked={optimizerSettings.ignoreWeekends}
-                  onChange={(e) =>
-                    onOptimizerSettingChange({
-                      ignoreWeekends: Boolean(e.target.checked)
-                    })
-                  }
-                />
-                Ignore weekends
-              </label>
-              <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                <input
-                  type="checkbox"
-                  checked={optimizerSettings.ignoreUsHolidays}
-                  onChange={(e) =>
-                    onOptimizerSettingChange({
-                      ignoreUsHolidays: Boolean(e.target.checked)
-                    })
-                  }
-                />
-                Ignore US holidays + early close days
-              </label>
+              {strategyDefinition.params.map((param) => renderParamInput(param))}
             </div>
           ) : (
             <div className="sub">This strategy does not expose configurable variables for single-run editing yet.</div>

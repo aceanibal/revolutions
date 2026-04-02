@@ -1,10 +1,6 @@
 export type Timeframe = "1m" | "5m";
 export type ReplayMode = "tick" | "candle" | "mixed";
-export type StrategyId =
-  | "noop"
-  | "simple-momentum"
-  | "orb-avwap-930"
-  | "orb-avwap-930-open-avwap-sl";
+export type StrategyId = string;
 export type TickPolicy = "real_only" | "real_then_synthetic" | "synthetic_only";
 export type SessionType = "live" | "historical";
 
@@ -153,6 +149,31 @@ export interface BacktestOptimizerSettings {
   dojiBodyToRangeMax: number;
   ignoreWeekends: boolean;
   ignoreUsHolidays: boolean;
+}
+
+export type StrategyParamType = "number" | "boolean" | "select" | "text";
+
+export interface StrategyParamOption {
+  value: string;
+  label: string;
+}
+
+export interface StrategyParamDefinition {
+  key: string;
+  label: string;
+  type: StrategyParamType;
+  defaultValue?: unknown;
+  min?: number;
+  max?: number;
+  step?: number;
+  options?: StrategyParamOption[];
+}
+
+export interface StrategyDefinition {
+  id: StrategyId;
+  label: string;
+  description?: string;
+  params: StrategyParamDefinition[];
 }
 
 export interface ScannerMetadataItem {

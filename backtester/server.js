@@ -4,7 +4,8 @@ const {
   createBacktestRepository,
   runBacktest,
   importSession,
-  listSourceSessions
+  listSourceSessions,
+  listStrategies
 } = require("./index");
 const {
   createHistoricalSession,
@@ -39,6 +40,15 @@ const repo = createBacktestRepository({ sqlitePath: BACKTEST_SQLITE_PATH });
 
 app.get("/api/backtest/health", (_req, res) => {
   res.json({ ok: true, service: "backtester", sqlitePath: BACKTEST_SQLITE_PATH });
+});
+
+app.get("/api/backtest/strategies", (_req, res) => {
+  try {
+    const strategies = listStrategies();
+    return res.json({ ok: true, strategies });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error.message || "Failed to load strategies" });
+  }
 });
 
 app.get("/api/backtest/sessions/all", (req, res) => {
