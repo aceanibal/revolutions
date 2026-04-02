@@ -299,7 +299,7 @@ export function SingleRunWorkspace({
                   style={{ padding: "6px 10px" }}
                   onClick={exportTradesWithOneMinuteCandlesJson}
                 >
-                  Export full session JSON (scanner + 1m candles)
+                  Export full session JSON (scanner + 1m for 11h after open)
                 </button>
               ) : null}
               {runResult?.trades?.length ? (

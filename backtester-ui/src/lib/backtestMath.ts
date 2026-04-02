@@ -595,6 +595,9 @@ export function buildSimulatedTradesWithOneMinuteCandlesCsv(input: {
   return `\uFEFF${lines.join("\n")}`;
 }
 
+const ONE_MINUTE_EXPORT_HOURS_AFTER_OPEN = 11;
+const ONE_MINUTE_EXPORT_MS = ONE_MINUTE_EXPORT_HOURS_AFTER_OPEN * 60 * 60 * 1000;
+
 export function buildSimulatedTradesWithOneMinuteCandlesJson(input: {
   trades: BacktestRunResult["trades"];
   meta: BacktestRunResult["meta"];
@@ -609,17 +612,25 @@ export function buildSimulatedTradesWithOneMinuteCandlesJson(input: {
     exportedAtMs,
     exportType: "sim-trades-with-1m-candles-and-scanner",
     contextCandles,
+    oneMinuteExport: {
+      anchor: "openedAtMs" as const,
+      hoursAfterOpen: ONE_MINUTE_EXPORT_HOURS_AFTER_OPEN,
+      description:
+        "1m candles from trade open through 11 hours after open (not clipped at trade close)."
+    },
     meta,
     trades: trades.map((trade, tradeIndex) => {
       const tradeWindow = buildTradeReplayCandlesWindow(tradeWindowCandles, trade, contextCandles);
-      const fromMs = Number(tradeWindow[0]?.timeMs || 0);
-      const toMs = Number(tradeWindow[tradeWindow.length - 1]?.timeMs || 0);
-      const oneMinuteInWindow =
-        fromMs > 0 && toMs > 0
+      const twFromMs = Number(tradeWindow[0]?.timeMs || 0);
+      const twToMs = Number(tradeWindow[tradeWindow.length - 1]?.timeMs || 0);
+      const openMs = normalizeEpochMs(trade.openedAtMs);
+      const oneMinuteToMs = openMs > 0 ? openMs + ONE_MINUTE_EXPORT_MS : 0;
+      const oneMinuteInRange =
+        openMs > 0 && oneMinuteToMs > openMs
           ? oneMinuteCandles
               .filter((candle) => {
                 const t = Number(candle.timeMs || 0);
-                return Number.isFinite(t) && t >= fromMs && t <= toMs;
+                return Number.isFinite(t) && t >= openMs && t <= oneMinuteToMs;
               })
               .map((candle) => ({
                 timeMs: Number(candle.timeMs || 0),
@@ -640,11 +651,17 @@ export function buildSimulatedTradesWithOneMinuteCandlesJson(input: {
         scannerAtExit: trade.scannerAtExit ?? null,
         tradeWindow: {
           timeframe: meta.timeframe,
-          fromMs: fromMs || null,
-          toMs: toMs || null,
+          fromMs: twFromMs || null,
+          toMs: twToMs || null,
           candleCount: tradeWindow.length
         },
-        oneMinuteCandles: oneMinuteInWindow
+        oneMinuteRange: {
+          fromMs: openMs || null,
+          toMs: oneMinuteToMs || null,
+          anchor: "openedAtMs" as const,
+          hoursAfterOpen: ONE_MINUTE_EXPORT_HOURS_AFTER_OPEN
+        },
+        oneMinuteCandles: oneMinuteInRange
       };
     })
   };
