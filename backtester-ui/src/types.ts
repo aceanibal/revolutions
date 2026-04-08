@@ -121,6 +121,8 @@ export interface BacktestRunResult {
     pnl: number;
     stopLoss?: number | null;
     takeProfit?: number | null;
+    /** Anchored session VWAP at signal / entry when the strategy provides it (`meta.anchoredVwap`). */
+    avwapAtEntry?: number | null;
     /** ET calendar date (YYYY-MM-DD) for the trade open (America/New_York). */
     tradingDayEt?: string;
     /**

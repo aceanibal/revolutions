@@ -5,6 +5,9 @@ const {
 const {
   createOrbAvwap930OpenOrAvwapStopStrategy1m
 } = require("./orbAvwap930OpenOrAvwapStopStrategy1m");
+const {
+  createOrbAvwapPullbackStrategy1m
+} = require("./orbAvwapPullbackStrategy1m");
 
 function readScannerFeature(event, state, featureSet = "rvol-scanner") {
   const setName = String(featureSet || "rvol-scanner").trim();
@@ -133,6 +136,21 @@ function createOrbAvwap930Strategy(options = {}) {
         return null;
       }
       if (hhmm >= sessionEndHHMM) {
+        if (runnerPosition) {
+          const sessionEndExitPx = Number.isFinite(open) ? open : close;
+          if (debug) {
+            console.log(
+              `[orb-avwap-930] session_end_exit day=${dayKey} at=${etLabel} ET side=${String(runnerPosition.side || "").toLowerCase() || "long"} px=${Number(sessionEndExitPx).toFixed(6)}`
+            );
+          }
+          position = null;
+          return {
+            type: "exit",
+            side: String(runnerPosition.side || "").toLowerCase() || "long",
+            price: sessionEndExitPx,
+            size: Number(runnerPosition.size || 1)
+          };
+        }
         if (debug) {
           console.log(`[orb-avwap-930] skip post-session at=${etLabel} ET`);
         }
@@ -313,6 +331,7 @@ function resolveStrategy(strategyId = "noop", params = {}) {
   if (strategyId === "orb-avwap-930") return createOrbAvwap930Strategy(params);
   if (strategyId === "orb-avwap-930-open-avwap-sl") return createOrbAvwap930OpenOrAvwapStopStrategy(params);
   if (strategyId === "orb-avwap-930-open-avwap-sl-1m") return createOrbAvwap930OpenOrAvwapStopStrategy1m(params);
+  if (strategyId === "orb-avwap-pullback-1m") return createOrbAvwapPullbackStrategy1m(params);
   if (strategyId === "simple-momentum") return createSimpleMomentumStrategy(params);
   return createNoopStrategy();
 }
@@ -418,6 +437,51 @@ const STRATEGY_DEFINITIONS = [
       { key: "ignoreWeekends", label: "Ignore weekends", type: "boolean", defaultValue: false },
       { key: "ignoreUsHolidays", label: "Ignore US holidays + early closes", type: "boolean", defaultValue: false }
     ]
+  },
+  {
+    id: "orb-avwap-pullback-1m",
+    label: "ORB AVWAP Pullback (1m Close Entry)",
+    description:
+      "Arms on 5m signal and enters at the next 1m close if RVOL on that candle meets min; exits on 1m stop/target.",
+    params: [
+      { key: "rr", label: "Take Profit (R)", type: "number", defaultValue: 2, min: 0.1, step: 0.1 },
+      { key: "anchorHHMM", label: "VWAP start (HHMM)", type: "number", defaultValue: 930, min: 0, max: 2359, step: 1 },
+      { key: "confirmAfterHHMM", label: "Confirm after (HHMM)", type: "number", defaultValue: 1000, min: 0, max: 2359, step: 1 },
+      { key: "activeStartHHMM", label: "Active start (HHMM)", type: "number", defaultValue: 930, min: 0, max: 2359, step: 1 },
+      { key: "activeEndHHMM", label: "Active end (HHMM)", type: "number", defaultValue: 1600, min: 0, max: 2359, step: 1 },
+      { key: "sessionEndHHMM", label: "Session end (HHMM)", type: "number", defaultValue: 1600, min: 0, max: 2359, step: 1 },
+      {
+        key: "stopLossSource",
+        label: "Stop-loss source",
+        type: "select",
+        defaultValue: "open",
+        options: [
+          { value: "open", label: "open" },
+          { value: "avwap", label: "avwap" },
+          { value: "extreme", label: "candle low/high" },
+          { value: "low", label: "low (long only)" },
+          { value: "high", label: "high (short only)" }
+        ]
+      },
+      {
+        key: "minStopPct",
+        label: "Min stop distance (% of entry)",
+        type: "number",
+        defaultValue: 0.4,
+        min: 0,
+        step: 0.01
+      },
+      {
+        key: "minRvol",
+        label: "Min RVOL (entry candle)",
+        type: "number",
+        defaultValue: 1.2,
+        min: 0,
+        step: 0.05
+      },
+      { key: "ignoreWeekends", label: "Ignore weekends", type: "boolean", defaultValue: false },
+      { key: "ignoreUsHolidays", label: "Ignore US holidays + early closes", type: "boolean", defaultValue: false }
+    ]
   }
 ];
 
@@ -431,6 +495,7 @@ module.exports = {
   createOrbAvwap930Strategy,
   createOrbAvwap930OpenOrAvwapStopStrategy,
   createOrbAvwap930OpenOrAvwapStopStrategy1m,
+  createOrbAvwapPullbackStrategy1m,
   resolveStrategy,
   listStrategies
 };

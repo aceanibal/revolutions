@@ -1,0 +1,21 @@
+{
+  "session_day": "2025-03-31",
+  "anchor_ms": 1743454800000,
+  "anchor_et": "2025-03-31 17:00",
+  "event_type": "daily_low",
+  "level": 2.0765,
+  "hit_ms": 1743459600000,
+  "hit_et": "2025-03-31 18:20",
+  "minutes_to_hit": 80.0,
+  "anchor_close": 2.0885,
+  "hit_close": 2.0766,
+  "move_anchor_to_hit_pct": -0.5698,
+  "hit_candle_range": 0.006200000000000205,
+  "hit_candle_range_pct_of_level": 0.2986,
+  "hit_candle_volume": 2707408.0,
+  "hit_volume_zscore_24bars": 1.2343,
+  "forward_close": 2.0881,
+  "forward_return_pct": 0.5538,
+  "continuation_move_abs": 0.0023,
+  "continuation_move_pct_of_level": 0.1108
+}

@@ -36,6 +36,12 @@ interface SingleRunWorkspaceProps {
   onCapTradesTwoPerDayChange: (value: boolean) => void;
   simWinStopRetryPerDay: boolean;
   onSimWinStopRetryPerDayChange: (value: boolean) => void;
+  reportScannerBtcCorrMin: string;
+  reportScannerBtcCorrMax: string;
+  onReportScannerBtcCorrMinChange: (value: string) => void;
+  onReportScannerBtcCorrMaxChange: (value: string) => void;
+  tradesBeforeBtcCorrFilter: number;
+  btcCorrReportFilterActive: boolean;
   optimizerSettings: BacktestOptimizerSettings;
   onOptimizerSettingChange: (patch: Partial<BacktestOptimizerSettings>) => void;
   strategyDefinition: StrategyDefinition | null;
@@ -60,6 +66,12 @@ export function SingleRunWorkspace({
   onCapTradesTwoPerDayChange,
   simWinStopRetryPerDay,
   onSimWinStopRetryPerDayChange,
+  reportScannerBtcCorrMin,
+  reportScannerBtcCorrMax,
+  onReportScannerBtcCorrMinChange,
+  onReportScannerBtcCorrMaxChange,
+  tradesBeforeBtcCorrFilter,
+  btcCorrReportFilterActive,
   optimizerSettings,
   onOptimizerSettingChange,
   strategyDefinition,
@@ -69,7 +81,8 @@ export function SingleRunWorkspace({
 }: SingleRunWorkspaceProps) {
   const fullTradeCount = runResult?.trades?.length ?? 0;
   const displayMetricsCap = displayMetricsFromTrades(tradesForDisplay);
-  const useDisplayAdjustedMetrics = capTradesTwoPerDay || simWinStopRetryPerDay;
+  const useDisplayAdjustedMetrics =
+    capTradesTwoPerDay || simWinStopRetryPerDay || btcCorrReportFilterActive;
   const scannerFeatureSet = String(
     (runResult?.meta?.params as Record<string, unknown> | undefined)?.scannerFeatureSet || "rvol-scanner"
   );
@@ -265,15 +278,57 @@ export function SingleRunWorkspace({
                 />
                 Win stops day · loss → 1 retry
               </label>
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 8,
+                  alignItems: "center",
+                  justifyContent: "flex-end",
+                  fontSize: "0.9rem"
+                }}
+              >
+                <span className="sub" style={{ margin: 0 }}>
+                  BTC ρ at entry ({scannerFeatureSet})
+                </span>
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
+                  min
+                  <input
+                    type="number"
+                    step={0.01}
+                    placeholder="—"
+                    value={reportScannerBtcCorrMin}
+                    onChange={(e) => onReportScannerBtcCorrMinChange(e.target.value)}
+                    style={{ width: 72 }}
+                  />
+                </label>
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
+                  max
+                  <input
+                    type="number"
+                    step={0.01}
+                    placeholder="—"
+                    value={reportScannerBtcCorrMax}
+                    onChange={(e) => onReportScannerBtcCorrMaxChange(e.target.value)}
+                    style={{ width: 72 }}
+                  />
+                </label>
+              </div>
             </div>
           </div>
-          {(capTradesTwoPerDay || simWinStopRetryPerDay) && fullTradeCount > tradesForDisplay.length ? (
+          {(capTradesTwoPerDay || simWinStopRetryPerDay) && fullTradeCount > tradesBeforeBtcCorrFilter ? (
             <div className="sub" style={{ marginTop: 6 }}>
-              Showing {tradesForDisplay.length} of {fullTradeCount}
+              Showing {tradesBeforeBtcCorrFilter} of {fullTradeCount}
               {capTradesTwoPerDay ? " · max 2 opens per ET day" : ""}
               {simWinStopRetryPerDay ? " · if first open of day wins (PnL > 0), no second; otherwise allow one more." : ""}
               {" "}
               · CSV export uses the full run ({fullTradeCount} trades).
+            </div>
+          ) : null}
+          {btcCorrReportFilterActive && tradesBeforeBtcCorrFilter > tradesForDisplay.length ? (
+            <div className="sub" style={{ marginTop: 6 }}>
+              Showing {tradesForDisplay.length} of {tradesBeforeBtcCorrFilter} after entry BTC ρ filter (rows without
+              scanner data are excluded).
             </div>
           ) : null}
           {tradesForDisplay.length ? (
@@ -288,6 +343,7 @@ export function SingleRunWorkspace({
                   <th>Exit</th>
                   <th>SL</th>
                   <th>TP</th>
+                  <th title="Anchored session VWAP at signal/entry (ORB AVWAP strategies)">AVWAP</th>
                   <th>W/L</th>
                   <th>PnL (R)</th>
                   <th title={`Scanner at entry (${scannerFeatureSet})`}>RVOL in</th>
@@ -316,6 +372,11 @@ export function SingleRunWorkspace({
                     <td>{Number(trade.exitPx || 0).toFixed(4)}</td>
                     <td>{trade.stopLoss == null ? "--" : Number(trade.stopLoss).toFixed(4)}</td>
                     <td>{trade.takeProfit == null ? "--" : Number(trade.takeProfit).toFixed(4)}</td>
+                    <td>
+                      {typeof trade.avwapAtEntry === "number" && Number.isFinite(trade.avwapAtEntry)
+                        ? trade.avwapAtEntry.toFixed(4)
+                        : "--"}
+                    </td>
                     <td>{tradeOutcomeFromPnl(Number(trade.pnl))}</td>
                     <td>
                       {(() => {

@@ -127,7 +127,24 @@ function createOrbAvwap930OpenOrAvwapStopStrategy(options = {}) {
         }
       }
       if (hhmm < anchorHHMM) return null;
-      if (hhmm >= sessionEndHHMM) return null;
+      if (hhmm >= sessionEndHHMM) {
+        if (runnerPosition) {
+          const sessionEndExitPx = Number.isFinite(open) ? open : close;
+          if (debug) {
+            console.log(
+              `[orb-avwap-930-open-avwap-sl] session_end_exit day=${dayKey} at=${etLabel} ET side=${String(runnerPosition.side || "").toLowerCase() || "long"} px=${Number(sessionEndExitPx).toFixed(6)}`
+            );
+          }
+          position = null;
+          return {
+            type: "exit",
+            side: String(runnerPosition.side || "").toLowerCase() || "long",
+            price: sessionEndExitPx,
+            size: Number(runnerPosition.size || 1)
+          };
+        }
+        return null;
+      }
 
       const volume = Number.isFinite(volumeRaw) ? volumeRaw : 0;
       const typical = (high + low + close) / 3;

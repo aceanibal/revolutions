@@ -411,6 +411,26 @@ export function pickNestedScannerPayload(
   return inner as Record<string, unknown>;
 }
 
+/** Keep trades whose entry scanner payload has `btcCorr` within optional inclusive bounds. */
+export function filterTradesByScannerEntryBtcCorr(
+  trades: BacktestRunResult["trades"],
+  featureSet: string,
+  bounds: { min?: number; max?: number }
+): BacktestRunResult["trades"] {
+  const setName = String(featureSet || "rvol-scanner").trim() || "rvol-scanner";
+  const hasMin = Number.isFinite(bounds.min);
+  const hasMax = Number.isFinite(bounds.max);
+  if (!hasMin && !hasMax) return trades;
+  return trades.filter((trade) => {
+    const p = pickNestedScannerPayload(trade.scannerAtEntry, setName);
+    const rho = Number(p?.btcCorr);
+    if (!Number.isFinite(rho)) return false;
+    if (hasMin && rho < (bounds.min as number)) return false;
+    if (hasMax && rho > (bounds.max as number)) return false;
+    return true;
+  });
+}
+
 /** CSV for spreadsheet import; includes ET day, flattened scanner columns, and full JSON snapshots. */
 export function buildSimulatedTradesCsv(
   trades: BacktestRunResult["trades"],
@@ -434,6 +454,7 @@ export function buildSimulatedTradesCsv(
     "winLoss",
     "stopLoss",
     "takeProfit",
+    "avwapAtEntry",
     "scannerEntry_rvol",
     "scannerEntry_btcCorr",
     "scannerEntry_price",
@@ -466,6 +487,7 @@ export function buildSimulatedTradesCsv(
       tradeOutcomeFromPnl(Number(t.pnl)),
       t.stopLoss == null ? "" : String(t.stopLoss),
       t.takeProfit == null ? "" : String(t.takeProfit),
+      num(t.avwapAtEntry),
       num(entryP?.rvol),
       num(entryP?.btcCorr),
       num(entryP?.price),
@@ -509,6 +531,7 @@ export function buildSimulatedTradesWithOneMinuteCandlesCsv(input: {
     "winLoss",
     "stopLoss",
     "takeProfit",
+    "avwapAtEntry",
     "scannerEntry_rvol",
     "scannerEntry_btcCorr",
     "scannerEntry_price",
@@ -562,6 +585,7 @@ export function buildSimulatedTradesWithOneMinuteCandlesCsv(input: {
       tradeOutcomeFromPnl(Number(trade.pnl)),
       trade.stopLoss == null ? "" : String(trade.stopLoss),
       trade.takeProfit == null ? "" : String(trade.takeProfit),
+      num(trade.avwapAtEntry),
       num(entryP?.rvol),
       num(entryP?.btcCorr),
       num(entryP?.price),

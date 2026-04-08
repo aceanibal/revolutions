@@ -209,3 +209,42 @@ export async function fetchScannerFeatures(input: {
   );
   return payload?.ok ? payload.rows : [];
 }
+
+export async function fetchLiquidityZoneExport(input: {
+  sessionId: string;
+  symbol: string;
+  featureSet?: string;
+  featureVersion?: string;
+}): Promise<Record<string, unknown> | null> {
+  const params = new URLSearchParams({ symbol: input.symbol });
+  if (input.featureSet) params.set("featureSet", input.featureSet);
+  if (input.featureVersion) params.set("featureVersion", input.featureVersion);
+  const payload = await readJson<{ ok: boolean } & Record<string, unknown>>(
+    `${BACKEND_BASE_URL}/api/backtest/sessions/${encodeURIComponent(input.sessionId)}/liquidity-zones/export?${params.toString()}`
+  );
+  if (!payload?.ok) return null;
+  const { ok: _, ...rest } = payload;
+  return rest;
+}
+
+export async function runLiquidityZoneScannerApi(input: {
+  sessionId: string;
+  featureSet?: string;
+  featureVersion?: string;
+  lookbackDays?: number;
+  numBins?: number;
+  swingLeftBars?: number;
+  swingRightBars?: number;
+  hvnStdDevMultiplier?: number;
+  anchorHHMM?: number;
+}): Promise<Record<string, unknown> | null> {
+  const payload = await readJson<{ ok: boolean; result: Record<string, unknown> }>(
+    `${BACKEND_BASE_URL}/api/backtest/scanner/liquidity-zones/run`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input)
+    }
+  );
+  return payload?.ok ? payload.result : null;
+}

@@ -11,12 +11,15 @@ import {
   fetchSourceSessionsPaged,
   importSourceSession,
   runSessionScannerApi,
-  runBacktestApi
+  runBacktestApi,
+  fetchLiquidityZoneExport,
+  runLiquidityZoneScannerApi
 } from "./lib/api";
 import {
   buildOptimizationLeaderboards,
   applyWinStopOneRetryPerDay,
   capTradesPerCalendarDay,
+  filterTradesByScannerEntryBtcCorr,
   formatDateTime,
   hhmmToMinutes,
   minutesToHHMM,
@@ -153,6 +156,8 @@ export default function AppWorkspace() {
   const [runResult, setRunResult] = useState<BacktestRunResult | null>(null);
   const [capSimTradesTwoPerDay, setCapSimTradesTwoPerDay] = useState(false);
   const [simWinStopRetryPerDay, setSimWinStopRetryPerDay] = useState(false);
+  const [reportScannerBtcCorrMin, setReportScannerBtcCorrMin] = useState("");
+  const [reportScannerBtcCorrMax, setReportScannerBtcCorrMax] = useState("");
   const [selectedSimTradeIdx, setSelectedSimTradeIdx] = useState<number | null>(null);
   const [sessionTrades, setSessionTrades] = useState<SessionTrade[]>([]);
   const [scannerMetadata, setScannerMetadata] = useState<ScannerMetadataItem[]>([]);
@@ -401,14 +406,46 @@ export default function AppWorkspace() {
     return candles;
   }, [candlesByTimeframe, timeframe, mode, replayIndex]);
 
-  const tradesForDisplay = useMemo(() => {
+  const { tradesForDisplay, tradesBeforeBtcCorrFilter, btcCorrReportFilterActive } = useMemo(() => {
     const raw = runResult?.trades;
-    if (!raw?.length) return [];
+    if (!raw?.length) {
+      return { tradesForDisplay: [], tradesBeforeBtcCorrFilter: 0, btcCorrReportFilterActive: false };
+    }
     const ordered = [...raw].sort((a, b) => Number(a.openedAtMs) - Number(b.openedAtMs));
-    if (simWinStopRetryPerDay) return applyWinStopOneRetryPerDay(ordered);
-    if (capSimTradesTwoPerDay) return capTradesPerCalendarDay(ordered, 2);
-    return raw;
-  }, [runResult?.trades, capSimTradesTwoPerDay, simWinStopRetryPerDay]);
+    let base: typeof ordered;
+    if (simWinStopRetryPerDay) base = applyWinStopOneRetryPerDay(ordered);
+    else if (capSimTradesTwoPerDay) base = capTradesPerCalendarDay(ordered, 2);
+    else base = ordered;
+
+    const minRaw = reportScannerBtcCorrMin.trim();
+    const maxRaw = reportScannerBtcCorrMax.trim();
+    const minNum = minRaw === "" ? NaN : Number(minRaw);
+    const maxNum = maxRaw === "" ? NaN : Number(maxRaw);
+    const hasMin = minRaw !== "" && Number.isFinite(minNum);
+    const hasMax = maxRaw !== "" && Number.isFinite(maxNum);
+    const btcActive = hasMin || hasMax;
+    const featureSet =
+      String(runResult?.meta?.params?.scannerFeatureSet || "rvol-scanner").trim() || "rvol-scanner";
+    let trades = base;
+    if (btcActive) {
+      trades = filterTradesByScannerEntryBtcCorr(base, featureSet, {
+        min: hasMin ? minNum : undefined,
+        max: hasMax ? maxNum : undefined
+      });
+    }
+    return {
+      tradesForDisplay: trades,
+      tradesBeforeBtcCorrFilter: base.length,
+      btcCorrReportFilterActive: btcActive
+    };
+  }, [
+    runResult?.trades,
+    runResult?.meta?.params?.scannerFeatureSet,
+    capSimTradesTwoPerDay,
+    simWinStopRetryPerDay,
+    reportScannerBtcCorrMin,
+    reportScannerBtcCorrMax
+  ]);
 
   const selectedSimTrade = useMemo<SimulatedTrade | null>(() => {
     if (selectedSimTradeIdx == null) return null;
@@ -421,7 +458,7 @@ export default function AppWorkspace() {
 
   useEffect(() => {
     setSelectedSimTradeIdx(null);
-  }, [capSimTradesTwoPerDay, simWinStopRetryPerDay]);
+  }, [capSimTradesTwoPerDay, simWinStopRetryPerDay, reportScannerBtcCorrMin, reportScannerBtcCorrMax]);
 
   useEffect(() => {
     if (selectedSimTradeIdx == null) return;
@@ -488,6 +525,13 @@ export default function AppWorkspace() {
     if (byId["orb-avwap-930-open-avwap-sl-1m"]) {
       byId["orb-avwap-930-open-avwap-sl-1m"] = {
         ...byId["orb-avwap-930-open-avwap-sl-1m"],
+        ...orbBase,
+        stopLossSource: optimizerSettings.stopLossSource
+      };
+    }
+    if (byId["orb-avwap-pullback-1m"]) {
+      byId["orb-avwap-pullback-1m"] = {
+        ...byId["orb-avwap-pullback-1m"],
         ...orbBase,
         stopLossSource: optimizerSettings.stopLossSource
       };
@@ -1035,6 +1079,35 @@ export default function AppWorkspace() {
     }
   };
 
+  const handleRunLiquidityZoneScanner = async () => {
+    if (!selectedSessionId || scannerRunning) return;
+    setScannerRunning(true);
+    try {
+      await runLiquidityZoneScannerApi({ sessionId: selectedSessionId });
+    } finally {
+      setScannerRunning(false);
+    }
+  };
+
+  const handleExportLiquidityZones = async () => {
+    if (!selectedSessionId || !selectedSymbol) return;
+    const data = await fetchLiquidityZoneExport({
+      sessionId: selectedSessionId,
+      symbol: selectedSymbol
+    });
+    if (!data) return;
+    const json = JSON.stringify(data, null, 2);
+    const safeSession = String(selectedSessionId).replace(/[^a-zA-Z0-9_-]+/g, "_");
+    const safeSymbol = String(selectedSymbol).replace(/[^a-zA-Z0-9_-]+/g, "_");
+    const blob = new Blob([json], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `liquidity-zones_${safeSession}_${safeSymbol}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const sectionMeta: Record<NavSection, { title: string; description: string }> = {
     overview: { title: "Overview", description: "High-level view of sessions, runs, and data in one workspace." },
     sessions: { title: "Sessions", description: "Select session, run strategy, and drill into simulated trades." },
@@ -1124,6 +1197,12 @@ export default function AppWorkspace() {
                 setSimWinStopRetryPerDay(v);
                 if (v) setCapSimTradesTwoPerDay(false);
               }}
+              reportScannerBtcCorrMin={reportScannerBtcCorrMin}
+              reportScannerBtcCorrMax={reportScannerBtcCorrMax}
+              onReportScannerBtcCorrMinChange={setReportScannerBtcCorrMin}
+              onReportScannerBtcCorrMaxChange={setReportScannerBtcCorrMax}
+              tradesBeforeBtcCorrFilter={tradesBeforeBtcCorrFilter}
+              btcCorrReportFilterActive={btcCorrReportFilterActive}
               optimizerSettings={optimizerSettings}
               onOptimizerSettingChange={(patch) => setOptimizerSettings((prev) => ({ ...prev, ...patch }))}
               strategyDefinition={activeStrategyDefinition}
@@ -1163,6 +1242,9 @@ export default function AppWorkspace() {
               onScannerUseForRunsChange={setScannerUseForRuns}
               onRunScanner={handleRunScanner}
               onRefreshScannerRows={refreshScannerRows}
+              selectedSymbol={selectedSymbol}
+              onRunLiquidityZoneScanner={handleRunLiquidityZoneScanner}
+              onExportLiquidityZones={handleExportLiquidityZones}
             />
           </>
         );
@@ -1192,6 +1274,12 @@ export default function AppWorkspace() {
                 setSimWinStopRetryPerDay(v);
                 if (v) setCapSimTradesTwoPerDay(false);
               }}
+              reportScannerBtcCorrMin={reportScannerBtcCorrMin}
+              reportScannerBtcCorrMax={reportScannerBtcCorrMax}
+              onReportScannerBtcCorrMinChange={setReportScannerBtcCorrMin}
+              onReportScannerBtcCorrMaxChange={setReportScannerBtcCorrMax}
+              tradesBeforeBtcCorrFilter={tradesBeforeBtcCorrFilter}
+              btcCorrReportFilterActive={btcCorrReportFilterActive}
               optimizerSettings={optimizerSettings}
               onOptimizerSettingChange={(patch) => setOptimizerSettings((prev) => ({ ...prev, ...patch }))}
               strategyDefinition={activeStrategyDefinition}
@@ -1342,6 +1430,12 @@ export default function AppWorkspace() {
                 setSimWinStopRetryPerDay(v);
                 if (v) setCapSimTradesTwoPerDay(false);
               }}
+              reportScannerBtcCorrMin={reportScannerBtcCorrMin}
+              reportScannerBtcCorrMax={reportScannerBtcCorrMax}
+              onReportScannerBtcCorrMinChange={setReportScannerBtcCorrMin}
+              onReportScannerBtcCorrMaxChange={setReportScannerBtcCorrMax}
+              tradesBeforeBtcCorrFilter={tradesBeforeBtcCorrFilter}
+              btcCorrReportFilterActive={btcCorrReportFilterActive}
               optimizerSettings={optimizerSettings}
               onOptimizerSettingChange={(patch) => setOptimizerSettings((prev) => ({ ...prev, ...patch }))}
               strategyDefinition={activeStrategyDefinition}

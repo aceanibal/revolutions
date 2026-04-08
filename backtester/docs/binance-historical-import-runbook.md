@@ -168,6 +168,8 @@ General import flow stays the same:
 3. Import via `npm run import:historical`.
 4. Verify session stats and boundaries.
 
+To build a synthetic XRP/PAXG ratio session after both historical imports exist, run `npm run list:long-series -- --symbols XRPUSDT,PAXGUSDT --timeframe 5m --min-days 365`, then `npm run build:xrp-paxg-ratio -- --xrp-session <xrpSessionId> --paxg-session <paxgSessionId> --timeframe 5m`.
+
 ---
 
 ## Symbol Mapping (Binance -> Hyperliquid)

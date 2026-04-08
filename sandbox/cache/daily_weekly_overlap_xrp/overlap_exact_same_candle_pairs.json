@@ -1,0 +1,152 @@
+[
+  {
+    "hit_ms": 1735871100000,
+    "session_day": "2025-01-02",
+    "weekly_type": "week_high",
+    "daily_type": "daily_high",
+    "weekly_level": 2.4518,
+    "daily_level": 2.4518,
+    "weekly_hit_et": "2025-01-02 21:25",
+    "daily_hit_et": "2025-01-02 21:25"
+  },
+  {
+    "hit_ms": 1740434400000,
+    "session_day": "2025-02-24",
+    "weekly_type": "week_low",
+    "daily_type": "daily_low",
+    "weekly_level": 2.2822,
+    "daily_level": 2.4421,
+    "weekly_hit_et": "2025-02-24 17:00",
+    "daily_hit_et": "2025-02-24 17:00"
+  },
+  {
+    "hit_ms": 1748308800000,
+    "session_day": "2025-05-26",
+    "weekly_type": "week_low",
+    "daily_type": "daily_low",
+    "weekly_level": 2.2644,
+    "daily_level": 2.2644,
+    "weekly_hit_et": "2025-05-26 21:20",
+    "daily_hit_et": "2025-05-26 21:20"
+  },
+  {
+    "hit_ms": 1748565900000,
+    "session_day": "2025-05-29",
+    "weekly_type": "week_low",
+    "daily_type": "daily_low",
+    "weekly_level": 2.2244,
+    "daily_level": 2.2244,
+    "weekly_hit_et": "2025-05-29 20:45",
+    "daily_hit_et": "2025-05-29 20:45"
+  },
+  {
+    "hit_ms": 1748649900000,
+    "session_day": "2025-05-30",
+    "weekly_type": "week_low",
+    "daily_type": "daily_low",
+    "weekly_level": 2.126,
+    "daily_level": 2.126,
+    "weekly_hit_et": "2025-05-30 20:05",
+    "daily_hit_et": "2025-05-30 20:05"
+  },
+  {
+    "hit_ms": 1749636900000,
+    "session_day": "2025-06-10",
+    "weekly_type": "week_high",
+    "daily_type": "daily_high",
+    "weekly_level": 2.3288,
+    "daily_level": 2.3288,
+    "weekly_hit_et": "2025-06-11 06:15",
+    "daily_hit_et": "2025-06-11 06:15"
+  },
+  {
+    "hit_ms": 1750798800000,
+    "session_day": "2025-06-24",
+    "weekly_type": "week_high",
+    "daily_type": "daily_high",
+    "weekly_level": 2.2157,
+    "daily_level": 2.1696,
+    "weekly_hit_et": "2025-06-24 17:00",
+    "daily_hit_et": "2025-06-24 17:00"
+  },
+  {
+    "hit_ms": 1752057900000,
+    "session_day": "2025-07-08",
+    "weekly_type": "week_high",
+    "daily_type": "daily_high",
+    "weekly_level": 2.3532,
+    "daily_level": 2.3532,
+    "weekly_hit_et": "2025-07-09 06:45",
+    "daily_hit_et": "2025-07-09 06:45"
+  },
+  {
+    "hit_ms": 1754007000000,
+    "session_day": "2025-07-31",
+    "weekly_type": "week_low",
+    "daily_type": "daily_low",
+    "weekly_level": 2.9959,
+    "daily_level": 3.0,
+    "weekly_hit_et": "2025-07-31 20:10",
+    "daily_hit_et": "2025-07-31 20:10"
+  },
+  {
+    "hit_ms": 1755860700000,
+    "session_day": "2025-08-21",
+    "weekly_type": "week_low",
+    "daily_type": "daily_low",
+    "weekly_level": 2.8174,
+    "daily_level": 2.8174,
+    "weekly_hit_et": "2025-08-22 07:05",
+    "daily_hit_et": "2025-08-22 07:05"
+  },
+  {
+    "hit_ms": 1756501200000,
+    "session_day": "2025-08-29",
+    "weekly_type": "week_low",
+    "daily_type": "daily_low",
+    "weekly_level": 2.7716,
+    "daily_level": 2.9357,
+    "weekly_hit_et": "2025-08-29 17:00",
+    "daily_hit_et": "2025-08-29 17:00"
+  },
+  {
+    "hit_ms": 1767391200000,
+    "session_day": "2026-01-02",
+    "weekly_type": "week_high",
+    "daily_type": "daily_high",
+    "weekly_level": 2.0273,
+    "daily_level": 1.8921,
+    "weekly_hit_et": "2026-01-02 17:00",
+    "daily_hit_et": "2026-01-02 17:00"
+  },
+  {
+    "hit_ms": 1769847300000,
+    "session_day": "2026-01-30",
+    "weekly_type": "week_low",
+    "daily_type": "daily_low",
+    "weekly_level": 1.7043,
+    "daily_level": 1.7043,
+    "weekly_hit_et": "2026-01-31 03:15",
+    "daily_hit_et": "2026-01-31 03:15"
+  },
+  {
+    "hit_ms": 1770242400000,
+    "session_day": "2026-02-04",
+    "weekly_type": "week_low",
+    "daily_type": "daily_low",
+    "weekly_level": 1.5009,
+    "daily_level": 1.5263,
+    "weekly_hit_et": "2026-02-04 17:00",
+    "daily_hit_et": "2026-02-04 17:00"
+  },
+  {
+    "hit_ms": 1771895700000,
+    "session_day": "2026-02-23",
+    "weekly_type": "week_low",
+    "daily_type": "daily_low",
+    "weekly_level": 1.329,
+    "daily_level": 1.329,
+    "weekly_hit_et": "2026-02-23 20:15",
+    "daily_hit_et": "2026-02-23 20:15"
+  }
+]

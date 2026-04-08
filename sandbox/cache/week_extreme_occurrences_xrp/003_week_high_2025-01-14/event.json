@@ -1,0 +1,21 @@
+{
+  "session_day": "2025-01-14",
+  "anchor_ms": 1736892000000,
+  "anchor_et": "2025-01-14 17:00",
+  "event_type": "week_high",
+  "level": 2.7012,
+  "hit_ms": 1736904000000,
+  "hit_et": "2025-01-14 20:20",
+  "minutes_to_hit": 200.0,
+  "anchor_close": 2.6745,
+  "hit_close": 2.7016,
+  "move_anchor_to_hit_pct": 1.0133,
+  "hit_candle_range": 0.024900000000000144,
+  "hit_candle_range_pct_of_level": 0.9218,
+  "hit_candle_volume": 19410587.7,
+  "hit_volume_zscore_24bars": 12.4783,
+  "forward_close": 2.7973,
+  "forward_return_pct": 3.5423,
+  "continuation_move_abs": 0.1333,
+  "continuation_move_pct_of_level": 4.9348
+}

@@ -1,0 +1,21 @@
+{
+  "session_day": "2026-02-27",
+  "anchor_ms": 1772229600000,
+  "anchor_et": "2026-02-27 17:00",
+  "event_type": "week_low",
+  "level": 1.3115,
+  "hit_ms": 1772260500000,
+  "hit_et": "2026-02-28 01:35",
+  "minutes_to_hit": 515.0,
+  "anchor_close": 1.3495,
+  "hit_close": 1.3126,
+  "move_anchor_to_hit_pct": -2.7343,
+  "hit_candle_range": 0.01749999999999985,
+  "hit_candle_range_pct_of_level": 1.3343,
+  "hit_candle_volume": 24642203.6,
+  "hit_volume_zscore_24bars": 3.3045,
+  "forward_close": 1.3187,
+  "forward_return_pct": 0.4647,
+  "continuation_move_abs": 0.0224,
+  "continuation_move_pct_of_level": 1.708
+}

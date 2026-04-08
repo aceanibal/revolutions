@@ -132,8 +132,11 @@ export function TradeDrilldownModal({
           {formatDateTime(openedAtMs)} · Close {formatDateTime(closedAtMs)}
         </div>
         <div className="sub">
-          Entry {Number(trade.entryPx || 0).toFixed(4)} · SL{" "}
-          {trade.stopLoss == null ? "--" : Number(trade.stopLoss).toFixed(4)} · TP{" "}
+          Entry {Number(trade.entryPx || 0).toFixed(4)}
+          {typeof trade.avwapAtEntry === "number" && Number.isFinite(trade.avwapAtEntry)
+            ? ` · AVWAP ${trade.avwapAtEntry.toFixed(4)}`
+            : ""}{" "}
+          · SL {trade.stopLoss == null ? "--" : Number(trade.stopLoss).toFixed(4)} · TP{" "}
           {trade.takeProfit == null ? "--" : Number(trade.takeProfit).toFixed(4)} · Exit{" "}
           {Number(trade.exitPx || 0).toFixed(4)}
         </div>

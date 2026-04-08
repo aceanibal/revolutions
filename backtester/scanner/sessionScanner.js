@@ -319,16 +319,76 @@ function computeScannerRows({
   });
 }
 
+/**
+ * Also persist the same scanner payload on the other timeframe's candle bucket:
+ * - 1m scan → duplicate onto the 5m bar open at or before the anchor (from reference 5m series).
+ * - 5m scan → duplicate onto the 1m bar at the same open time as the 5m anchor.
+ * Metrics in the mirror row are still from the primary timeframe's bar series.
+ */
+function fiveMinuteBarOpenAtOrBefore(sorted5m, anchorTsMs) {
+  if (!Array.isArray(sorted5m) || sorted5m.length === 0) return null;
+  const t = Number(anchorTsMs || 0);
+  if (!Number.isFinite(t) || t <= 0) return null;
+  const idx = rightmostIndexLE(sorted5m, t);
+  if (idx < 0) return null;
+  const open = Number(sorted5m[idx]?.timeMs || 0);
+  return Number.isFinite(open) && open > 0 ? open : null;
+}
+
+function resolveSorted5mReference(sorted5mBySymbol, symbols, preferredBtcSymbol) {
+  const normalized = (symbols || []).map((s) => normalizeSymbol(s)).filter(Boolean);
+  const btcSym = resolveBtcSymbol(normalized, preferredBtcSymbol);
+  if (btcSym && sorted5mBySymbol[btcSym]?.length) return sorted5mBySymbol[btcSym];
+  const tSym = pickTimelineSymbol(sorted5mBySymbol);
+  return tSym ? sorted5mBySymbol[tSym] || [] : [];
+}
+
+function appendDualTimeframeMirrorRows(rows, primaryTimeframe, anchorTsMs, sorted5mReference) {
+  if (!Array.isArray(rows) || rows.length === 0) return rows;
+  const primary = String(primaryTimeframe || "1m").toLowerCase();
+  if (primary !== "1m" && primary !== "5m") return rows;
+  const alternate = primary === "1m" ? "5m" : "1m";
+  let altBucket = null;
+  if (primary === "1m") {
+    altBucket = fiveMinuteBarOpenAtOrBefore(sorted5mReference, anchorTsMs);
+    if (altBucket == null) return rows;
+  } else {
+    altBucket = Number(anchorTsMs || 0);
+    if (!Number.isFinite(altBucket) || altBucket <= 0) return rows;
+  }
+
+  const mirrors = [];
+  for (const row of rows) {
+    const basePayload = row.payload && typeof row.payload === "object" ? row.payload : {};
+    mirrors.push({
+      symbol: row.symbol,
+      timeframe: alternate,
+      bucketStartMs: altBucket,
+      payload: {
+        ...basePayload,
+        timeframe: alternate,
+        anchorTsMs: altBucket,
+        computedOnTimeframe: primary
+      }
+    });
+  }
+  return [...rows, ...mirrors];
+}
+
 const UPSERT_BATCH_SIZE = 5000;
 
 function runSessionScannerAllBars(repo, options) {
   const sessionId = String(options.sessionId || "").trim();
   const timeframe = String(options.timeframe || "1m").trim().toLowerCase();
   const candlesBySymbol = options.candlesBySymbol || {};
+  const candlesBySymbol5m = options.candlesBySymbol5m || {};
   const sortedMap = sortCandlesBySymbol(candlesBySymbol);
+  const sorted5mMap = sortCandlesBySymbol(candlesBySymbol5m);
+  const preferredBtcSymbol = String(options.preferredBtcSymbol || "BTC");
+  const symbolKeys = Object.keys(sortedMap).map((value) => normalizeSymbol(value)).filter(Boolean);
+  const sorted5mRef = resolveSorted5mReference(sorted5mMap, symbolKeys, preferredBtcSymbol);
   const lookbackHours = Number(options.lookbackHours || 120);
   const currentWindowHours = Number(options.currentWindowHours || 12);
-  const preferredBtcSymbol = String(options.preferredBtcSymbol || "BTC");
   const minAlignedReturns = Number(options.minAlignedReturns || 12);
   const featureSet = String(options.featureSet || "rvol-scanner").trim();
   const featureVersion = String(options.featureVersion || "v1").trim();
@@ -374,10 +434,11 @@ function runSessionScannerAllBars(repo, options) {
     const anchorTsMs = Number(timeline[i].timeMs || 0);
     if (!Number.isFinite(anchorTsMs) || anchorTsMs <= 0) continue;
     const computed = computeScannerRowsFromSorted(sortedMap, anchorTsMs, scanOpts);
+    const rowsToSave = appendDualTimeframeMirrorRows(computed.rows, timeframe, anchorTsMs, sorted5mRef);
     anchorCount += 1;
     lastAnchor = anchorTsMs;
-    totalComputedRows += computed.rows.length;
-    batch.push(...computed.rows);
+    totalComputedRows += rowsToSave.length;
+    batch.push(...rowsToSave);
     if (batch.length >= UPSERT_BATCH_SIZE) {
       const save = repo.upsertSessionCandleFeatures({
         sessionId,
@@ -437,10 +498,14 @@ function runSessionScanner(repo, options = {}) {
   const scanMode = String(options.scanMode || "single").trim().toLowerCase();
 
   const symbols = repo.listSessionSymbols(sessionId);
-  const candlesBySymbol = {};
+  const preferredBtcSymbol = String(options.preferredBtcSymbol || "BTC");
+  const candlesBySymbol1m = {};
+  const candlesBySymbol5m = {};
   for (const symbol of symbols) {
-    candlesBySymbol[symbol] = repo.getCandles(sessionId, symbol, timeframe);
+    candlesBySymbol1m[symbol] = repo.getCandles(sessionId, symbol, "1m");
+    candlesBySymbol5m[symbol] = repo.getCandles(sessionId, symbol, "5m");
   }
+  const candlesBySymbol = timeframe === "5m" ? candlesBySymbol5m : candlesBySymbol1m;
 
   const lookbackHours = Number(options.lookbackHours || 120);
   const currentWindowHours = Number(options.currentWindowHours || 12);
@@ -450,9 +515,10 @@ function runSessionScanner(repo, options = {}) {
       sessionId,
       timeframe,
       candlesBySymbol,
+      candlesBySymbol5m,
       lookbackHours,
       currentWindowHours,
-      preferredBtcSymbol: String(options.preferredBtcSymbol || "BTC"),
+      preferredBtcSymbol,
       minAlignedReturns: Number(options.minAlignedReturns || 12),
       featureSet: String(options.featureSet || "rvol-scanner").trim(),
       featureVersion: String(options.featureVersion || "v1").trim(),
@@ -482,9 +548,19 @@ function runSessionScanner(repo, options = {}) {
     timeframe,
     lookbackHours,
     currentWindowHours,
-    preferredBtcSymbol: String(options.preferredBtcSymbol || "BTC"),
+    preferredBtcSymbol,
     minAlignedReturns: Number(options.minAlignedReturns || 12)
   });
+
+  const sorted5mMap = sortCandlesBySymbol(candlesBySymbol5m);
+  const normalizedSyms = symbols.map((s) => normalizeSymbol(s)).filter(Boolean);
+  const sorted5mRef = resolveSorted5mReference(sorted5mMap, normalizedSyms, preferredBtcSymbol);
+  const rowsWithMirror = appendDualTimeframeMirrorRows(
+    computed.rows,
+    timeframe,
+    effectiveAnchorTsMs,
+    sorted5mRef
+  );
 
   const featureSet = String(options.featureSet || "rvol-scanner").trim();
   const featureVersion = String(options.featureVersion || "v1").trim();
@@ -494,7 +570,7 @@ function runSessionScanner(repo, options = {}) {
     timeframe,
     featureSet,
     featureVersion,
-    rows: computed.rows,
+    rows: rowsWithMirror,
     createdAtMs
   });
 
@@ -507,6 +583,7 @@ function runSessionScanner(repo, options = {}) {
     anchorRequestedTsMs: resolvedAnchor.anchorRequestedTsMs,
     anchorClamped: Boolean(resolvedAnchor.anchorClamped),
     ...computed.summary,
+    computedCount: rowsWithMirror.length,
     upserted: Number(save.upserted || 0)
   };
 }
@@ -515,5 +592,7 @@ module.exports = {
   computeScannerRows,
   computeScannerRowsFromSorted,
   resolveEffectiveAnchorTsMs,
-  runSessionScanner
+  runSessionScanner,
+  appendDualTimeframeMirrorRows,
+  fiveMinuteBarOpenAtOrBefore
 };

@@ -1,0 +1,9 @@
+{
+  "weekly_event_count": 60,
+  "daily_event_count": 213,
+  "weekly_sessions": 60,
+  "daily_sessions": 208,
+  "overlap_sessions_any": 60,
+  "overlap_sessions_same_side": 60,
+  "overlap_exact_same_candle_pairs": 15
+}

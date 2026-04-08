@@ -27,6 +27,9 @@ interface ScannerWorkspaceProps {
   onScannerUseForRunsChange: (value: boolean) => void;
   onRunScanner: () => Promise<void>;
   onRefreshScannerRows: () => Promise<void>;
+  selectedSymbol: string;
+  onRunLiquidityZoneScanner: () => Promise<void>;
+  onExportLiquidityZones: () => Promise<void>;
 }
 
 function formatNumber(value: unknown, digits = 3): string {
@@ -151,6 +154,11 @@ export function ScannerWorkspace(props: ScannerWorkspaceProps) {
           <div className="sub">
             Output fields per asset: `rvol`, `currentWindowVolumeUsd`, `baselineVolumeUsd`, `btcCorr`, `price`.
           </div>
+          <div className="sub">
+            Each run also stores the same metrics on the other timeframe: 1m anchors map to the containing 5m bar
+            (using the session&apos;s 5m series); 5m anchors map to the 1m bar at that open time. Mirrored rows set
+            `payload.computedOnTimeframe` to the timeframe used for the math.
+          </div>
         </div>
         <div className="card">
           <h3>Scanner Run Summary</h3>
@@ -192,6 +200,35 @@ export function ScannerWorkspace(props: ScannerWorkspaceProps) {
           ) : (
             <div className="empty">Run scanner to generate per-asset features.</div>
           )}
+        </div>
+      </section>
+      <section className="grid2">
+        <div className="card">
+          <h3>Liquidity Zone Scanner</h3>
+          <div className="sub">
+            Computes daily highs/lows, volume profile (high-volume nodes), and swing pivots from a
+            trailing week of 5m candles. Anchors at 5 PM ET each day.
+          </div>
+          <div className="filter-row" style={{ borderBottom: "none", padding: "8px 0 0", gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => void props.onRunLiquidityZoneScanner()}
+              disabled={props.scannerRunning || !props.selectedSessionId}
+            >
+              {props.scannerRunning ? "Running..." : "Run liquidity zone scanner"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void props.onExportLiquidityZones()}
+              disabled={!props.selectedSessionId || !props.selectedSymbol}
+            >
+              Export zones + overnight 1m (JSON)
+            </button>
+          </div>
+          <div className="sub">
+            Export pairs each 5 PM snapshot with 1m candles from 5 PM → 8 AM ET
+            for the selected symbol ({props.selectedSymbol || "none"}).
+          </div>
         </div>
       </section>
       <section className="grid2">

@@ -8,7 +8,10 @@
     "server": "node server.js",
     "import": "node scripts/importSession.js",
     "import:historical": "node scripts/importHistorical.js",
+    "extend:historical-5m": "node scripts/extendHistoricalBinance5m.js",
     "list": "node scripts/listSessions.js",
+    "list:long-series": "node scripts/findLongCandleSeries.js",
+    "build:xrp-paxg-ratio": "node scripts/buildXrpPaxgRatioSession.js",
     "run": "node runner/cli.js",
     "import:scanner": "node scripts/importScannerMetadata.js",
     "run:scanner": "node scripts/runSessionScanner.js"

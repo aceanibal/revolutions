@@ -1,0 +1,666 @@
+{
+  "all_path": {
+    "combined": {
+      "label_direction": {
+        "skipped": false,
+        "n_samples": 213,
+        "label_counts": {
+          "up": 100,
+          "down": 87,
+          "flat": 26
+        },
+        "baseline_majority_label": "up",
+        "baseline_accuracy": 0.4694835680751174,
+        "baseline_weighted_f1": 0.2999895003674871,
+        "balanced_accuracy": 0.763825523135868,
+        "weighted_f1": 0.8274193154834195,
+        "labels": [
+          "down",
+          "flat",
+          "up"
+        ],
+        "confusion_matrix": [
+          [
+            71,
+            15,
+            1
+          ],
+          [
+            5,
+            16,
+            5
+          ],
+          [
+            3,
+            11,
+            86
+          ]
+        ]
+      },
+      "label_breakout": {
+        "skipped": false,
+        "n_samples": 213,
+        "label_counts": {
+          "continuation": 131,
+          "rejection": 78,
+          "indecisive": 4
+        },
+        "baseline_majority_label": "continuation",
+        "baseline_accuracy": 0.6150234741784038,
+        "baseline_weighted_f1": 0.46841904138006335,
+        "balanced_accuracy": 0.5781300972140667,
+        "weighted_f1": 0.8734217788727859,
+        "labels": [
+          "continuation",
+          "indecisive",
+          "rejection"
+        ],
+        "confusion_matrix": [
+          [
+            113,
+            8,
+            10
+          ],
+          [
+            2,
+            0,
+            2
+          ],
+          [
+            3,
+            7,
+            68
+          ]
+        ]
+      },
+      "label_return_bucket": {
+        "skipped": false,
+        "n_samples": 213,
+        "label_counts": {
+          "strong_up": 66,
+          "strong_down": 54,
+          "neutral": 93
+        },
+        "baseline_majority_label": "neutral",
+        "baseline_accuracy": 0.43661971830985913,
+        "baseline_weighted_f1": 0.26539629936481635,
+        "balanced_accuracy": 0.8591651279823322,
+        "weighted_f1": 0.8496062797450271,
+        "labels": [
+          "neutral",
+          "strong_down",
+          "strong_up"
+        ],
+        "confusion_matrix": [
+          [
+            75,
+            11,
+            7
+          ],
+          [
+            5,
+            49,
+            0
+          ],
+          [
+            8,
+            1,
+            57
+          ]
+        ]
+      }
+    },
+    "weekly_only": {
+      "label_direction": {
+        "skipped": false,
+        "n_samples": 60,
+        "label_counts": {
+          "up": 32,
+          "down": 25,
+          "flat": 3
+        },
+        "baseline_majority_label": "up",
+        "baseline_accuracy": 0.5333333333333333,
+        "baseline_weighted_f1": 0.3710144927536232,
+        "balanced_accuracy": 0.5952777777777778,
+        "weighted_f1": 0.7513004319455933,
+        "labels": [
+          "down",
+          "flat",
+          "up"
+        ],
+        "confusion_matrix": [
+          [
+            16,
+            6,
+            3
+          ],
+          [
+            1,
+            1,
+            1
+          ],
+          [
+            3,
+            3,
+            26
+          ]
+        ]
+      },
+      "label_breakout": {
+        "skipped": false,
+        "n_samples": 60,
+        "label_counts": {
+          "continuation": 31,
+          "rejection": 26,
+          "indecisive": 3
+        },
+        "baseline_majority_label": "continuation",
+        "baseline_accuracy": 0.5166666666666667,
+        "baseline_weighted_f1": 0.352014652014652,
+        "balanced_accuracy": 0.5380479735318445,
+        "weighted_f1": 0.7805555555555556,
+        "labels": [
+          "continuation",
+          "indecisive",
+          "rejection"
+        ],
+        "confusion_matrix": [
+          [
+            25,
+            3,
+            3
+          ],
+          [
+            1,
+            0,
+            2
+          ],
+          [
+            3,
+            2,
+            21
+          ]
+        ]
+      },
+      "label_return_bucket": {
+        "skipped": false,
+        "n_samples": 60,
+        "label_counts": {
+          "strong_up": 22,
+          "strong_down": 15,
+          "neutral": 23
+        },
+        "baseline_majority_label": "neutral",
+        "baseline_accuracy": 0.38333333333333336,
+        "baseline_weighted_f1": 0.21244979919678716,
+        "balanced_accuracy": 0.7120333772507687,
+        "weighted_f1": 0.7366071428571428,
+        "labels": [
+          "neutral",
+          "strong_down",
+          "strong_up"
+        ],
+        "confusion_matrix": [
+          [
+            17,
+            6,
+            0
+          ],
+          [
+            6,
+            8,
+            1
+          ],
+          [
+            2,
+            1,
+            19
+          ]
+        ]
+      }
+    },
+    "daily_only": {
+      "label_direction": {
+        "skipped": false,
+        "n_samples": 153,
+        "label_counts": {
+          "down": 62,
+          "up": 68,
+          "flat": 23
+        },
+        "baseline_majority_label": "up",
+        "baseline_accuracy": 0.4444444444444444,
+        "baseline_weighted_f1": 0.27350427350427353,
+        "balanced_accuracy": 0.7464386876770344,
+        "weighted_f1": 0.8046245158106295,
+        "labels": [
+          "down",
+          "flat",
+          "up"
+        ],
+        "confusion_matrix": [
+          [
+            50,
+            10,
+            2
+          ],
+          [
+            7,
+            13,
+            3
+          ],
+          [
+            3,
+            6,
+            59
+          ]
+        ]
+      },
+      "label_breakout": {
+        "skipped": false,
+        "n_samples": 153,
+        "label_counts": {
+          "rejection": 52,
+          "continuation": 100,
+          "indecisive": 1
+        },
+        "baseline_majority_label": "continuation",
+        "baseline_accuracy": 0.6535947712418301,
+        "baseline_weighted_f1": 0.5166757084915653,
+        "balanced_accuracy": 0.6115384615384615,
+        "weighted_f1": 0.9246888034945973,
+        "labels": [
+          "continuation",
+          "indecisive",
+          "rejection"
+        ],
+        "confusion_matrix": [
+          [
+            95,
+            0,
+            5
+          ],
+          [
+            0,
+            0,
+            1
+          ],
+          [
+            4,
+            2,
+            46
+          ]
+        ]
+      },
+      "label_return_bucket": {
+        "skipped": false,
+        "n_samples": 153,
+        "label_counts": {
+          "strong_down": 39,
+          "strong_up": 44,
+          "neutral": 70
+        },
+        "baseline_majority_label": "neutral",
+        "baseline_accuracy": 0.45751633986928103,
+        "baseline_weighted_f1": 0.28722998915560244,
+        "balanced_accuracy": 0.8773948273948274,
+        "weighted_f1": 0.8687795663875099,
+        "labels": [
+          "neutral",
+          "strong_down",
+          "strong_up"
+        ],
+        "confusion_matrix": [
+          [
+            58,
+            5,
+            7
+          ],
+          [
+            5,
+            34,
+            0
+          ],
+          [
+            3,
+            0,
+            41
+          ]
+        ]
+      }
+    }
+  },
+  "predictive": {
+    "combined": {
+      "label_direction": {
+        "skipped": false,
+        "n_samples": 213,
+        "label_counts": {
+          "up": 100,
+          "down": 87,
+          "flat": 26
+        },
+        "baseline_majority_label": "up",
+        "baseline_accuracy": 0.4694835680751174,
+        "baseline_weighted_f1": 0.2999895003674871,
+        "balanced_accuracy": 0.41126436781609194,
+        "weighted_f1": 0.4006923405602347,
+        "labels": [
+          "down",
+          "flat",
+          "up"
+        ],
+        "confusion_matrix": [
+          [
+            36,
+            29,
+            22
+          ],
+          [
+            4,
+            13,
+            9
+          ],
+          [
+            31,
+            37,
+            32
+          ]
+        ]
+      },
+      "label_breakout": {
+        "skipped": false,
+        "n_samples": 213,
+        "label_counts": {
+          "continuation": 131,
+          "rejection": 78,
+          "indecisive": 4
+        },
+        "baseline_majority_label": "continuation",
+        "baseline_accuracy": 0.6150234741784038,
+        "baseline_weighted_f1": 0.46841904138006335,
+        "balanced_accuracy": 0.3462027794088863,
+        "weighted_f1": 0.43625627737708783,
+        "labels": [
+          "continuation",
+          "indecisive",
+          "rejection"
+        ],
+        "confusion_matrix": [
+          [
+            63,
+            10,
+            58
+          ],
+          [
+            0,
+            1,
+            3
+          ],
+          [
+            43,
+            11,
+            24
+          ]
+        ]
+      },
+      "label_return_bucket": {
+        "skipped": false,
+        "n_samples": 213,
+        "label_counts": {
+          "strong_up": 66,
+          "strong_down": 54,
+          "neutral": 93
+        },
+        "baseline_majority_label": "neutral",
+        "baseline_accuracy": 0.43661971830985913,
+        "baseline_weighted_f1": 0.26539629936481635,
+        "balanced_accuracy": 0.4526266246696354,
+        "weighted_f1": 0.46334245289265735,
+        "labels": [
+          "neutral",
+          "strong_down",
+          "strong_up"
+        ],
+        "confusion_matrix": [
+          [
+            48,
+            24,
+            21
+          ],
+          [
+            15,
+            25,
+            14
+          ],
+          [
+            20,
+            21,
+            25
+          ]
+        ]
+      }
+    },
+    "weekly_only": {
+      "label_direction": {
+        "skipped": false,
+        "n_samples": 60,
+        "label_counts": {
+          "up": 32,
+          "down": 25,
+          "flat": 3
+        },
+        "baseline_majority_label": "up",
+        "baseline_accuracy": 0.5333333333333333,
+        "baseline_weighted_f1": 0.3710144927536232,
+        "balanced_accuracy": 0.40069444444444446,
+        "weighted_f1": 0.4590125276344878,
+        "labels": [
+          "down",
+          "flat",
+          "up"
+        ],
+        "confusion_matrix": [
+          [
+            10,
+            4,
+            11
+          ],
+          [
+            1,
+            1,
+            1
+          ],
+          [
+            10,
+            7,
+            15
+          ]
+        ]
+      },
+      "label_breakout": {
+        "skipped": false,
+        "n_samples": 60,
+        "label_counts": {
+          "continuation": 31,
+          "rejection": 26,
+          "indecisive": 3
+        },
+        "baseline_majority_label": "continuation",
+        "baseline_accuracy": 0.5166666666666667,
+        "baseline_weighted_f1": 0.352014652014652,
+        "balanced_accuracy": 0.3749655362558588,
+        "weighted_f1": 0.4029121376811594,
+        "labels": [
+          "continuation",
+          "indecisive",
+          "rejection"
+        ],
+        "confusion_matrix": [
+          [
+            15,
+            5,
+            11
+          ],
+          [
+            1,
+            1,
+            1
+          ],
+          [
+            17,
+            1,
+            8
+          ]
+        ]
+      },
+      "label_return_bucket": {
+        "skipped": false,
+        "n_samples": 60,
+        "label_counts": {
+          "strong_up": 22,
+          "strong_down": 15,
+          "neutral": 23
+        },
+        "baseline_majority_label": "neutral",
+        "baseline_accuracy": 0.38333333333333336,
+        "baseline_weighted_f1": 0.21244979919678716,
+        "balanced_accuracy": 0.4455862977602108,
+        "weighted_f1": 0.45,
+        "labels": [
+          "neutral",
+          "strong_down",
+          "strong_up"
+        ],
+        "confusion_matrix": [
+          [
+            9,
+            7,
+            7
+          ],
+          [
+            6,
+            6,
+            3
+          ],
+          [
+            8,
+            2,
+            12
+          ]
+        ]
+      }
+    },
+    "daily_only": {
+      "label_direction": {
+        "skipped": false,
+        "n_samples": 153,
+        "label_counts": {
+          "down": 62,
+          "up": 68,
+          "flat": 23
+        },
+        "baseline_majority_label": "up",
+        "baseline_accuracy": 0.4444444444444444,
+        "baseline_weighted_f1": 0.27350427350427353,
+        "balanced_accuracy": 0.3663682864450128,
+        "weighted_f1": 0.40552885828331015,
+        "labels": [
+          "down",
+          "flat",
+          "up"
+        ],
+        "confusion_matrix": [
+          [
+            31,
+            10,
+            21
+          ],
+          [
+            6,
+            6,
+            11
+          ],
+          [
+            20,
+            25,
+            23
+          ]
+        ]
+      },
+      "label_breakout": {
+        "skipped": false,
+        "n_samples": 153,
+        "label_counts": {
+          "rejection": 52,
+          "continuation": 100,
+          "indecisive": 1
+        },
+        "baseline_majority_label": "continuation",
+        "baseline_accuracy": 0.6535947712418301,
+        "baseline_weighted_f1": 0.5166757084915653,
+        "balanced_accuracy": 0.35717948717948717,
+        "weighted_f1": 0.5685105398463911,
+        "labels": [
+          "continuation",
+          "indecisive",
+          "rejection"
+        ],
+        "confusion_matrix": [
+          [
+            61,
+            2,
+            37
+          ],
+          [
+            1,
+            0,
+            0
+          ],
+          [
+            26,
+            2,
+            24
+          ]
+        ]
+      },
+      "label_return_bucket": {
+        "skipped": false,
+        "n_samples": 153,
+        "label_counts": {
+          "strong_down": 39,
+          "strong_up": 44,
+          "neutral": 70
+        },
+        "baseline_majority_label": "neutral",
+        "baseline_accuracy": 0.45751633986928103,
+        "baseline_weighted_f1": 0.28722998915560244,
+        "balanced_accuracy": 0.4577422577422578,
+        "weighted_f1": 0.4609536152243506,
+        "labels": [
+          "neutral",
+          "strong_down",
+          "strong_up"
+        ],
+        "confusion_matrix": [
+          [
+            32,
+            20,
+            18
+          ],
+          [
+            10,
+            18,
+            11
+          ],
+          [
+            15,
+            9,
+            20
+          ]
+        ]
+      }
+    }
+  }
+}

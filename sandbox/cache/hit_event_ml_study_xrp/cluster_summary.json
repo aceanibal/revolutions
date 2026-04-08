@@ -1,0 +1,132 @@
+{
+  "k": 4,
+  "clusters": {
+    "0": {
+      "count": 137,
+      "event_type_counts": {
+        "week_high": 13,
+        "week_low": 11,
+        "daily_low": 69,
+        "daily_high": 44
+      },
+      "source_counts": {
+        "weekly": 24,
+        "daily": 113
+      },
+      "avg_end_ret_pct": 0.3795298319638855,
+      "avg_max_up_pct": 2.310144939914348,
+      "avg_max_down_pct": 2.4880905837355045,
+      "avg_realized_vol_pct": 3.0645703021142006,
+      "direction_counts": {
+        "up": 66,
+        "down": 58,
+        "flat": 13
+      },
+      "breakout_counts": {
+        "continuation": 94,
+        "indecisive": 2,
+        "rejection": 41
+      },
+      "return_bucket_counts": {
+        "strong_up": 44,
+        "strong_down": 37,
+        "neutral": 56
+      }
+    },
+    "1": {
+      "count": 18,
+      "event_type_counts": {
+        "week_high": 3,
+        "week_low": 5,
+        "daily_high": 6,
+        "daily_low": 4
+      },
+      "source_counts": {
+        "weekly": 8,
+        "daily": 10
+      },
+      "avg_end_ret_pct": 0.5516116111949301,
+      "avg_max_up_pct": 1.7333899232861685,
+      "avg_max_down_pct": 1.264108097001446,
+      "avg_realized_vol_pct": 1.77739870436108,
+      "direction_counts": {
+        "down": 5,
+        "up": 8,
+        "flat": 5
+      },
+      "breakout_counts": {
+        "rejection": 10,
+        "continuation": 8
+      },
+      "return_bucket_counts": {
+        "strong_down": 5,
+        "strong_up": 4,
+        "neutral": 9
+      }
+    },
+    "2": {
+      "count": 42,
+      "event_type_counts": {
+        "week_high": 7,
+        "week_low": 16,
+        "daily_high": 9,
+        "daily_low": 10
+      },
+      "source_counts": {
+        "weekly": 23,
+        "daily": 19
+      },
+      "avg_end_ret_pct": 0.41625960776973203,
+      "avg_max_up_pct": 2.104344950262297,
+      "avg_max_down_pct": 2.0734036980198858,
+      "avg_realized_vol_pct": 2.6714362226101986,
+      "direction_counts": {
+        "down": 16,
+        "up": 22,
+        "flat": 4
+      },
+      "breakout_counts": {
+        "rejection": 22,
+        "continuation": 19,
+        "indecisive": 1
+      },
+      "return_bucket_counts": {
+        "strong_down": 10,
+        "strong_up": 16,
+        "neutral": 16
+      }
+    },
+    "3": {
+      "count": 16,
+      "event_type_counts": {
+        "week_high": 4,
+        "week_low": 1,
+        "daily_high": 7,
+        "daily_low": 4
+      },
+      "source_counts": {
+        "weekly": 5,
+        "daily": 11
+      },
+      "avg_end_ret_pct": -0.11114619577730585,
+      "avg_max_up_pct": 0.8409226743479875,
+      "avg_max_down_pct": 0.7156978981085257,
+      "avg_realized_vol_pct": 0.890484233442044,
+      "direction_counts": {
+        "down": 8,
+        "up": 4,
+        "flat": 4
+      },
+      "breakout_counts": {
+        "rejection": 5,
+        "continuation": 10,
+        "indecisive": 1
+      },
+      "return_bucket_counts": {
+        "strong_down": 2,
+        "neutral": 12,
+        "strong_up": 2
+      }
+    }
+  }
+}

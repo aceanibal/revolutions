@@ -15,6 +15,7 @@ const {
   deleteHistoricalSession
 } = require("./import/historicalImporter");
 const { runSessionScanner } = require("./scanner/sessionScanner");
+const { runLiquidityZoneScanner, buildLiquidityZoneExport } = require("./scanner/liquidityZoneScanner");
 
 const PORT = Number.parseInt(process.env.BACKTESTER_PORT || "3001", 10) || 3001;
 const BACKTEST_SQLITE_PATH =
@@ -289,6 +290,46 @@ app.post("/api/backtest/scanner/run", (req, res) => {
     return res.json({ ok: true, result });
   } catch (error) {
     return res.status(500).json({ ok: false, message: error.message || "Failed to run scanner" });
+  }
+});
+
+app.post("/api/backtest/scanner/liquidity-zones/run", (req, res) => {
+  const sessionId = String(req.body?.sessionId || "").trim();
+  if (!sessionId) return res.status(400).json({ ok: false, message: "sessionId is required" });
+  try {
+    const result = runLiquidityZoneScanner(repo, {
+      sessionId,
+      featureSet: String(req.body?.featureSet || "liquidity-zones").trim(),
+      featureVersion: String(req.body?.featureVersion || "v1").trim(),
+      lookbackDays: Number(req.body?.lookbackDays || 7),
+      numBins: Number(req.body?.numBins || 50),
+      swingLeftBars: Number(req.body?.swingLeftBars || 5),
+      swingRightBars: Number(req.body?.swingRightBars || 5),
+      hvnStdDevMultiplier: Number(req.body?.hvnStdDevMultiplier || 1.0),
+      anchorHHMM: Number(req.body?.anchorHHMM || 1700)
+    });
+    return res.json({ ok: true, result });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error.message || "Failed to run liquidity zone scanner" });
+  }
+});
+
+app.get("/api/backtest/sessions/:id/liquidity-zones/export", (req, res) => {
+  const sessionId = String(req.params?.id || "").trim();
+  if (!sessionId) return res.status(400).json({ ok: false, message: "Missing session id" });
+  const symbol = normalizeSymbol(req.query?.symbol || "");
+  if (!symbol) return res.status(400).json({ ok: false, message: "symbol query param is required" });
+  try {
+    const payload = buildLiquidityZoneExport(repo, {
+      sessionId,
+      symbol,
+      featureSet: String(req.query?.featureSet || "liquidity-zones").trim(),
+      featureVersion: String(req.query?.featureVersion || "v1").trim(),
+      maxSnapshots: req.query?.maxSnapshots == null ? 60 : Number(req.query.maxSnapshots)
+    });
+    return res.json({ ok: true, ...payload });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error.message || "Failed to build liquidity zone export" });
   }
 });
 

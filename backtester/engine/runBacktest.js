@@ -25,6 +25,13 @@ function chartAlignedTimeMs(event) {
   return Number(event.ts || 0);
 }
 
+/** ORB AVWAP strategies pass `meta.anchoredVwap` on enter; expose on closed trades for exports. */
+function avwapAtEntryFromEnterMeta(meta) {
+  if (meta == null || typeof meta !== "object") return null;
+  const v = Number(meta.anchoredVwap);
+  return Number.isFinite(v) ? v : null;
+}
+
 function filterEventsByMarketDay(events = [], params = {}) {
   const ignoreWeekends = Boolean(params.ignoreWeekends);
   const ignoreUsHolidays = Boolean(params.ignoreUsHolidays);
@@ -216,6 +223,7 @@ function runBacktest({
         openedAtMs: tradeTimeMsForAction,
         stopLoss: Number(action.stopLoss ?? NaN),
         takeProfit: Number(action.takeProfit ?? NaN),
+        avwapAtEntry: avwapAtEntryFromEnterMeta(action.meta),
         scannerFeaturesAtEntry: cloneJsonSafe(lastScannerFeatures)
       };
       if (debugLogsEnabled) {
@@ -238,6 +246,7 @@ function runBacktest({
         pnl,
         stopLoss: Number.isFinite(position.stopLoss) ? position.stopLoss : null,
         takeProfit: Number.isFinite(position.takeProfit) ? position.takeProfit : null,
+        avwapAtEntry: position.avwapAtEntry ?? null,
         tradingDayEt: getEtDayKey(position.openedAtMs),
         scannerAtEntry: position.scannerFeaturesAtEntry ?? null,
         scannerAtExit: cloneJsonSafe(lastScannerFeatures)
@@ -272,6 +281,7 @@ function runBacktest({
       pnl,
       stopLoss: Number.isFinite(position.stopLoss) ? position.stopLoss : null,
       takeProfit: Number.isFinite(position.takeProfit) ? position.takeProfit : null,
+      avwapAtEntry: position.avwapAtEntry ?? null,
       tradingDayEt: getEtDayKey(position.openedAtMs),
       scannerAtEntry: position.scannerFeaturesAtEntry ?? null,
       scannerAtExit: cloneJsonSafe(lastScannerFeatures)

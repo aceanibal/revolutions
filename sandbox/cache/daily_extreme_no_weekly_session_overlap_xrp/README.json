@@ -1,0 +1,8 @@
+{
+  "description": "Daily extreme events excluding any session_day that has a weekly extreme hit",
+  "daily_events_total": 213,
+  "daily_events_removed": 60,
+  "daily_events_remaining": 153,
+  "weekly_events_unchanged": 60,
+  "weekly_session_days": 60
+}
