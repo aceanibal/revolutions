@@ -1,0 +1,36 @@
+{
+  "run_id": "run_v1_20260409_134859",
+  "db": "/Users/anibalperez/revolutions/backtester/data/backtest.sqlite",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "XRPUSDT",
+    "SOLUSDT",
+    "LINKUSDT"
+  ],
+  "start_utc": "2022-01-01",
+  "end_utc": "(auto latest)",
+  "chunk": "monthly",
+  "rsi_l": 35,
+  "rsi_h": 60,
+  "sl_n": 2,
+  "entry_tp_r": 5.0,
+  "fee_bps": 3.0,
+  "tp_sweep": [
+    12.0,
+    13.0,
+    14.0
+  ],
+  "mfe_ladder": [
+    [
+      1.0,
+      0.8
+    ],
+    [
+      6.5,
+      5.5
+    ]
+  ],
+  "script": "scripts/massive_chunk_backtest_5m.py",
+  "variant": "v1_two_stage_mfe"
+}

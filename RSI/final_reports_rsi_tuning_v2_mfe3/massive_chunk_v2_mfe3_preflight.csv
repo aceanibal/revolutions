@@ -1,0 +1,2 @@
+symbol,first_ts_utc,last_ts_utc,n_candles,n_in_window,ok,notes
+XRPUSDT,2022-01-01 00:00:00+00:00,2026-03-01 00:00:00+00:00,436321,8928,True,
