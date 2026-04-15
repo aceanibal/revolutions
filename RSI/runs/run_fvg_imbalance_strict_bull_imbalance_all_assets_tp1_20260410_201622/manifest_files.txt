@@ -1,0 +1,5 @@
+artifacts/REPORT.md
+artifacts/monthly.csv
+artifacts/summary.csv
+artifacts/trades.csv
+run_config.json

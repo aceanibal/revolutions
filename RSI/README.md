@@ -117,3 +117,28 @@ The scripts in this folder load 5m candles from that DB, then resample to 4h for
 
 - This folder is a packaged snapshot of relevant scripts + outputs.
 - You can rerun simulations from here, but outputs still depend on data in the shared DB path above.
+
+## Sequencer study webapp (`webapp/`)
+
+This folder now includes a standalone React app for visual study of sequencer runs.
+
+- Location: `RSI/webapp`
+- Start:
+  - `cd RSI/webapp`
+  - `npm install`
+  - `npm run dev:api` (terminal 1)
+  - `npm run dev` (terminal 2)
+- Build check:
+  - `npm run build`
+
+### What it does
+
+- Auto-discovers runs from `RSI/runs`.
+- Reads TP files from `trades/trade_details_v1_tp*.csv`.
+- Reads SQLite from backend default path (`backtester/data/backtest.sqlite`), or override with env var `RSI_WEBAPP_DB_PATH`.
+- The API uses **better-sqlite3** (native, read-only) so very large DB files work; it does **not** load the whole file into memory (unlike sql.js’s ~2 GiB limit). **4h** responses are built with SQL aggregation over historical 5m bars, not by pulling every 5m row into the server for that request.
+- Shows:
+  - left panel with all trades
+  - 4h overview chart with entry markers
+  - 4h RSI panel
+  - 5m detail chart for clicked trade with SL/MFE1/LOCK1/MFE2/LOCK2/TP levels

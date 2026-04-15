@@ -1,0 +1,2 @@
+rsi_period,rsi_l,rsi_h,sl_n,tp_r,mfe1,lock1,mfe2,lock2,total_trades,managed_total_r,baseline_total_r,delta_m_minus_b,weighted_win_pct,max_asset_dd_r
+7,30,70,2,0.7,1.0,0.8,6.5,5.5,12,-7.733515546027595,-7.733515546027595,0.0,25.0,6.702025750109228

@@ -1,0 +1,31 @@
+{
+  "run_id": "run_v1fix_single_BTCUSDT_20260409_161518",
+  "db": "/Users/anibalperez/revolutions/backtester/data/backtest.sqlite",
+  "symbols": [
+    "BTCUSDT"
+  ],
+  "start_utc": "2025-01-01",
+  "end_utc": "2025-02-01",
+  "chunk": "monthly",
+  "rsi_l": 40,
+  "rsi_h": 65,
+  "sl_n": 2,
+  "entry_tp_r": 5.0,
+  "fee_bps": 3.0,
+  "tp_sweep": [
+    8.0
+  ],
+  "mfe_ladder": [
+    [
+      0.9,
+      0.7
+    ],
+    [
+      6.5,
+      5.5
+    ]
+  ],
+  "skip_entry_bucket_hours": 0.0,
+  "script": "scripts/massive_chunk_backtest_5m_v1fix.py",
+  "variant": "v1fix_single_symbol_two_stage_mfe_samebar_lock"
+}

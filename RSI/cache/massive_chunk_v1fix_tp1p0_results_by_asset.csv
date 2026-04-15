@@ -1,0 +1,2 @@
+symbol,n_trades,n_chunks_with_trades,baseline_total_r,managed_total_r,baseline_delta_r,win_pct,max_dd_r,avg_hold_h
+XRPUSDT,64,21,-3.4348234329027383,-0.23482343290273988,3.1999999999999984,56.25,5.640861062581783,13.1875

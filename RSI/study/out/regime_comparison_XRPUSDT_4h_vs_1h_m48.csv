@@ -1,0 +1,5 @@
+regime,time_share_4h,occurrences_4h,avg_bars_4h,median_bars_4h,avg_days_4h,time_share_1h,occurrences_1h,avg_bars_1h,median_bars_1h,avg_days_1h,avg_hours_4h,avg_hours_1h,duration_ratio_1h_vs_4h_hours,occurrence_ratio_1h_vs_4h
+BALANCE,0.7699,589,11.42,5.0,1.9,0.7689,2417,11.13,5.0,0.46,45.68,11.13,0.243651,4.103565
+HIGH_VOL,0.0394,257,1.34,1.0,0.22,0.0367,921,1.4,1.0,0.06,5.36,1.4,0.261194,3.583658
+IMBALANCE,0.1504,327,4.02,2.0,0.67,0.1551,1258,4.31,2.0,0.18,16.08,4.31,0.268035,3.847095
+LOW_VOL,0.0403,233,1.51,1.0,0.25,0.0393,980,1.4,1.0,0.06,6.04,1.4,0.231788,4.206009

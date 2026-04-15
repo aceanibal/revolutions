@@ -242,6 +242,7 @@ def process_symbol(
     lock1: float,
     mfe2: float,
     lock2: float,
+    skip_entry_bucket_hours: float,
     write_ledger: bool,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[dict]]:
     """
@@ -283,6 +284,7 @@ def process_symbol(
             fee_bps,
             be_trigger_r=None,
             be_offset_r=0.0,
+            skip_entry_bucket_hours=skip_entry_bucket_hours,
         )
         mfe = replay_trade_mfe_ladder_5m(
             df5,
@@ -295,6 +297,7 @@ def process_symbol(
             fee_bps,
             stages=stages,
             cap_lock_by_mfe=True,
+            skip_entry_bucket_hours=skip_entry_bucket_hours,
         )
         if mfe is None or base is None:
             continue
@@ -400,6 +403,7 @@ def run_all_symbols(
     lock1: float,
     mfe2: float,
     lock2: float,
+    skip_entry_bucket_hours: float,
     write_ledger: bool,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[dict]]:
     all_chunks: list[pd.DataFrame] = []
@@ -427,6 +431,7 @@ def run_all_symbols(
             lock1=lock1,
             mfe2=mfe2,
             lock2=lock2,
+            skip_entry_bucket_hours=skip_entry_bucket_hours,
             write_ledger=write_ledger,
         )
         if len(ch_df) > 0:
@@ -633,6 +638,13 @@ def main() -> None:
     ap.add_argument("--lock1", type=float, default=0.8)
     ap.add_argument("--mfe2", type=float, default=6.5)
     ap.add_argument("--lock2", type=float, default=5.5)
+    ap.add_argument(
+        "--skip-entry-bucket-hours",
+        type=float,
+        default=0.0,
+        help="Hours to skip after 4h entry before 5m replay starts. "
+        "Use 0 to enforce SL/TP/MFE from entry; legacy behavior was 4.",
+    )
     ap.add_argument("--write-ledgers", action="store_true", help="Write per-symbol ledger CSVs.")
     ap.add_argument("--preflight-only", action="store_true")
     ap.add_argument("--report-only", action="store_true", help="Rebuild markdown from existing CSVs.")
@@ -676,7 +688,8 @@ def main() -> None:
                     "4h RSI cross entries; structural SL; 5m replay (V1, 2-stage MFE ladder)",
                     f"Engine fee {args.fee_bps} bps RT; entry list TP={args.entry_tp_r}R",
                     f"Replay TP={args.tp_r}R; MFE ladder mfe1/lock1={args.mfe1}/{args.lock1}, "
-                    f"mfe2/lock2={args.mfe2}/{args.lock2} (cap_lock_by_mfe=True)",
+                    f"mfe2/lock2={args.mfe2}/{args.lock2} (cap_lock_by_mfe=True); "
+                    f"skip_entry_bucket_hours={args.skip_entry_bucket_hours}",
                 ],
                 quarterly_by_asset=qba,
                 report_path=report_tp,
@@ -711,7 +724,8 @@ def main() -> None:
                 "4h RSI cross entries; structural SL; 5m replay",
                 f"Engine fee {args.fee_bps} bps RT; entry list TP={args.entry_tp_r}R",
                 f"Replay TP={args.tp_r}R; MFE ladder mfe1/lock1={args.mfe1}/{args.lock1}, "
-                f"mfe2/lock2={args.mfe2}/{args.lock2} (cap_lock_by_mfe=True)",
+                f"mfe2/lock2={args.mfe2}/{args.lock2} (cap_lock_by_mfe=True); "
+                f"skip_entry_bucket_hours={args.skip_entry_bucket_hours}",
             ],
             quarterly_by_asset=qba,
         )
@@ -771,6 +785,7 @@ def main() -> None:
                 lock1=args.lock1,
                 mfe2=args.mfe2,
                 lock2=args.lock2,
+                skip_entry_bucket_hours=args.skip_entry_bucket_hours,
                 write_ledger=args.write_ledgers,
             )
             results.to_csv(results_csv, index=False)
@@ -798,6 +813,7 @@ def main() -> None:
                     lock1=args.lock1,
                     mfe2=args.mfe2,
                     lock2=args.lock2,
+                    skip_entry_bucket_hours=args.skip_entry_bucket_hours,
                     write_ledger=False,
                 )
                 q_res.to_csv(results_q_csv, index=False)
@@ -830,7 +846,7 @@ def main() -> None:
                         f"RSI {args.rsi_l}/{args.rsi_h}, SL_N={args.sl_n}, engine fee {args.fee_bps} bps RT",
                         f"Trade list from engine at TP={args.entry_tp_r}R; replay TP={tp_r}R",
                         f"MFE ladder (V1): ({args.mfe1}R → {args.lock1}R), ({args.mfe2}R → {args.lock2}R); "
-                        "cap_lock_by_mfe=True",
+                        f"cap_lock_by_mfe=True; skip_entry_bucket_hours={args.skip_entry_bucket_hours}",
                     ],
                     quarterly_by_asset=quarterly_by_asset,
                     report_path=report_tp,
@@ -874,6 +890,7 @@ def main() -> None:
         lock1=args.lock1,
         mfe2=args.mfe2,
         lock2=args.lock2,
+        skip_entry_bucket_hours=args.skip_entry_bucket_hours,
         write_ledger=args.write_ledgers,
     )
     results.to_csv(RESULTS_CSV, index=False)
@@ -901,6 +918,7 @@ def main() -> None:
             lock1=args.lock1,
             mfe2=args.mfe2,
             lock2=args.lock2,
+            skip_entry_bucket_hours=args.skip_entry_bucket_hours,
             write_ledger=False,
         )
         q_res.to_csv(RESULTS_QUARTERLY_CSV, index=False)
@@ -930,7 +948,8 @@ def main() -> None:
                 "4h RSI cross entries; structural SL; 5m replay (wick order, stop updates next bar open)",
                 f"RSI {args.rsi_l}/{args.rsi_h}, SL_N={args.sl_n}, engine fee {args.fee_bps} bps RT",
                 f"Trade list from engine at TP={args.entry_tp_r}R; replay TP={args.tp_r}R",
-                f"MFE ladder: ({args.mfe1}R → {args.lock1}R), ({args.mfe2}R → {args.lock2}R); cap_lock_by_mfe=True",
+                f"MFE ladder: ({args.mfe1}R → {args.lock1}R), ({args.mfe2}R → {args.lock2}R); "
+                f"cap_lock_by_mfe=True; skip_entry_bucket_hours={args.skip_entry_bucket_hours}",
             ],
             quarterly_by_asset=quarterly_by_asset,
         )

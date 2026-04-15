@@ -1,0 +1,41 @@
+{
+  "run_id": "run_v1fix_20260409_181647",
+  "db": "/Users/anibalperez/revolutions/backtester/data/backtest.sqlite",
+  "symbols": [
+    "XRPUSDT_PER_PAXGUSDT"
+  ],
+  "start_utc": "2025-03-28",
+  "end_utc": "2026-03-01",
+  "chunk": "monthly",
+  "rsi_l": 40,
+  "rsi_h": 70,
+  "rsi_window": 28,
+  "sl_n": 4,
+  "entry_tp_r": 5.0,
+  "fee_bps": 3.0,
+  "tp_sweep": [
+    2.0,
+    3.0,
+    4.0,
+    5.0,
+    6.0,
+    7.0,
+    8.0,
+    10.0,
+    12.0,
+    14.0
+  ],
+  "mfe_ladder": [
+    [
+      1.5,
+      1.0
+    ],
+    [
+      5.0,
+      4.0
+    ]
+  ],
+  "skip_entry_bucket_hours": 0.0,
+  "script": "scripts/massive_chunk_backtest_5m_v1fix.py",
+  "variant": "v1fix_two_stage_mfe_samebar_lock"
+}

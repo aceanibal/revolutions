@@ -66,6 +66,7 @@ def export_trade_details(
     lock1: float,
     mfe2: float,
     lock2: float,
+    skip_entry_bucket_hours: float,
     out_dir: Path,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -105,6 +106,7 @@ def export_trade_details(
                     fee_bps,
                     be_trigger_r=None,
                     be_offset_r=0.0,
+                    skip_entry_bucket_hours=skip_entry_bucket_hours,
                 )
                 mfe = replay_trade_mfe_ladder_5m(
                     df5,
@@ -117,6 +119,7 @@ def export_trade_details(
                     fee_bps,
                     stages=stages,
                     cap_lock_by_mfe=True,
+                    skip_entry_bucket_hours=skip_entry_bucket_hours,
                 )
                 if mfe is None or base is None:
                     continue
@@ -177,6 +180,7 @@ def main() -> None:
     ap.add_argument("--lock1", type=float, default=0.8)
     ap.add_argument("--mfe2", type=float, default=6.5)
     ap.add_argument("--lock2", type=float, default=5.5)
+    ap.add_argument("--skip-entry-bucket-hours", type=float, default=0.0)
     args = ap.parse_args()
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
@@ -204,6 +208,7 @@ def main() -> None:
         "fee_bps": args.fee_bps,
         "tp_sweep": tp_levels,
         "mfe_ladder": [(args.mfe1, args.lock1), (args.mfe2, args.lock2)],
+        "skip_entry_bucket_hours": args.skip_entry_bucket_hours,
         "script": "scripts/massive_chunk_backtest_5m.py",
         "variant": "v1_two_stage_mfe",
     }
@@ -244,6 +249,8 @@ def main() -> None:
         str(args.mfe2),
         "--lock2",
         str(args.lock2),
+        "--skip-entry-bucket-hours",
+        str(args.skip_entry_bucket_hours),
         "--write-ledgers",
         "--no-also-quarterly",
     ]
@@ -292,6 +299,7 @@ def main() -> None:
         lock1=args.lock1,
         mfe2=args.mfe2,
         lock2=args.lock2,
+        skip_entry_bucket_hours=args.skip_entry_bucket_hours,
         out_dir=trades_dir,
     )
 

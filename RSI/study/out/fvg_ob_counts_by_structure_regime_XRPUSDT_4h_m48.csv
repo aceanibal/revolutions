@@ -1,0 +1,9 @@
+event_type,event_side,structure_regime,count
+FVG,bearish,BALANCE,577
+FVG,bearish,IMBALANCE,127
+FVG,bullish,BALANCE,551
+FVG,bullish,IMBALANCE,130
+ORDER_BLOCK_PROXY,bearish,BALANCE,201
+ORDER_BLOCK_PROXY,bearish,IMBALANCE,51
+ORDER_BLOCK_PROXY,bullish,BALANCE,142
+ORDER_BLOCK_PROXY,bullish,IMBALANCE,46

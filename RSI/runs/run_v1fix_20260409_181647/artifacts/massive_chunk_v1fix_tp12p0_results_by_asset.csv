@@ -1,0 +1,2 @@
+symbol,n_trades,n_chunks_with_trades,baseline_total_r,managed_total_r,baseline_delta_r,win_pct,max_dd_r,avg_hold_h
+XRPUSDT_PER_PAXGUSDT,62,11,-14.499226769709924,-23.49922676970992,-8.999999999999996,32.25806451612903,24.387702611902466,5.741935483870967

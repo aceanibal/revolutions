@@ -1,0 +1,8 @@
+artifacts/REPORT.md
+artifacts/monthly.csv
+artifacts/summary.csv
+artifacts/trades.csv
+run_config.json
+trades/replay_audit_v1fix.csv
+trades/trade_details_v1fix_all_tp.csv
+trades/trade_details_v1fix_tp4p0.csv

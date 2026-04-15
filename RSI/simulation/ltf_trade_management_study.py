@@ -362,6 +362,7 @@ def replay_trade_5m(
     *,
     be_trigger_r: float | None,
     be_offset_r: float,
+    skip_entry_bucket_hours: float = 4.0,
 ) -> ReplayResult | None:
     """
     Walk forward on 5m bars from entry_ts. If be_trigger_r is None, only fixed SL/TP.
@@ -374,8 +375,9 @@ def replay_trade_5m(
     if len(df5) == 0 or risk <= 0:
         return None
 
-    # First exit in the engine is on the 4h bar after entry; skip 5m bars inside the entry 4h bucket.
-    entry_end = entry_ts + pd.Timedelta(hours=4)
+    # Optionally skip initial management window (legacy behavior used 4h).
+    # Setting skip_entry_bucket_hours=0.0 starts 5m replay from the entry timestamp.
+    entry_end = entry_ts + pd.Timedelta(hours=skip_entry_bucket_hours)
     d = df5.loc[df5.index >= entry_end]
     if len(d) == 0:
         return None

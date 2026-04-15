@@ -1,0 +1,41 @@
+{
+  "run_id": "run_rsi_4h_20260413_032605",
+  "strategy_id": "rsi_4h",
+  "strategy_version": "1.0",
+  "db_path": "/Users/anibalperez/revolutions/backtester/data/backtest.sqlite",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "XRPUSDT",
+    "SOLUSDT",
+    "LINKUSDT"
+  ],
+  "start_utc": "2022-01-01",
+  "end_utc": "(auto latest)",
+  "fee_bps": 3.0,
+  "params": {
+    "rsi_l": 35,
+    "rsi_h": 60,
+    "rsi_window": 20,
+    "sl_n": 2,
+    "entry_tp_r": 5.0,
+    "tp_sweep": [
+      12.0
+    ],
+    "stages": [
+      [
+        1.0,
+        0.8
+      ],
+      [
+        6.5,
+        5.5
+      ]
+    ],
+    "skip_entry_bucket_h": 4.0
+  },
+  "created_at": "2026-04-13T03:26:43.890045+00:00",
+  "tp_sweep": [
+    12.0
+  ]
+}

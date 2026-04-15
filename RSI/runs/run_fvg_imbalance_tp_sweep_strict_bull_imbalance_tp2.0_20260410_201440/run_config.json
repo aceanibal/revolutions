@@ -1,0 +1,18 @@
+{
+  "run_id": "run_fvg_imbalance_tp_sweep_strict_bull_imbalance_tp2.0_20260410_201440",
+  "script": "scripts/run_fvg_imbalance_strategy.py",
+  "variant": "bullish_fvg_stop_anchor_in_imbalance",
+  "db": "/Users/anibalperez/revolutions/backtester/data/backtest.sqlite",
+  "symbol": "XRPUSDT",
+  "months": 48,
+  "tf": "1h",
+  "atr_period": 14,
+  "lookback": 20,
+  "min_gap_bps": 5.0,
+  "disp_quantile": 0.85,
+  "disp_lookback": 120,
+  "tp_r": 2.0,
+  "max_hold_bars_5m": 576,
+  "fee_bps": 3.0,
+  "allow_overlap": false
+}

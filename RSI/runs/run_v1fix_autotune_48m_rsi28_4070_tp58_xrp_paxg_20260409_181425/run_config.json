@@ -1,0 +1,34 @@
+{
+  "run_id": "run_v1fix_autotune_48m_rsi28_4070_tp58_xrp_paxg_20260409_181425",
+  "variant": "v1fix_compact_autotune",
+  "script": "scripts/autotune_v1fix_compact.py",
+  "db": "/Users/anibalperez/revolutions/backtester/data/backtest.sqlite",
+  "symbols": [
+    "XRPUSDT_PER_PAXGUSDT"
+  ],
+  "horizon_months": 48,
+  "start_utc": "2022-03-01T00:05:00+00:00",
+  "end_utc": "2026-03-01T00:05:00+00:00",
+  "resolved_window_start_utc": "2022-03-01T00:05:00+00:00",
+  "resolved_window_end_utc": "2026-03-01T00:05:00+00:00",
+  "rsi_period_grid": [
+    28
+  ],
+  "rsi_combos": "40:70",
+  "stage1_combos": "1.5:1.0",
+  "stage2_combos": "5.0:4.0",
+  "tp_grid": [
+    5.0,
+    8.0
+  ],
+  "sl_grid": [
+    4
+  ],
+  "mfe2": 5.0,
+  "lock2": 4.0,
+  "entry_tp_r": 5.0,
+  "fee_bps": 3.0,
+  "skip_entry_bucket_hours": 0.0,
+  "force_managed_equal_baseline": false,
+  "out_prefix": ""
+}

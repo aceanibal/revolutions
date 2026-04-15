@@ -1,0 +1,13 @@
+event_type,event_side,regime_bias,count
+FVG,bearish,bearish,1494
+FVG,bearish,bullish,608
+FVG,bearish,neutral,543
+FVG,bullish,bullish,1295
+FVG,bullish,bearish,712
+FVG,bullish,neutral,580
+ORDER_BLOCK_PROXY,bearish,bearish,468
+ORDER_BLOCK_PROXY,bearish,bullish,333
+ORDER_BLOCK_PROXY,bearish,neutral,190
+ORDER_BLOCK_PROXY,bullish,bullish,396
+ORDER_BLOCK_PROXY,bullish,bearish,283
+ORDER_BLOCK_PROXY,bullish,neutral,139

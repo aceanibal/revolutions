@@ -1,0 +1,5 @@
+regime,time_share,occurrences,avg_bars,median_bars,avg_days
+BALANCE,0.7689,2417,11.13,5.0,0.46
+IMBALANCE,0.1551,1258,4.31,2.0,0.18
+HIGH_VOL,0.0367,921,1.4,1.0,0.06
+LOW_VOL,0.0393,980,1.4,1.0,0.06

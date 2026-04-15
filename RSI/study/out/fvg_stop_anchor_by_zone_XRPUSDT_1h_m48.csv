@@ -1,0 +1,5 @@
+event_side,premium_discount_zone,n,mean_r,win_rate
+bearish,discount,814,0.014742014742014743,0.2972972972972973
+bearish,premium,58,0.05172413793103448,0.3275862068965517
+bullish,discount,20,-0.25,0.25
+bullish,premium,710,-0.002816901408450733,0.29295774647887324

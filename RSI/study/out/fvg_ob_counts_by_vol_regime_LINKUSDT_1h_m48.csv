@@ -1,0 +1,11 @@
+event_type,event_side,vol_regime,count
+FVG,bearish,NORMAL_VOL,2472
+FVG,bearish,HIGH_VOL,271
+FVG,bearish,LOW_VOL,106
+FVG,bullish,NORMAL_VOL,2642
+FVG,bullish,HIGH_VOL,178
+FVG,bullish,LOW_VOL,96
+ORDER_BLOCK_PROXY,bearish,NORMAL_VOL,729
+ORDER_BLOCK_PROXY,bearish,HIGH_VOL,196
+ORDER_BLOCK_PROXY,bullish,NORMAL_VOL,915
+ORDER_BLOCK_PROXY,bullish,HIGH_VOL,85

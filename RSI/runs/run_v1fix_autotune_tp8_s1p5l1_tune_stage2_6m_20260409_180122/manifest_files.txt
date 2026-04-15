@@ -1,0 +1,5 @@
+artifacts/FINAL_V1FIX_AUTOTUNE_COMPACT.md
+artifacts/v1fix_autotune_compact_grid.csv
+artifacts/v1fix_autotune_compact_summary.csv
+run_config.json
+trades/README.md

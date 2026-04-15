@@ -1,0 +1,10 @@
+artifacts/FINAL_MASSIVE_CHUNK_BACKTEST_V1FIX_tp8p0.md
+artifacts/massive_chunk_v1fix_preflight.csv
+artifacts/massive_chunk_v1fix_tp8p0_ledger_BTCUSDT.csv
+artifacts/massive_chunk_v1fix_tp8p0_results.csv
+artifacts/massive_chunk_v1fix_tp8p0_results_by_asset.csv
+artifacts/massive_chunk_v1fix_tp_sweep_summary.csv
+run_config.json
+trades/replay_audit_v1fix.csv
+trades/trade_details_v1fix_all_tp.csv
+trades/trade_details_v1fix_tp8p0.csv

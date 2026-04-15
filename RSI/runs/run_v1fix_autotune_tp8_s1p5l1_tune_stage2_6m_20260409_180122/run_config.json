@@ -1,0 +1,35 @@
+{
+  "run_id": "run_v1fix_autotune_tp8_s1p5l1_tune_stage2_6m_20260409_180122",
+  "variant": "v1fix_compact_autotune",
+  "script": "scripts/autotune_v1fix_compact.py",
+  "db": "/Users/anibalperez/revolutions/backtester/data/backtest.sqlite",
+  "symbols": [
+    "XRPUSDT",
+    "ETHUSDT",
+    "LINKUSDT"
+  ],
+  "horizon_months": 6,
+  "start_utc": "2025-09-01T00:05:00+00:00",
+  "end_utc": "2026-03-01T00:05:00+00:00",
+  "resolved_window_start_utc": "2025-09-01T00:05:00+00:00",
+  "resolved_window_end_utc": "2026-03-01T00:05:00+00:00",
+  "rsi_period_grid": [
+    7
+  ],
+  "rsi_combos": "35:60",
+  "stage1_combos": "1.5:1.0",
+  "stage2_combos": "5:4,6:5,6.5:5.5,8:6.5,10:8,12:9",
+  "tp_grid": [
+    8.0
+  ],
+  "sl_grid": [
+    4
+  ],
+  "mfe2": 6.5,
+  "lock2": 5.5,
+  "entry_tp_r": 5.0,
+  "fee_bps": 3.0,
+  "skip_entry_bucket_hours": 0.0,
+  "force_managed_equal_baseline": false,
+  "out_prefix": ""
+}

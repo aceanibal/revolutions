@@ -1,0 +1,2 @@
+symbol,first_ts_utc,last_ts_utc,n_candles,n_in_window,ok,notes
+XRPUSDT_PER_PAXGUSDT,2025-03-27 10:30:00+00:00,2026-03-01 00:00:00+00:00,97507,97506,False,data starts 2025-03-27 10:30:00+00:00 (after 2022-03-01 00:00:00+00:00)

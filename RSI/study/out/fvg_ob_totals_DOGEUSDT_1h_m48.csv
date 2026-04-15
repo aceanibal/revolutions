@@ -1,0 +1,5 @@
+event_type,event_side,count
+FVG,bearish,2677
+FVG,bullish,2626
+ORDER_BLOCK_PROXY,bearish,937
+ORDER_BLOCK_PROXY,bullish,883

@@ -1,0 +1,42 @@
+{
+  "run_id": "run_v1fix_autotune_fixed40_70_tp071714_4y_20260409_170652",
+  "variant": "v1fix_compact_autotune",
+  "script": "scripts/autotune_v1fix_compact.py",
+  "db": "/Users/anibalperez/revolutions/backtester/data/backtest.sqlite",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "XRPUSDT",
+    "SOLUSDT",
+    "LINKUSDT"
+  ],
+  "horizon_months": 48,
+  "start_utc": "2022-03-01T00:05:00+00:00",
+  "end_utc": "2026-03-01T00:05:00+00:00",
+  "resolved_window_start_utc": "2022-03-01T00:05:00+00:00",
+  "resolved_window_end_utc": "2026-03-01T00:05:00+00:00",
+  "rsi_period_grid": [
+    7,
+    14,
+    21,
+    28
+  ],
+  "rsi_combos": "40:70",
+  "stage1_combos": "1.0:0.8",
+  "tp_grid": [
+    0.7,
+    1.0,
+    7.0,
+    14.0
+  ],
+  "sl_grid": [
+    2
+  ],
+  "mfe2": 6.5,
+  "lock2": 5.5,
+  "entry_tp_r": 5.0,
+  "fee_bps": 3.0,
+  "skip_entry_bucket_hours": 0.0,
+  "force_managed_equal_baseline": true,
+  "out_prefix": ""
+}
