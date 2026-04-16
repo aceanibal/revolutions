@@ -1,0 +1,2 @@
+n_trades,win_pct,avg_r,median_r,total_r,best_r,worst_r,maxDD_r,mcl,baseline_total_r,saved_r,sl_hits,be_hits,tp_hits
+1190,24.71,0.5156,-1.0085,613.59,19.49,-1.76,50.53,36,700.59,-87.0,896,59,235

@@ -1,0 +1,4 @@
+label,n,win_pct,total_r,avg_r,maxDD_r,sl,tp,be
+FVG-only (live S3),226,29.65,142.27,0.6295,9.67,159,67,0
+"No FVG filter (ATR stop, all BAL shorts)",1078,22.73,193.57,0.1796,43.6,833,245,0
+Δ FVG filter impact (total_R_A − total_R_C),-852,0.0,-51.3,0.0,0.0,0,0,0

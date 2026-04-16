@@ -1,0 +1,85 @@
+{
+  "run_id": "run_all_streams_20260416T151625Z",
+  "generated_utc": "2026-04-16T15:18:58.887524+00:00",
+  "db": "/Users/anibalperez/revolutions/RSI/data/backtest.sqlite",
+  "script": "lab/run_all_streams.py",
+  "locked_config": {
+    "start_utc": "2022-01-01",
+    "fee_bps": 3.0,
+    "s1_symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "XRPUSDT",
+      "SOLUSDT",
+      "LINKUSDT"
+    ],
+    "sx_symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "LINKUSDT",
+      "DOGEUSDT",
+      "XRPUSDT"
+    ],
+    "s1": {
+      "regime": "IMBALANCED+HIGH (4h RSI)",
+      "rsi_l": 35,
+      "rsi_h": 60,
+      "sl_n": 3,
+      "entry_tp_r": 5.0,
+      "tp_r": 13.0,
+      "stages": [
+        [
+          1.0,
+          0.8
+        ],
+        [
+          6.5,
+          5.5
+        ],
+        [
+          10.0,
+          9.0
+        ]
+      ]
+    },
+    "s2": {
+      "regime": "BALANCED+HIGH short, FVG filter",
+      "vol_ratio_min": 1.5,
+      "body_pct_min": 0.55,
+      "close_pct_max": 0.15,
+      "atr_mult": 2.0,
+      "buf_mult": 0.15,
+      "tp_r": 4.25
+    },
+    "s3": {
+      "regime": "IMBALANCED+HIGH short, ATR stop",
+      "vol_ratio_min": 1.8,
+      "body_pct_min": 0.55,
+      "close_pct_max": 0.15,
+      "atr_mult": 2.0,
+      "tp_r": 5.0
+    },
+    "s4": {
+      "regime": "BALANCED+HIGH long, equal-lows sweep",
+      "lookback": 50,
+      "tolerance": 0.005,
+      "min_swing": 5,
+      "rejection_min": 0.9,
+      "atr_mult": 2.0,
+      "trig_r": 3.5,
+      "lock_r": 1.0,
+      "tp_r": 19.5
+    }
+  },
+  "data_window": {
+    "start_utc": "2022-01-01"
+  },
+  "trade_count": 2703,
+  "signal_counts_by_stream": {
+    "S1": 1513,
+    "S3": 631,
+    "S2": 285,
+    "S4": 274
+  }
+}

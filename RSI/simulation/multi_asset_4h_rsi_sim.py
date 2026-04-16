@@ -10,7 +10,7 @@ import pandas as pd
 from ta.momentum import RSIIndicator
 import itertools
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "backtester", "data", "backtest.sqlite")
+DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "backtest.sqlite")
 
 def list_sessions_with_symbol(db_path: str, symbol: str) -> list[tuple[str, int]]:
     conn = sqlite3.connect(db_path)

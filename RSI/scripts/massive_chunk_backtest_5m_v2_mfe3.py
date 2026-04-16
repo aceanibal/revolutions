@@ -570,7 +570,7 @@ def write_report(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Massive 5m chunk backtest (MFE lock + baseline).")
+    ap = argparse.ArgumentParser(description="Massive 5m chunk backtest (single-TP run by default).")
     ap.add_argument("--db", default=DB_PATH, help="Path to backtest.sqlite")
     ap.add_argument(
         "--symbols",
@@ -591,8 +591,18 @@ def main() -> None:
     ap.add_argument("--sl-n", type=int, default=3)
     ap.add_argument("--entry-tp-r", type=float, default=5.0, help="TP (R) for trade generation only.")
     ap.add_argument("--fee-bps", type=float, default=3.0)
-    ap.add_argument("--tp-r", type=float, default=13.0, help="Replay TP anchor in R.")
-    ap.add_argument("--tp-sweep", type=str, default="12,13,14", help="Comma-separated TP values in R.")
+    ap.add_argument("--tp-r", type=float, default=13.0, help="Replay TP in R (standard: one TP per run).")
+    ap.add_argument(
+        "--tp-sweep",
+        type=str,
+        default="",
+        help="Experimental only. Comma-separated TP values in R.",
+    )
+    ap.add_argument(
+        "--allow-tp-sweep",
+        action="store_true",
+        help="Enable experimental TP sweep mode. Default run mode is single TP.",
+    )
     ap.add_argument("--mfe1", type=float, default=1.0)
     ap.add_argument("--lock1", type=float, default=0.8)
     ap.add_argument("--mfe2", type=float, default=6.5)
@@ -637,7 +647,7 @@ def main() -> None:
             strategy_lines=[
                 "4h RSI cross entries; structural SL; 5m replay with 3-stage MFE ladder",
                 f"Engine fee {args.fee_bps} bps RT; entry list TP={args.entry_tp_r}R",
-                f"Replay TP sweep around 13R={args.tp_sweep}; anchor={args.tp_r}R",
+                f"Replay TP={args.tp_r}R (single TP run mode)",
                 f"MFE ladder mfe1/lock1={args.mfe1}/{args.lock1}, mfe2/lock2={args.mfe2}/{args.lock2}, "
                 f"mfe3/lock3={args.mfe3}/{args.lock3} (cap_lock_by_mfe=True)",
             ],
@@ -683,7 +693,15 @@ def main() -> None:
         stages.append((args.mfe3, args.lock3))
     stages = sorted(stages, key=lambda x: x[0])
 
-    tp_levels = parse_float_grid(args.tp_sweep) if args.tp_sweep.strip() else [float(args.tp_r)]
+    if args.tp_sweep.strip():
+        if not args.allow_tp_sweep:
+            raise SystemExit(
+                "TP sweep is disabled by default. Run one TP per run with --tp-r, "
+                "or pass --allow-tp-sweep explicitly for experimental sweeps."
+            )
+        tp_levels = parse_float_grid(args.tp_sweep)
+    else:
+        tp_levels = [float(args.tp_r)]
     summary_rows: list[dict] = []
     for tp_r in tp_levels:
         print(f"=== Running TP={tp_r}R (v2_mfe3) ===")
@@ -778,7 +796,7 @@ def main() -> None:
             }
         )
 
-    if summary_rows:
+    if summary_rows and len(tp_levels) > 1:
         summary_df = pd.DataFrame(summary_rows).sort_values("tp_r")
         summary_path = os.path.join(CACHE_DIR, "massive_chunk_v2_mfe3_tp_sweep_summary.csv")
         summary_df.to_csv(summary_path, index=False)

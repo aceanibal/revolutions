@@ -1,0 +1,4 @@
+label,n,win_pct,total_r,avg_r,maxDD_r,sl,tp,be
+FVG-only (live S2),285,28.07,164.46,0.577,10.41,205,80,0
+"No FVG filter (ATR stop, all signals)",1400,23.0,271.23,0.1937,44.33,1078,322,0
+Δ FVG filter impact (total_R_A − total_R_C),-1115,0.0,-106.77,0.0,0.0,0,0,0

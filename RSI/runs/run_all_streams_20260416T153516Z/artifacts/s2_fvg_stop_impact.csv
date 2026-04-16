@@ -1,0 +1,4 @@
+label,n,win_pct,total_r,avg_r,maxDD_r,sl,tp,be
+FVG-LOW stop (live S2),285,28.07,164.46,0.577,10.41,205,80,0
+ATR x2 stop (same signals),285,29.82,157.58,0.5529,12.61,200,85,0
+Δ FVG stop saves (total_R_A − total_R_B),285,0.0,6.87,0.0241,0.0,0,0,0

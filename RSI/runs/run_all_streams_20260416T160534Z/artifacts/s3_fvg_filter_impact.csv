@@ -1,0 +1,4 @@
+label,n,win_pct,total_r,avg_r,maxDD_r,sl,tp,be
+FVG-only (live S3),225,22.22,23.86,0.1061,32.27,175,50,0
+"No FVG filter (ATR stop, all IMBAL shorts)",631,23.3,132.42,0.2099,30.44,484,147,0
+Δ FVG filter impact (total_R_A − total_R_C),-406,0.0,-108.56,0.0,0.0,0,0,0

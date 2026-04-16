@@ -1,0 +1,65 @@
+{
+  "run_id": "run_all_streams_20260416T153516Z",
+  "generated_utc": "2026-04-16T15:37:22.332310+00:00",
+  "db": "/Users/anibalperez/revolutions/RSI/data/backtest.sqlite",
+  "script": "lab/run_all_streams.py",
+  "locked_config": {
+    "start_utc": "2022-01-01",
+    "fee_bps": 3.0,
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "LINKUSDT",
+      "DOGEUSDT",
+      "XRPUSDT"
+    ],
+    "s1": {
+      "regime": "IMBALANCED+HIGH long, bullish momentum continuation",
+      "vol_ratio_min": 1.8,
+      "body_pct_min": 0.55,
+      "close_pct_max": 0.15,
+      "atr_mult": 2.0,
+      "tp_r": 12.0
+    },
+    "s2": {
+      "regime": "BALANCED+HIGH short, FVG filter",
+      "vol_ratio_min": 1.5,
+      "body_pct_min": 0.55,
+      "close_pct_max": 0.15,
+      "atr_mult": 2.0,
+      "buf_mult": 0.15,
+      "tp_r": 4.25
+    },
+    "s3": {
+      "regime": "IMBALANCED+HIGH short, ATR stop",
+      "vol_ratio_min": 1.8,
+      "body_pct_min": 0.55,
+      "close_pct_max": 0.15,
+      "atr_mult": 2.0,
+      "tp_r": 5.0
+    },
+    "s4": {
+      "regime": "BALANCED+HIGH long, equal-lows sweep",
+      "lookback": 50,
+      "tolerance": 0.005,
+      "min_swing": 5,
+      "rejection_min": 0.9,
+      "atr_mult": 2.0,
+      "trig_r": 3.5,
+      "lock_r": 1.0,
+      "tp_r": 19.5
+    }
+  },
+  "data_window": {
+    "start_utc": "2022-01-01",
+    "end_utc": "2026-03-01 00:00:00+00:00"
+  },
+  "signal_counts": {
+    "S1": 778,
+    "S2": 285,
+    "S3": 631,
+    "S4": 274
+  },
+  "trade_count": 1968
+}

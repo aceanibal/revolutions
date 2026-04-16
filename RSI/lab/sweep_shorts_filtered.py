@@ -36,7 +36,7 @@ REPO_ROOT = LAB_ROOT.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-DEFAULT_DB = str(REPO_ROOT.parent / "backtester" / "data" / "backtest.sqlite")
+DEFAULT_DB = str(REPO_ROOT / "data" / "backtest.sqlite")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────

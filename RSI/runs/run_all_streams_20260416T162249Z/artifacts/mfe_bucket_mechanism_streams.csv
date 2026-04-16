@@ -1,0 +1,20 @@
+variant,mfe_bucket,n,win_pct,avg_r,total_r
+S3 (FVG stop),0-1R,96,0.0,-0.876,-84.08
+S3 (FVG stop),1-2R,39,0.0,-0.843,-32.86
+S3 (FVG stop),2-3.5R,17,0.0,-0.98,-16.67
+S3 (FVG stop),3.5-6.5R,71,90.14,3.707,263.18
+S3 (FVG stop),6.5-10R,3,100.0,4.232,12.7
+S4 baseline (no lock),<=0R,4,0.0,-1.014,-4.06
+S4 baseline (no lock),0-1R,125,0.0,-1.016,-127.04
+S4 baseline (no lock),1-2R,38,0.0,-1.018,-38.68
+S4 baseline (no lock),2-3.5R,26,0.0,-1.015,-26.39
+S4 baseline (no lock),3.5-6.5R,40,12.5,1.548,61.91
+S4 baseline (no lock),6.5-10R,12,25.0,4.106,49.28
+S4 baseline (no lock),>10R,29,82.76,15.946,462.44
+S4 managed (BE lock),<=0R,4,0.0,-1.014,-4.06
+S4 managed (BE lock),0-1R,125,0.0,-1.016,-127.04
+S4 managed (BE lock),1-2R,38,0.0,-1.018,-38.68
+S4 managed (BE lock),2-3.5R,26,0.0,-1.015,-26.39
+S4 managed (BE lock),3.5-6.5R,40,100.0,0.985,39.41
+S4 managed (BE lock),6.5-10R,12,100.0,0.981,11.78
+S4 managed (BE lock),>10R,29,100.0,15.015,435.44

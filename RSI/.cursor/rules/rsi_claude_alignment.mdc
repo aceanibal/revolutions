@@ -1,0 +1,35 @@
+---
+description: Enforce RSI CLAUDE.md project rules
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+# RSI Rule Alignment
+
+Treat `CLAUDE.md` as the project source of truth for agent behavior.
+
+## Required startup reads
+
+1. Read `memory/MEMORY.md`, then read each memory file listed there.
+2. Read `lab/sim/rules.py` before writing any simulation code.
+3. Follow the run contract in `memory/run_definition.md`.
+
+## Run contract
+
+- One run = one TP (`tp_r`), one config, one window, one symbol set.
+- TP sweep is not standard behavior.
+- If TP changes, create a new run.
+
+## Project boundaries
+
+- Use only project-local paths under `RSI/` for memory, data, scripts, and output.
+- Use `data/backtest.sqlite` as the default DB path.
+- Keep active work in canonical folders (`lab/`, `scripts/`, `simulation/`, `cache/`, `memory/`).
+- Treat `deprecated/` as archived-only unless explicitly asked to restore.
+
+## Strategy constraints
+
+- BAL+MED is rejected; do not include in new studies.
+- Respect one-position-per-symbol and EXIT-time chunk assignment.
+- Follow S1-S4 canonical stream definitions in `CLAUDE.md` and `memory/project_live_streams.md`.
