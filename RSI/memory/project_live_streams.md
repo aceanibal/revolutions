@@ -105,13 +105,33 @@ consistent across streams).
 
 ---
 
+## Stream 5 — IMBAL+HIGH Short (bearish momentum continuation)
+
+See `strategy/S5_imbal_high_short.md` for the authoritative spec.
+
+**Regime:** structure=IMBALANCED, vol_q=HIGH
+**Signal:** bearish momentum candle (vol_ratio>1.8, body_pct>0.55, close_pct<0.15) —
+  short-side mirror of S1. Entry at next 1h bar open.
+**Stop:** fixed ATR×2.0 above entry. No lock, no ladder.
+**Config:** TP=5R
+**Reference stats (combined 6 symbols, 2022-start):**
+- n=631 signals (~147/yr)
+- ann_R: ~37/yr
+- win%: 21.1%
+- maxDD: ~67R (combined)
+- Calmar: ~0.55
+**Signal collector:** `lab/study_imbalanced_trend.py::collect_imbalanced_signals` (side=-1)
+**Replay:** `lab/study_imbalanced_trend.py::replay_trend` (atr_mult=2.0, tp_r=5.0, fixed)
+
+---
+
 ## Regime Coverage Map
 
 ```
               SHORT                       LONG
               LOW   MED   HIGH            LOW   MED   HIGH
 BALANCED       ⬜    ⬜   ✅ S2, S3(FVG)    ❌    ❌    ✅ S4 (swing low)
-IMBALANCED     ⬜    ⬜   ⬜                ❌    ❌    ✅ S1
+IMBALANCED     ⬜    ⬜   ✅ S5             ❌    ❌    ✅ S1
 ```
 
 Legend: ✅ live  ❌ rejected  ⬜ untested

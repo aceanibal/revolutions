@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-run_all_streams.py — Locked, single-TP master runner for S1-S4.
+run_all_streams.py — Locked, single-TP master runner for S1-S5 with M1+M3 mitigations.
 
 Runs every confirmed live stream on all available 5m/1h data with fully
 locked parameters (no sweeps, no optional flags) and emits an immutable
@@ -11,31 +11,41 @@ run folder following memory/run_definition.md:
         trades/
             trades_all.csv                  # one row per executed trade (all streams)
         artifacts/
-            summary_total.csv               # portfolio-level totals
-            summary_by_stream.csv           # per-stream totals
-            summary_by_year.csv             # exit-year × portfolio
-            summary_by_stream_year.csv      # exit-year × stream
-            summary_by_asset.csv            # symbol × portfolio
-            summary_by_stream_asset.csv     # symbol × stream
+            summary_total.csv               # portfolio-level totals (R)
+            summary_by_stream.csv           # per-stream totals (R)
+            summary_by_year.csv             # exit-year × portfolio (R)
+            summary_by_stream_year.csv      # exit-year × stream (R)
+            summary_by_asset.csv            # symbol × portfolio (R)
+            summary_by_stream_asset.csv     # symbol × stream (R)
             saved_r_by_stream.csv           # managed vs baseline deltas
             mfe_buckets_by_stream.csv       # win/R by MFE reached
             exit_reason_by_stream.csv       # SL / BE / TP mix
             equity_by_stream.csv            # running cum-R per stream
+            risk_sizing.csv                 # per-stream risk % config
+            portfolio_equity.csv            # daily dollar equity curve ($10k start)
+            portfolio_trades.csv            # all trades enriched with dollar fields
+
         report.md                           # readable overview
 
-Configs are sourced from CLAUDE.md "Confirmed Live Streams" and match
-lab/run_portfolio.py exactly. One TP per stream. No TP sweeps.
+Configs are sourced from CLAUDE.md "Confirmed Live Streams".
+One TP per stream. No TP sweeps.
 
 Each trade is replayed TWICE:
-    managed  = current stream rules (S4 BE-lock, S1/S2/S3 fixed)
+    managed  = current stream rules (S4 BE-lock, S1/S2/S3/S5 fixed)
     baseline = same entry, fixed stop, no management
 
 saved_r = managed_r - baseline_r  (how much R the stop-management rules
 rescued from losers or captured from reversals).
 
 MFE (max favorable excursion in R) is measured independently from the 5m
-bars between entry and the managed exit so we can bucket win-rates by how
-far the trade ran before the managed exit fired.
+bars between entry and the managed exit.
+
+Portfolio simulation ($10k):
+    risk_pct = TARGET_DD_PCT / stream_maxDD_r   (target: each stream hits ≤35% DD)
+    dollar_risk  = balance_at_entry × risk_pct
+    dollar_pnl   = dollar_risk × managed_r
+    balance compounded: applied at exit_ts, sorted chronologically.
+    Concurrent positions each use their own balance_at_entry snapshot.
 """
 from __future__ import annotations
 
@@ -62,6 +72,53 @@ from lab.study_swing_low_sweep import collect_sweep_signals  # noqa: E402
 from lab.study_order_blocks import stop_fvg, risk_std  # noqa: E402
 from lab.sim.entry import tp_price_from_r  # noqa: E402
 from lab.sim.exit import replay_trade_5m  # noqa: E402
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Portfolio simulation constants.
+# ────────────────────────────────────────────────────────────────────────────
+
+PORTFOLIO_START_BALANCE = 10_000.0   # USD
+TARGET_DD_PCT = 35.0                 # target each stream's maxDD ≈ 35% of account
+
+# Reference maxDD_r per stream (from confirmed run / strategy spec files).
+# Used to derive base risk_pct = TARGET_DD_PCT / maxDD_r.
+# Source: strategy/S*.md reference stats.
+STREAM_MAXDD_R: dict[str, float] = {
+    "S1": 70.27,   # strategy/S1 — runs/run_all_streams_20260416T153516Z
+    "S2": 12.7,    # strategy/S2 — cache/shorts_filtered_sweep.csv
+    "S3": 10.3,    # strategy/S3 — cache/fvg_lock_sweep.csv baseline
+    "S4": 21.67,   # strategy/S4 — runs/run_all_streams_20260416T153516Z
+    "S5": 67.1,    # strategy/S5 — chat-history combined reference
+}
+
+# ── Active mitigations (M1 + M3) ─────────────────────────────────────────────
+# Derived from lab/analyze_mitigations.py post-hoc analysis on run 20260417.
+# Full analysis: runs/run_all_streams_20260417T010915Z/artifacts/mitigation_analysis.md
+#
+# M3 — Halve S2 risk% (1.378% instead of 2.756%).
+#   Rationale: S2 drives the largest single-stream contribution to portfolio
+#   maxDD due to its high signal count (1,910 trades). Halving its risk%
+#   reduces S2's dollar impact while retaining full signal coverage.
+#   Effect: 62% DD reduction at 1.8× efficiency (best single ratio).
+#
+# M1 — Daily −5% loss cap.
+#   Rationale: S2 can fire 10–20 cluster signals in a single session.
+#   When that session reverses, every signal stops out simultaneously,
+#   creating a single-day loss far exceeding the intended per-trade risk.
+#   The daily cap stops accepting new entries once the day's P&L drops
+#   below −5% of that day's opening balance.
+#   Effect: ~510 entries skipped over 4 years (~120/yr, ~10/month).
+
+# M3: S2 risk% halved — applied directly to STREAM_RISK_PCT
+STREAM_RISK_PCT: dict[str, float] = {
+    s: round(TARGET_DD_PCT / dd, 4) for s, dd in STREAM_MAXDD_R.items()
+}
+RISK_PCT_S2_BASE = STREAM_RISK_PCT["S2"]                          # pre-M3 reference
+STREAM_RISK_PCT["S2"] = round(STREAM_RISK_PCT["S2"] / 2.0, 4)   # M3 applied
+
+# M1: daily loss cap threshold (% of day-open balance)
+DAILY_LOSS_CAP_PCT: float = -5.0
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -120,6 +177,22 @@ S4 = dict(
     tp_r=19.5,
 )
 
+# S5 — IMBAL+HIGH Short (bearish momentum continuation).
+# Short-side counterpart to S1. Same regime/filters but side=-1.
+# Signal: collect_imbalanced_signals short side (side=-1):
+#   structure=IMBALANCED, vol_q=HIGH, bearish candle with body_pct>0.55,
+#   close_pct<0.15 (close near low), vol_ratio>1.8.
+# Stop: ATR×2.0 fixed (no lock, no ladder).
+# TP:   5R — historically optimal for IMBAL+HIGH short trend-follow.
+# Reference (chat history, combined 6 symbols): 631 signals / 21.1% win /
+#   +158.7R / ann≈37R/yr / maxDD≈67R.
+S5 = dict(
+    regime="IMBALANCED+HIGH short, bearish momentum continuation",
+    vol_ratio_min=1.8, body_pct_min=0.55, close_pct_max=0.15,
+    atr_mult=2.0,
+    tp_r=5.0,
+)
+
 LOCKED_CONFIG = dict(
     start_utc=START_UTC,
     fee_bps=FEE_BPS,
@@ -128,6 +201,7 @@ LOCKED_CONFIG = dict(
     s2=S2,
     s3=S3,
     s4=S4,
+    s5=S5,
 )
 
 
@@ -209,6 +283,31 @@ def _collect_s3(df1h: pd.DataFrame, sym: str) -> list[dict]:
     return sigs
 
 
+def _collect_s5(df1h: pd.DataFrame, sym: str) -> list[dict]:
+    """IMBAL+HIGH bearish momentum continuation (short side of collect_imbalanced_signals)."""
+    raw = collect_imbalanced_signals(
+        df1h, sym,
+        vol_ratio_min=S5["vol_ratio_min"],
+        body_pct_min=S5["body_pct_min"],
+        close_pct_max=S5["close_pct_max"],
+    )
+    sigs: list[dict] = []
+    for s in raw:
+        if s["side"] != -1:
+            continue
+        entry_p = s["entry_p"]
+        risk = s["atr"] * S5["atr_mult"]
+        if risk <= 0:
+            continue
+        stop_p = entry_p + risk      # short: stop above entry
+        sigs.append(dict(
+            stream="S5", sym=sym, side=-1,
+            ts=s["ts"], entry_p=entry_p,
+            stop_p=stop_p, risk=risk, tp_r=S5["tp_r"],
+        ))
+    return sigs
+
+
 def _collect_s4(df1h: pd.DataFrame, sym: str) -> list[dict]:
     raw = collect_sweep_signals(
         df1h, sym,
@@ -258,7 +357,7 @@ def _replay_managed(sig: dict, df5: pd.DataFrame) -> ManagedResult | None:
             be_trigger_r=S4["trig_r"], be_offset_r=S4["lock_r"],
             skip_entry_bucket_hours=0.0,
         )
-    else:  # S1, S2, S3 — fixed SL/TP, no stop management
+    else:  # S1, S2, S3, S5 — fixed SL/TP, no stop management
         res = replay_trade_5m(
             df5, sig["ts"], side, entry_p, stop_p, tp_p,
             risk, FEE_BPS, be_trigger_r=None, be_offset_r=0.0,
@@ -475,6 +574,236 @@ def _equity_by_stream(df: pd.DataFrame) -> pd.DataFrame:
 # Main.
 # ────────────────────────────────────────────────────────────────────────────
 
+# ────────────────────────────────────────────────────────────────────────────
+# Portfolio simulation — dollar compounding from a $10k starting balance.
+# ────────────────────────────────────────────────────────────────────────────
+
+def _apply_daily_loss_cap(
+    df: pd.DataFrame,
+    cap_pct: float = DAILY_LOSS_CAP_PCT,
+) -> tuple[pd.DataFrame, set[int]]:
+    """
+    M1 — Daily loss cap filter.
+
+    Simulates entry acceptance sequentially. When a new entry event fires,
+    the cumulative intraday P&L (from exits that occurred earlier that day)
+    is checked against cap_pct% of the day's opening balance. If the cap
+    has already been hit, the entry is skipped for the rest of that day.
+
+    Returns the original df unchanged PLUS a set of row-indices that are
+    ACTIVE (not skipped). The skipped flag is written to a column so that
+    all trades remain in the output CSV for Streamlit audit.
+
+    Uses STREAM_RISK_PCT (with M3 already applied) to measure intraday P&L.
+    """
+    events: list[tuple] = []
+    for idx, row in df.iterrows():
+        events.append((pd.Timestamp(row["entry_ts_utc"]), 1, idx))   # 1=entry
+        events.append((pd.Timestamp(row["exit_ts_utc"]),  0, idx))   # 0=exit first on tie
+    events.sort(key=lambda e: (e[0], e[1]))
+
+    balance              = PORTFOLIO_START_BALANCE
+    entry_snaps: dict[int, float] = {}
+    day_open_bal: dict           = {}
+    day_running_pnl: dict        = defaultdict(float)
+    active_indices: set[int]     = set()
+
+    for ts, etype, idx in events:
+        day = ts.date()
+        if day not in day_open_bal:
+            day_open_bal[day] = balance
+
+        if etype == 0:   # exit
+            if idx not in entry_snaps:
+                continue
+            bal_before  = entry_snaps.pop(idx)
+            rp          = STREAM_RISK_PCT.get(df.at[idx, "stream"], 0.0)
+            pnl         = bal_before * (rp / 100.0) * float(df.at[idx, "managed_r"])
+            balance    += pnl
+            day_running_pnl[day] += pnl
+        else:            # entry attempt
+            open_bal        = day_open_bal[day]
+            cum_loss_pct    = day_running_pnl[day] / open_bal * 100.0 if open_bal else 0.0
+            if cum_loss_pct <= cap_pct:
+                continue  # daily cap hit — skip this entry
+            active_indices.add(idx)
+            entry_snaps[idx] = balance
+
+    return df, active_indices
+
+
+def _portfolio_simulation(
+    df: pd.DataFrame,
+    active_indices: set[int],
+    start_balance: float = PORTFOLIO_START_BALANCE,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Compound a starting balance through the active (non-capped) trades.
+
+    active_indices: row indices accepted by _apply_daily_loss_cap (M1).
+    All rows in df are returned in sim_df, but only active ones get dollar
+    fields; skipped rows get sim_active=False and null dollar columns so
+    every trade is visible in Streamlit.
+
+    Concurrent positions are handled correctly:
+      - Entry  → snapshot balance_before = running_balance
+      - Exit   → dollar_pnl = balance_before × risk_pct × managed_r
+                 (STREAM_RISK_PCT already has M3 applied — S2 halved)
+
+    Returns:
+        (enriched_trades_df, equity_curve_df, risk_sizing_df)
+    """
+    if df.empty:
+        return df.copy(), pd.DataFrame(), pd.DataFrame()
+
+    # Only compound through active trades
+    active_df = df[df.index.isin(active_indices)].copy()
+
+    # Build event list: exits (0) before entries (1) on same timestamp
+    events: list[tuple[pd.Timestamp, int, int]] = []
+    for idx, row in active_df.iterrows():
+        events.append((pd.Timestamp(row["entry_ts_utc"]), 1, idx))
+        events.append((pd.Timestamp(row["exit_ts_utc"]),  0, idx))
+    events.sort(key=lambda e: (e[0], e[1]))
+
+    balance         = start_balance
+    entry_snapshots: dict[int, float] = {}   # row_index → balance at entry
+    exit_results:   dict[int, dict]   = {}   # row_index → dollar fields
+
+    for ts, etype, idx in events:
+        stream   = active_df.at[idx, "stream"]
+        risk_pct = STREAM_RISK_PCT.get(stream, 0.0)
+        if etype == 1:
+            # Entry: snapshot balance
+            entry_snapshots[idx] = balance
+        else:
+            # Exit: apply P&L
+            bal_before   = entry_snapshots.get(idx, start_balance)
+            dollar_risk  = bal_before * (risk_pct / 100.0)
+            managed_r    = float(active_df.at[idx, "managed_r"])
+            dollar_pnl   = dollar_risk * managed_r
+            balance     += dollar_pnl
+            exit_results[idx] = dict(
+                balance_before = round(bal_before, 2),
+                risk_pct       = risk_pct,
+                dollar_risk    = round(dollar_risk, 2),
+                dollar_pnl     = round(dollar_pnl, 2),
+                balance_after  = round(balance, 2),
+            )
+
+    # Enrich trades DataFrame — ALL trades present, skipped ones get sim_active=False
+    sim_df = df.copy()
+    sim_df["sim_active"]    = sim_df.index.isin(active_indices)
+    sim_df["m1_daily_cap"]  = ~sim_df["sim_active"]   # True = was blocked by M1
+    for col in ("balance_before", "risk_pct", "dollar_risk", "dollar_pnl", "balance_after"):
+        sim_df[col] = pd.NA
+    for idx, fields in exit_results.items():
+        for col, val in fields.items():
+            sim_df.at[idx, col] = val
+    sim_df["duration_h"] = (
+        (pd.to_datetime(sim_df["exit_ts_utc"]) - pd.to_datetime(sim_df["entry_ts_utc"]))
+        .dt.total_seconds() / 3600
+    ).round(2)
+
+    # Daily equity curve
+    eq_rows: list[dict] = [{"date": pd.Timestamp(df["entry_ts_utc"].min()).date(),
+                             "balance": start_balance, "daily_pnl": 0.0}]
+    by_day: dict = defaultdict(float)
+    for idx, fields in exit_results.items():
+        day = pd.Timestamp(active_df.at[idx, "exit_ts_utc"]).date()
+        by_day[day] += fields["dollar_pnl"]
+
+    running = start_balance
+    for day in sorted(by_day):
+        running += by_day[day]
+        eq_rows.append({"date": day, "balance": round(running, 2),
+                        "daily_pnl": round(by_day[day], 2)})
+    equity_curve = pd.DataFrame(eq_rows)
+
+    # Risk sizing table — include M3 note for S2
+    risk_rows = []
+    for stream in sorted(STREAM_MAXDD_R):
+        base_rp = round(TARGET_DD_PCT / STREAM_MAXDD_R[stream], 4)
+        applied = STREAM_RISK_PCT[stream]
+        note    = f"risk_pct = {TARGET_DD_PCT} / {STREAM_MAXDD_R[stream]}"
+        if stream == "S2":
+            note += f" → halved to {applied}% (M3 mitigation)"
+        risk_rows.append(dict(
+            stream        = stream,
+            ref_maxDD_r   = STREAM_MAXDD_R[stream],
+            target_dd_pct = TARGET_DD_PCT,
+            base_risk_pct = base_rp,
+            applied_risk_pct = applied,
+            m3_applied    = (stream == "S2"),
+            note          = note,
+        ))
+    risk_sizing = pd.DataFrame(risk_rows)
+
+    return sim_df, equity_curve, risk_sizing
+
+
+def _print_simulation_summary(
+    sim_df: pd.DataFrame,
+    equity_curve: pd.DataFrame,
+    risk_sizing: pd.DataFrame,
+    start_balance: float,
+) -> None:
+    """Print the dollar simulation results to console."""
+    if sim_df.empty or equity_curve.empty:
+        print("\n  (no simulation data)")
+        return
+
+    final_bal = equity_curve["balance"].iloc[-1]
+    total_return_pct = (final_bal - start_balance) / start_balance * 100
+    pnls = sim_df["dollar_pnl"].dropna().to_numpy(dtype=float)
+    cum  = np.cumsum(pnls)
+    port_dd = float(np.max(np.maximum.accumulate(cum) - cum)) if len(cum) else 0
+
+    print(f"\n{'='*72}")
+    print(f"  PORTFOLIO SIMULATION  (start=${start_balance:,.0f})")
+    print(f"{'='*72}")
+    print(f"\n  Risk sizing (risk_pct = {TARGET_DD_PCT}% / stream maxDD_r):")
+    print(f"  {'Stream':<6}  {'maxDD_r':>8}  {'risk_pct':>9}")
+    print(f"  {'-'*30}")
+    for _, r in risk_sizing.iterrows():
+        m3_tag = "  ← M3 halved" if r.m3_applied else ""
+        print(f"  {r.stream:<6}  {r.ref_maxDD_r:>8.1f}R  {r.applied_risk_pct:>8.4f}%{m3_tag}")
+
+    print(f"\n  {'Metric':<26}  Value")
+    print(f"  {'-'*45}")
+    print(f"  {'Start balance':<26}  ${start_balance:>12,.2f}")
+    print(f"  {'Final balance':<26}  ${final_bal:>12,.2f}")
+    print(f"  {'Total return':<26}  {total_return_pct:>11.1f}%")
+    print(f"  {'Max drawdown ($)':<26}  ${port_dd:>12,.2f}  "
+          f"({port_dd/start_balance*100:.1f}% of start)")
+    print(f"  {'Total trades':<26}  {len(sim_df):>13,}")
+
+    # Year breakdown
+    print(f"\n  Year breakdown:")
+    print(f"  {'Year':<6}  {'n':>5}  {'P&L ($)':>12}  {'Return':>8}  Balance")
+    print(f"  {'-'*52}")
+    valid = sim_df.dropna(subset=["dollar_pnl"]).copy()
+    valid["exit_year"] = pd.to_datetime(valid["exit_ts_utc"]).dt.year
+    running = start_balance
+    for yr, grp in valid.groupby("exit_year"):
+        pnl  = float(grp["dollar_pnl"].sum())
+        ret  = pnl / running * 100
+        running += pnl
+        print(f"  {yr:<6}  {len(grp):>5}  ${pnl:>11,.0f}  {ret:>7.1f}%  "
+              f"${running:>12,.0f}")
+
+    # Per-stream dollar summary
+    print(f"\n  Per-stream dollar summary:")
+    print(f"  {'Stream':<6}  {'n':>5}  {'risk%':>6}  {'P&L ($)':>12}  {'maxDD ($)':>10}")
+    print(f"  {'-'*50}")
+    for stream, grp in valid.groupby("stream"):
+        arr = grp["dollar_pnl"].to_numpy(dtype=float)
+        dd  = float(np.max(np.maximum.accumulate(np.cumsum(arr)) - np.cumsum(arr))) if len(arr) else 0
+        print(f"  {stream:<6}  {len(grp):>5}  "
+              f"{STREAM_RISK_PCT.get(stream, 0):>5.3f}%  "
+              f"${arr.sum():>11,.0f}  ${dd:>9,.0f}")
+
+
 def _print_table(df: pd.DataFrame, title: str) -> None:
     print(f"\n  {title}")
     print("  " + "-" * max(len(title), 40))
@@ -486,7 +815,8 @@ def _print_table(df: pd.DataFrame, title: str) -> None:
         print(df.to_string(index=False))
 
 
-def main(db_path: str, out_root: str) -> None:
+def main(db_path: str, out_root: str,
+         symbols_override: list[str] | None = None) -> None:
     db_path = str(Path(db_path).resolve())
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_id = f"run_all_streams_{stamp}"
@@ -522,16 +852,19 @@ def main(db_path: str, out_root: str) -> None:
         s2 = _collect_s2(sym_df1h[sym], sym)
         s3 = _collect_s3(sym_df1h[sym], sym)
         s4 = _collect_s4(sym_df1h[sym], sym)
-        all_sigs.extend(s1 + s2 + s3 + s4)
+        s5 = _collect_s5(sym_df1h[sym], sym)
+        all_sigs.extend(s1 + s2 + s3 + s4 + s5)
         per_stream_counts["S1"] += len(s1)
         per_stream_counts["S2"] += len(s2)
         per_stream_counts["S3"] += len(s3)
         per_stream_counts["S4"] += len(s4)
+        per_stream_counts["S5"] += len(s5)
         print(f"    {sym:<10}  S1={len(s1):>4}  S2={len(s2):>4}  "
-              f"S3={len(s3):>4}  S4={len(s4):>4}")
+              f"S3={len(s3):>4}  S4={len(s4):>4}  S5={len(s5):>4}")
     print(f"  signals: total={len(all_sigs)}  "
           f"S1={per_stream_counts['S1']} S2={per_stream_counts['S2']} "
-          f"S3={per_stream_counts['S3']} S4={per_stream_counts['S4']}")
+          f"S3={per_stream_counts['S3']} S4={per_stream_counts['S4']} "
+          f"S5={per_stream_counts['S5']}")
 
     # ── Replay ──────────────────────────────────────────────────────────
     print(f"\n  Replaying {len(all_sigs)} trades on 5m (managed + baseline + MFE)…")
@@ -581,6 +914,28 @@ def main(db_path: str, out_root: str) -> None:
     exits.to_csv(artifacts / "exit_reason_by_stream.csv", index=False)
     equity.to_csv(artifacts / "equity_by_stream.csv", index=False)
 
+    # ── Portfolio simulation ($10k) with M1 + M3 ──────────────────────
+    print(f"\n  Running portfolio simulation (start=${PORTFOLIO_START_BALANCE:,.0f})…")
+    print(f"  Mitigations active:")
+    print(f"    M3 — S2 risk% halved: {RISK_PCT_S2_BASE:.4f}% → {STREAM_RISK_PCT['S2']:.4f}%")
+    print(f"    M1 — daily loss cap at {DAILY_LOSS_CAP_PCT:+.1f}% of day-open balance")
+
+    _, active_indices = _apply_daily_loss_cap(df)
+    n_skipped = len(df) - len(active_indices)
+    print(f"  M1 skipped {n_skipped} entries ({n_skipped/len(df)*100:.1f}% of trades)")
+    sim_df, equity_curve, risk_sizing = _portfolio_simulation(
+        df, active_indices, PORTFOLIO_START_BALANCE
+    )
+
+    risk_sizing.to_csv(artifacts / "risk_sizing.csv", index=False)
+    equity_curve.to_csv(artifacts / "portfolio_equity.csv", index=False)
+    # portfolio_trades.csv — enriched trades including dollar fields
+    port_trades_csv = run_dir / "trades" / "portfolio_trades.csv"
+    sim_df.to_csv(port_trades_csv, index=False)
+    print(f"  wrote {port_trades_csv.relative_to(REPO_ROOT)}  rows={len(sim_df)}")
+    print(f"  wrote {(artifacts/'portfolio_equity.csv').relative_to(REPO_ROOT)}")
+    print(f"  wrote {(artifacts/'risk_sizing.csv').relative_to(REPO_ROOT)}")
+
     # ── run_config + report.md ─────────────────────────────────────────
     run_config = dict(
         run_id=run_id,
@@ -588,6 +943,35 @@ def main(db_path: str, out_root: str) -> None:
         db=db_path,
         script="lab/run_all_streams.py",
         locked_config=LOCKED_CONFIG,
+        portfolio_simulation=dict(
+            start_balance=PORTFOLIO_START_BALANCE,
+            target_dd_pct=TARGET_DD_PCT,
+            stream_maxdd_r=STREAM_MAXDD_R,
+            stream_risk_pct=STREAM_RISK_PCT,
+            mitigations=dict(
+                M1_daily_loss_cap=dict(
+                    active=True,
+                    cap_pct=DAILY_LOSS_CAP_PCT,
+                    trades_skipped=n_skipped,
+                    description=(
+                        "Skip new entries on a day once cumulative intraday P&L "
+                        f"falls below {DAILY_LOSS_CAP_PCT:+.1f}% of day-open balance. "
+                        "Prevents S2 cluster blow-ups in a single session."
+                    ),
+                ),
+                M3_s2_risk_halved=dict(
+                    active=True,
+                    s2_base_risk_pct=RISK_PCT_S2_BASE,
+                    s2_applied_risk_pct=STREAM_RISK_PCT["S2"],
+                    description=(
+                        "S2 risk% halved from "
+                        f"{RISK_PCT_S2_BASE:.4f}% to {STREAM_RISK_PCT['S2']:.4f}%. "
+                        "Reduces S2 dollar impact; confirmed best efficiency ratio "
+                        "in lab/analyze_mitigations.py (1.8x DD reduction per return unit)."
+                    ),
+                ),
+            ),
+        ),
         data_window=dict(
             start_utc=START_UTC,
             end_utc=str(max((pd.Timestamp(df5.index.max()) for df5 in sym_df5.values()
@@ -604,17 +988,26 @@ def main(db_path: str, out_root: str) -> None:
                   by_asset, by_stream_asset, saved, mfe, exits)
 
     # ── Console output ─────────────────────────────────────────────────
-    _print_table(total, "PORTFOLIO TOTAL")
-    _print_table(by_stream, "BY STREAM")
-    _print_table(by_year, "BY YEAR (portfolio)")
-    _print_table(by_stream_year, "BY STREAM × YEAR")
-    _print_table(by_asset, "BY ASSET (portfolio)")
-    _print_table(by_stream_asset, "BY STREAM × ASSET")
+    _print_table(total, "PORTFOLIO TOTAL (R)")
+    _print_table(by_stream, "BY STREAM (R)")
+    _print_table(by_year, "BY YEAR — portfolio (R)")
+    _print_table(by_stream_year, "BY STREAM × YEAR (R)")
+    _print_table(by_asset, "BY ASSET — portfolio (R)")
+    _print_table(by_stream_asset, "BY STREAM × ASSET (R)")
     _print_table(saved, "SAVED R (stop-management impact)")
     _print_table(exits, "EXIT REASON MIX")
     _print_table(mfe, "MFE BUCKETS (win rate by max favourable excursion)")
-    print(f"\n  OUTPUT: {run_dir}")
-    print(f"  Launch dashboard pointing at: {trades_csv}")
+
+    _print_simulation_summary(sim_df, equity_curve, risk_sizing, PORTFOLIO_START_BALANCE)
+
+    print(f"\n{'='*72}")
+    print(f"  OUTPUT: {run_dir}")
+    print(f"  R-level trades:     {trades_csv.relative_to(REPO_ROOT)}")
+    print(f"  Dollar trades:      {port_trades_csv.relative_to(REPO_ROOT)}")
+    print(f"  Equity curve:       {(artifacts/'portfolio_equity.csv').relative_to(REPO_ROOT)}")
+    print(f"  Risk sizing:        {(artifacts/'risk_sizing.csv').relative_to(REPO_ROOT)}")
+    print(f"\n  Launch dashboard:   streamlit run lab/app.py")
+    print(f"{'='*72}\n")
 
 
 def _df_to_md(df_: pd.DataFrame) -> str:
@@ -662,12 +1055,17 @@ def _write_report(run_dir: Path, df: pd.DataFrame,
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(
-        description="Run S1-S4 on all data with locked configs (no sweeps)."
+        description="Run S1-S5 on all data with locked configs (no sweeps)."
     )
     ap.add_argument("--db", default=DEFAULT_DB, help="Path to backtest.sqlite")
     ap.add_argument(
         "--out", default=str(REPO_ROOT / "runs"),
         help="Root directory for run folders (default: RSI/runs)",
     )
+    ap.add_argument(
+        "--symbols", nargs="+", default=None,
+        metavar="SYM",
+        help="Override symbol list e.g. --symbols BNBUSDT BTCUSDT (default: all 6)",
+    )
     args = ap.parse_args()
-    main(db_path=args.db, out_root=args.out)
+    main(db_path=args.db, out_root=args.out, symbols_override=args.symbols)

@@ -1,0 +1,5 @@
+stream,n_trades,baseline_total_r,managed_total_r,saved_r,saved_per_trade,n_improved,n_worse,n_unchanged,avg_save_improved,avg_hurt_worse,baseline_win_pct,managed_win_pct
+S1,57,82.2,82.2,0.0,0.0,0,0,57,0.0,0.0,19.3,19.3
+S2,73,-14.6,-14.6,0.0,0.0,0,0,73,0.0,0.0,21.92,21.92
+S3,5,5.08,5.08,0.0,0.0,0,0,5,0.0,0.0,40.0,40.0
+S4,14,89.74,52.74,-37.0,-2.6429,0,2,12,0.0,-18.5,42.86,42.86
