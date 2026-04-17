@@ -292,7 +292,7 @@ def build_chart(df5: pd.DataFrame, trade: pd.Series, cfg: dict,
     return fig
 
 
-# ── Sidebar ────────────────────────────────────────────────────────────────
+# ── Run selector ──────────────────────────────────────────────────────────
 st.sidebar.title("Trade Audit")
 
 runs = discover_runs(str(RUNS_DIR))
@@ -306,25 +306,29 @@ run = run_map[sel_run_id]
 cfg = run["cfg"]
 db_path: str = cfg.get("db", cfg.get("db_path", ""))
 
-with st.sidebar.expander("Run config"):
-    st.json(cfg)
+with st.sidebar.expander("Run config", expanded=False):
+    st.sidebar.json(cfg)
 
 # ── Load trades ────────────────────────────────────────────────────────────
 trades_df = load_trades(run["run_dir"])
 
-# ── Sidebar filters ────────────────────────────────────────────────────────
+# ── Filters ────────────────────────────────────────────────────────────────
+st.sidebar.markdown("#### Filters")
+
 streams = ["All"] + sorted(trades_df["stream"].unique().tolist())
 syms    = ["All"] + sorted(trades_df["sym"].unique().tolist())
 reasons = ["All"] + sorted(trades_df["managed_reason"].unique().tolist())
 years   = ["All"] + sorted(trades_df["year"].unique().astype(str).tolist())
 
-sel_stream = st.sidebar.selectbox("Stream",      streams)
-sel_sym    = st.sidebar.selectbox("Symbol",      syms)
-sel_side   = st.sidebar.selectbox("Side",        ["All", "Long (+1)", "Short (-1)"])
-sel_reason = st.sidebar.selectbox("Exit reason", reasons)
-sel_year   = st.sidebar.selectbox("Year",        years)
+col_a, col_b = st.sidebar.columns(2)
+sel_stream = col_a.selectbox("Stream", streams, key="f_stream")
+sel_sym    = col_b.selectbox("Symbol", syms,    key="f_sym")
+col_c, col_d = st.sidebar.columns(2)
+sel_side   = col_c.selectbox("Side",   ["All", "L", "S"], key="f_side")
+sel_reason = col_d.selectbox("Reason", reasons, key="f_reason")
+sel_year   = st.sidebar.selectbox("Year", years, key="f_year")
 
-side_map = {"All": None, "Long (+1)": 1, "Short (-1)": -1}
+side_map = {"All": None, "L": 1, "S": -1}
 
 filtered = trades_df.copy()
 if sel_stream != "All":  filtered = filtered[filtered["stream"] == sel_stream]
@@ -334,97 +338,89 @@ if side_map[sel_side] is not None:
 if sel_reason != "All":  filtered = filtered[filtered["managed_reason"] == sel_reason]
 if sel_year   != "All":  filtered = filtered[filtered["year"] == int(sel_year)]
 
-# ── Summary metrics ────────────────────────────────────────────────────────
+# ── Sidebar summary ────────────────────────────────────────────────────────
 total_r = filtered["managed_r"].sum()
-win_pct = (filtered["managed_r"] > 0).mean() * 100
-avg_mfe = filtered["mfe_r"].mean()
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Trades",    len(filtered))
-c2.metric("Total R",   f"{total_r:.2f}")
-c3.metric("Win %",     f"{win_pct:.1f}%")
-c4.metric("Avg MFE",   f"{avg_mfe:.2f}R")
-c5.metric("Avg hold",  f"{filtered['duration_h'].mean():.1f}h")
+win_pct = (filtered["managed_r"] > 0).mean() * 100 if len(filtered) else 0.0
+st.sidebar.caption(
+    f"{len(filtered)} trades · {total_r:+.1f}R · {win_pct:.0f}% win"
+)
+st.sidebar.divider()
 
-st.divider()
+# ── Trade list (fixed-height scrollable) ───────────────────────────────────
+st.sidebar.markdown("#### Trades — click to audit")
 
-# ── Trade table ────────────────────────────────────────────────────────────
-display_cols = ["stream", "sym", "side", "entry_ts_utc", "exit_ts_utc",
-                "entry_price", "stop_init", "tp_price", "risk",
-                "managed_r", "mfe_r", "managed_reason", "duration_h", "year"]
-show_cols = [c for c in display_cols if c in filtered.columns]
+list_cols = ["stream", "sym", "side", "entry_ts_utc", "managed_r", "mfe_r", "managed_reason"]
+list_df = filtered[list_cols].copy().reset_index(drop=True)
+list_df["entry_ts_utc"] = list_df["entry_ts_utc"].dt.strftime("%Y-%m-%d %H:%M")
 
-event = st.dataframe(
-    filtered[show_cols].reset_index(drop=True),
+event = st.sidebar.dataframe(
+    list_df,
     use_container_width=True,
     hide_index=True,
+    height=520,
     selection_mode="single-row",
     on_select="rerun",
     key="trade_table",
     column_config={
-        "entry_ts_utc": st.column_config.DatetimeColumn("Entry UTC", format="YYYY-MM-DD HH:mm"),
-        "exit_ts_utc":  st.column_config.DatetimeColumn("Exit UTC",  format="YYYY-MM-DD HH:mm"),
-        "managed_r":    st.column_config.NumberColumn("R",   format="%.3f"),
-        "mfe_r":        st.column_config.NumberColumn("MFE", format="%.2fR"),
-        "duration_h":   st.column_config.NumberColumn("Hold h", format="%.1f"),
-        "entry_price":  st.column_config.NumberColumn("Entry", format="%.4g"),
-        "stop_init":    st.column_config.NumberColumn("SL",    format="%.4g"),
-        "tp_price":     st.column_config.NumberColumn("TP",    format="%.4g"),
-        "risk":         st.column_config.NumberColumn("Risk",  format="%.4g"),
+        "entry_ts_utc": st.column_config.TextColumn("Entry UTC", width="medium"),
+        "managed_r":    st.column_config.NumberColumn("R",   format="%.3f", width="small"),
+        "mfe_r":        st.column_config.NumberColumn("MFE", format="%.2f", width="small"),
+        "managed_reason": st.column_config.TextColumn("Exit", width="small"),
+        "stream":       st.column_config.TextColumn("S",    width="small"),
+        "sym":          st.column_config.TextColumn("Sym",  width="small"),
+        "side":         st.column_config.NumberColumn("Dir", width="small"),
     },
 )
 
-# ── Trade detail ───────────────────────────────────────────────────────────
+# ── Main area: placeholder or trade detail ─────────────────────────────────
 if not (event.selection and event.selection.rows):
-    st.info("Click any row to audit the trade chart.")
+    st.markdown("## Trade Audit")
+    st.info("Select a trade from the sidebar list to load its chart.")
     st.stop()
 
-row_idx = event.selection.rows[0]
-trade   = filtered.iloc[row_idx]
-stream  = str(trade["stream"])
-sym     = str(trade["sym"])
-side    = int(trade["side"])
+row_idx   = event.selection.rows[0]
+trade     = filtered.iloc[row_idx]
+stream    = str(trade["stream"])
+sym       = str(trade["sym"])
+side      = int(trade["side"])
 direction = "Long" if side == 1 else "Short"
-r_val   = float(trade["managed_r"])
-reason  = str(trade["managed_reason"])
+r_val     = float(trade["managed_r"])
+reason    = str(trade["managed_reason"])
 
-st.divider()
+# ── Trade audit container (scrollable) ────────────────────────────────────
+audit = st.container(height=920, border=False)
 
-# Info header
-col_info, col_cond = st.columns([2, 3])
+# ── Trade info header ──────────────────────────────────────────────────────
+col_info, col_cond = audit.columns([2, 3])
 with col_info:
     st.markdown(f"### {stream} — {sym} {direction}")
+    mfe_price = float(trade["entry_price"]) + side * float(trade["mfe_r"]) * float(trade["risk"])
     st.markdown(
-        f"**Entry:** {trade['entry_ts_utc'].strftime('%Y-%m-%d %H:%M')} UTC  \n"
-        f"**Exit:**  {trade['exit_ts_utc'].strftime('%Y-%m-%d %H:%M')} UTC  \n"
-        f"**R:** `{r_val:+.3f}`  &nbsp; **MFE:** `{float(trade['mfe_r']):.2f}R`  \n"
-        f"**Reason:** `{reason}`  &nbsp; **Hold:** `{float(trade['duration_h']):.1f}h`  \n"
-        f"**Entry price:** `{float(trade['entry_price']):.6g}`  \n"
-        f"**SL:** `{float(trade['stop_init']):.6g}`  &nbsp; "
-        f"**TP:** `{float(trade['tp_price']):.6g}`  \n"
+        f"**Entry:** {trade['entry_ts_utc'].strftime('%Y-%m-%d %H:%M')} UTC &nbsp;·&nbsp; "
+        f"**Exit:** {trade['exit_ts_utc'].strftime('%Y-%m-%d %H:%M')} UTC  \n"
+        f"**R:** `{r_val:+.3f}` &nbsp; **MFE:** `{float(trade['mfe_r']):.2f}R` ({mfe_price:.6g}) "
+        f"&nbsp; **Hold:** `{float(trade['duration_h']):.1f}h`  \n"
+        f"**Exit:** `{reason}` &nbsp;·&nbsp; "
+        f"**Entry:** `{float(trade['entry_price']):.6g}` &nbsp; "
+        f"**SL:** `{float(trade['stop_init']):.6g}` &nbsp; "
+        f"**TP:** `{float(trade['tp_price']):.6g}` &nbsp; "
         f"**Risk:** `{float(trade['risk']):.6g}`"
     )
 with col_cond:
-    st.markdown(f"**{stream} Conditions**")
+    st.markdown(f"**{stream} signal conditions**")
     st.info(STREAM_CONDITIONS.get(stream, "—"))
     if stream == "S4":
         s4 = cfg.get("locked_config", {}).get("s4", {})
-        mfe_price = float(trade["entry_price"]) + side * float(trade["mfe_r"]) * float(trade["risk"])
         lock_p = float(trade["entry_price"]) + side * float(s4.get("lock_r", 1.0)) * float(trade["risk"])
         trig_p = float(trade["entry_price"]) + side * float(s4.get("trig_r", 3.5)) * float(trade["risk"])
-        st.caption(
-            f"BE trig @ {trig_p:.6g}  →  lock @ {lock_p:.6g}  |  "
-            f"MFE price: {mfe_price:.6g}"
-        )
-    else:
-        mfe_price = float(trade["entry_price"]) + side * float(trade["mfe_r"]) * float(trade["risk"])
-        st.caption(f"MFE price: {mfe_price:.6g}")
+        st.caption(f"BE trig @ {trig_p:.6g}  →  lock @ {lock_p:.6g}")
 
 # ── Load candles & render chart ────────────────────────────────────────────
 if not db_path:
-    st.warning("No `db` path in run config — cannot load candles.")
+    audit.warning("No `db` path in run config — cannot load candles.")
     st.stop()
 
-with st.spinner(f"Loading candles for {sym}…"):
+with audit.spinner(f"Loading candles for {sym}…"):
     df5 = load_candles(
         db_path, sym,
         trade["entry_ts_utc"].isoformat(),
@@ -432,15 +428,14 @@ with st.spinner(f"Loading candles for {sym}…"):
     )
 
 if df5.empty:
-    st.warning("No candle data found.")
+    audit.warning("No candle data found.")
     st.stop()
 
-# Compute regime from loaded window
 regime_df = compute_regime(df5.to_json(orient="split", date_format="iso"))
 
 fig = build_chart(df5, trade, cfg, regime_df)
-st.plotly_chart(fig, use_container_width=True)
+audit.plotly_chart(fig, use_container_width=True)
 
-with st.expander("Raw trade fields"):
+with audit.expander("Raw trade fields"):
     st.json({k: (v.isoformat() if isinstance(v, pd.Timestamp) else v)
              for k, v in trade.items() if not (isinstance(v, float) and np.isnan(v))})

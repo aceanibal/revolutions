@@ -8,6 +8,12 @@ The edge is fat-tailed: low hit rate, large right-tail winners. Fixed ATR×2
 stop keeps losers bounded; TP=12R captures the outliers that pay for the
 misses.
 
+Two structural improvements confirmed 2026-04-17 ("Choice B" overhaul):
+- **Lever 2 — EMA(200) regime filter** suppresses signals in bear-market
+  regimes. Cuts 2022 from −48R to −13R and 2026 from −11R to +7R.
+- **Lever 1 — 3.5R→+1R trailing lock** reduces consecutive losing streaks
+  from 63 to 20 by converting abandoned runners into small wins at +1R.
+
 ## Signal (1h)
 
 Source: `lab/study_imbalanced_trend.py :: collect_imbalanced_signals` (long side)
@@ -18,47 +24,81 @@ Source: `lab/study_imbalanced_trend.py :: collect_imbalanced_signals` (long side
 - `close_pct > 1 − 0.15 = 0.85` (close near high)
 - `vol_ratio > 1.8`
 - bullish bar (`close > open`)
+- **Lever 2**: signal bar close must be above EMA(200) on 1h bars.
+  Computed on the signal bar (bar i, already closed). No look-ahead.
 
 Entry: next 1h bar open.
 
 ## Stop
 
 Fixed `ATR×2.0` below entry (ATR = 14-period on 1h bars of the signal bar).
-No MFE ladder, no BE-lock.
+
+## Trailing lock (Lever 1)
+
+When MFE reaches **3.5R**, stop moves to `entry + 1.0R`.
+
+Same-bar activation (Rule 11): if price reaches 3.5R MFE and the same 5m bar
+reverses through entry+1R, the trade exits at +1R in that bar.
+
+Exit tag: `BE` (same mechanism as S4's lock).
 
 ## Take profit
 
-`TP = 12R` above entry. Fat-tail target; the right tail of the R
-distribution is what pays.
+`TP = 12R` above entry. Fat-tail target; the right tail of the R distribution
+is what pays. Do not reduce TP — analysis confirmed 12R is the correct level.
 
 ## Replay
 
-Source: `lab/study_imbalanced_trend.py :: replay_trend`
+Source: `lab/sim/exit.py :: replay_trade_5m`
 (5m bar replay, fee=3.0 bps, same-bar stop/TP activation).
+Parameters: `be_trigger_r=3.5, be_offset_r=1.0`.
 
 ## Universe
 
-BTC, ETH, SOL, LINK, DOGE, XRP — all six symbols.
-**Do not** exclude DOGE from S1 (it is part of the confirmed reference).
+BTC, ETH, SOL, LINK, DOGE, XRP — canonical six symbols.
 
-## Reference stats — `runs/run_all_streams_20260416T153516Z/`
+**ONDO**: structurally broken on S1 (2.4% TP rate vs ~13% for working assets,
+50% of trades never reach 1R MFE). Do not add to S1 universe.
 
-| metric | value |
-| --- | --- |
-| n signals | 778 |
-| win % | 12.08 |
-| total R | +432.97 |
-| avg R | 0.56 |
-| ann_R | ≈ 101 / yr |
-| maxDD_R | 70.27 |
-| MCL | 63 |
-| SL / TP | 684 / 94 |
+**TAO**: works (+46R with Choice B), but not yet added to canonical universe.
+Can be considered for universe expansion in a future study.
 
-Year breakdown (total R): 2022 −58.6 / 2023 +241.2 / 2024 +238.8 / 2025 +42.2
-/ 2026 YTD −30.6.
+## Reference stats — `runs/run_all_streams_20260417T231541Z/` (Choice B)
 
-Per-asset total R: BTC +175.8, SOL +100.5, ETH +84.0, DOGE +41.5, LINK +41.6,
-XRP −10.5.
+| metric | value | vs old baseline |
+| --- | --- | --- |
+| n signals | 674 collected / 671 replayed | −133 (EMA filter) |
+| win % (managed) | 28.91% | ↑ from 12.1% |
+| total R (managed) | +411 | −22R vs old +433 |
+| total R (baseline, no lock) | +450 | +17R vs old +433 |
+| avg R | 0.61 | |
+| ann_R | ≈ 96 / yr | |
+| maxDD_R | **37.78** | ↓ from 70.27 (−46%) |
+| MCL | **20** | ↓ from 63 (−68%) |
+| SL / BE / TP | 477 / 130 / 64 | |
+
+Year breakdown (managed R):
+2022 −13R / 2023 +159R / 2024 +207R / 2025 +50R / 2026 YTD +7R
+
+Per-asset managed total R (Choice B):
+BTC +156, ETH +106, SOL +76, LINK +67, DOGE +23, XRP −16.
+
+## Lock decomposition (Lever 1)
+
+Across all 11 assets in the study:
+- **213 trades rescued**: lock prevented −1R exit → +1R exit. +426R recovered.
+- **37 trades capped**: trade hit 3.5R lock, reversed to +1R, then recovered
+  and would have reached 12R TP. −407R cost.
+- **Net L1 R impact**: +19R — modest, but MCL drops 63→20.
+- The primary value of L1 is **risk management and live-trading psychology**,
+  not R maximisation.
+
+## Filter impact (Lever 2)
+
+EMA(200) on 1h drops 17% of signals. Filtered signals were:
+- 2022 bear: −48R → −13R (+35R from filtering alone)
+- 2026 risk-off: −11R → +7R (+18R from filtering alone)
+- Bull years: minor reduction in signals (~10–15%)
 
 ## Why these values
 
@@ -68,23 +108,31 @@ XRP −10.5.
 - `vol_ratio_min=1.8` — require volume commitment; filters slow drifts.
 - `atr_mult=2.0` — wide enough to let the entry bar's wick breathe without
   premature whipsaw.
-- `tp_r=12.0` — determined empirically; higher TP sensitivities show 8R/10R
-  leave R on the table, 14R/16R slightly higher but at the cost of more
-  never-filled trades.
+- `tp_r=12.0` — optimal across all TP sensitivity tests; lower TPs reduce
+  total R significantly because they sacrifice the 12R outlier winners.
+- `ema_filter=200` — suppresses bear-regime entries without over-filtering
+  bull regimes. EMA50 is more reactive; EMA200 is more stable.
+- `trig_r=3.5` — matches the threshold where abandoned runners cluster
+  (212 SL trades reached 3.5R+ in the study; none reached 12R without
+  continuing to TP).
+- `lock_r=1.0` — locks in a small profit; trade either continues to 12R or
+  exits at +1R instead of −1R if it reverses.
 
 ## Canonical files
 
-- Signal: `lab/study_imbalanced_trend.py :: collect_imbalanced_signals`
-- Replay: `lab/study_imbalanced_trend.py :: replay_trend`
+- Signal + EMA filter: `lab/run_all_streams.py :: _collect_s1`
+- Replay with lock: `lab/run_all_streams.py :: _replay_managed` (S1 branch)
+- Study: `lab/study_imbalanced_trend.py`
+- Overhaul study: `lab/study_s1_overhaul.py`
+- Overhaul CSV: `cache/s1_overhaul_comparison.csv`
 - Master runner: `lab/run_all_streams.py` (S1 block)
-- Investigation (2026-04-16): deprecated `lab/_investigate_imbal_long.py`,
-  evidence archived in `deprecated/reports/RESEARCH_REPORT_2026-04-15.md`.
+- Confirmed run: `runs/run_all_streams_20260417T231541Z/`
 
 ## History
 
-- Pre-2026-04-16 S1 was incorrectly documented as "4h RSI crossover + MFE
-  ladder, TP=13R". Under the current simulator (same-bar stop activation)
-  that configuration underperformed badly and the MFE ladder actively hurt.
-- On 2026-04-16 the real S1 was identified as the long side of
-  `collect_imbalanced_signals`. A one-off verification script reproduced the
-  reference stats (n=778, 12.08% win, +433R, maxDD≈70R).
+- Pre-2026-04-16: incorrectly documented as "4h RSI crossover + MFE ladder,
+  TP=13R". Under same-bar stop activation that config underperformed badly.
+- 2026-04-16: real S1 identified as the long side of `collect_imbalanced_signals`
+  (n=778, 12.08% win, +433R, maxDD≈70R). See deprecated reports.
+- 2026-04-17: Choice B overhaul applied (EMA200 regime filter + 3.5R→+1R lock).
+  maxDD reduced 70→37.78, MCL reduced 63→20.

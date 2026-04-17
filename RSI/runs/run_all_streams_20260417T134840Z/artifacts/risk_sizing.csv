@@ -1,0 +1,6 @@
+stream,ref_maxDD_r,target_dd_pct,base_risk_pct,applied_risk_pct,m3_applied,note
+S1,70.27,35.0,0.4981,0.4981,False,risk_pct = 35.0 / 70.27
+S2,12.7,35.0,2.7559,1.378,True,risk_pct = 35.0 / 12.7 → halved to 1.378% (M3 mitigation)
+S3,10.3,35.0,3.3981,3.3981,False,risk_pct = 35.0 / 10.3
+S4,21.67,35.0,1.6151,1.6151,False,risk_pct = 35.0 / 21.67
+S5,67.1,35.0,0.5216,0.5216,False,risk_pct = 35.0 / 67.1

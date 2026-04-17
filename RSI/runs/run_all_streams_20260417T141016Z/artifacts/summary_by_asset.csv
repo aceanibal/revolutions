@@ -1,0 +1,4 @@
+sym,n_trades,win_pct,avg_r,median_r,total_r,best_r,worst_r,maxDD_r,mcl,baseline_total_r,saved_r,sl_hits,be_hits,tp_hits
+AVAXUSDT,225,26.67,0.2224,-1.0094,50.05,11.99,-1.27,40.22,22,83.05,-33.0,165,4,56
+LTCUSDT,186,17.2,-0.0374,-1.0119,-6.96,19.48,-1.17,41.86,27,3.54,-10.5,154,5,27
+PAXGUSDT,179,21.23,0.6265,-1.0514,112.14,19.45,-1.32,27.84,13,149.14,-37.0,141,3,35

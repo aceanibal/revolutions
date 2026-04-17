@@ -85,7 +85,7 @@ TARGET_DD_PCT = 35.0                 # target each stream's maxDD ≈ 35% of acc
 # Used to derive base risk_pct = TARGET_DD_PCT / maxDD_r.
 # Source: strategy/S*.md reference stats.
 STREAM_MAXDD_R: dict[str, float] = {
-    "S1": 70.27,   # strategy/S1 — runs/run_all_streams_20260416T153516Z
+    "S1": 37.78,   # strategy/S1 — runs/run_all_streams_20260417T231541Z (post Choice-B overhaul)
     "S2": 12.7,    # strategy/S2 — cache/shorts_filtered_sweep.csv
     "S3": 10.3,    # strategy/S3 — cache/fvg_lock_sweep.csv baseline
     "S4": 21.67,   # strategy/S4 — runs/run_all_streams_20260416T153516Z
@@ -129,21 +129,37 @@ DAILY_LOSS_CAP_PCT: float = -5.0
 FEE_BPS = 3.0
 START_UTC = "2022-01-01"
 
-# All streams run on the full 6-symbol universe.
-SX_SYMS = tuple(SYMS)
+# Full 11-symbol universe (expanded 2026-04-17).
+# Canonical 6 + AVAX, SUI, TAO, ONDO, PAXG.
+# Excluded: BNBUSDT (user decision), LTCUSDT (2025-only), CRCLUSDT (<2 months).
+# ONDO: included for S2/S3/S5 signal coverage; S1 EMA filter will suppress most entries.
+SX_SYMS = (
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT", "DOGEUSDT", "XRPUSDT",
+    "AVAXUSDT", "SUIUSDT", "TAOUSDT", "ONDOUSDT", "PAXGUSDT",
+)
 
 # S1 — IMBAL+HIGH Long bullish momentum continuation (fat-tail trend capture).
 # Signal: collect_imbalanced_signals long side (side=+1):
 #   structure=IMBALANCED, vol_q=HIGH, bullish candle with body_pct>0.55,
 #   close_pct>1-close_pct_max (close near high), vol_ratio>1.8.
-# Stop: ATR×2.0 fixed (no MFE ladder, no lock).
-# TP:   12R — captures the fat right tail of trending bull moves.
-# Reference: 778 signals / 12.1% win / +433R / ann≈101R/yr / maxDD≈70R.
+# Lever 2 — EMA200 regime filter: signal bar close must be above EMA(200) on 1h.
+#   Suppresses signals in bear-market regimes (2022 bear, 2026 risk-off).
+#   Study (2026-04-17): drops 17% of signals, maxDD 91→58, R +572→+599.
+# Stop: ATR×2.0 below entry.
+# Lever 1 — trailing lock: when MFE reaches 3.5R, stop moves to entry+1R.
+#   Reduces MCL 54→19, rescued 213 abandoned runners (+426R offset by -407R
+#   from 37 capped winners; net +19R, main benefit is drawdown and run control).
+# TP:   12R — fat-tail target; edge is in the right-tail outliers.
+# Reference (post-overhaul, 2026-04-17): study/s1_overhaul_comparison.csv
+#   6-symbol baseline: maxDD≈70R / with L1+L2: maxDD≈58R (update after first run).
 S1 = dict(
     regime="IMBALANCED+HIGH long, bullish momentum continuation",
     vol_ratio_min=1.8, body_pct_min=0.55, close_pct_max=0.15,
     atr_mult=2.0,
     tp_r=12.0,
+    ema_filter=200,   # Lever 2: only fire if 1h close > EMA(200) on signal bar
+    trig_r=3.5,       # Lever 1: lock trigger (MFE threshold)
+    lock_r=1.0,       # Lever 1: stop moves to entry + lock_r * risk
 )
 
 # S2 — BAL+HIGH Short, bearish momentum, ATR stop, NO FVG.
@@ -210,7 +226,18 @@ LOCKED_CONFIG = dict(
 # ────────────────────────────────────────────────────────────────────────────
 
 def _collect_s1(df1h: pd.DataFrame, sym: str) -> list[dict]:
-    """IMBAL+HIGH bullish momentum continuation (long side of collect_imbalanced_signals)."""
+    """IMBAL+HIGH bullish momentum continuation (long side of collect_imbalanced_signals).
+
+    Lever 2 — EMA(200) regime filter applied here. Signal bar close must be above
+    the 1h EMA(200) at the time the signal fires. No look-ahead: EMA uses only
+    bars up to and including the signal bar (bar i), which is already closed when
+    the signal is detected (Rule 1).
+    """
+    ema_span = S1["ema_filter"]
+    ema_col  = f"_s1_ema{ema_span}"
+    df1h     = df1h.copy()
+    df1h[ema_col] = df1h["close"].ewm(span=ema_span, adjust=False).mean()
+
     raw = collect_imbalanced_signals(
         df1h, sym,
         vol_ratio_min=S1["vol_ratio_min"],
@@ -221,6 +248,19 @@ def _collect_s1(df1h: pd.DataFrame, sym: str) -> list[dict]:
     for s in raw:
         if s["side"] != 1:
             continue
+
+        # Lever 2: check signal bar (bar i = one before entry ts) close vs EMA
+        try:
+            loc = df1h.index.get_loc(s["ts"])
+            if loc < 1:
+                continue
+            sig_bar  = df1h.iloc[loc - 1]
+            ema_val  = sig_bar[ema_col]
+            if pd.isna(ema_val) or float(sig_bar["close"]) <= float(ema_val):
+                continue
+        except (KeyError, TypeError):
+            continue
+
         entry_p = s["entry_p"]
         risk = s["atr"] * S1["atr_mult"]
         if risk <= 0:
@@ -350,14 +390,22 @@ def _replay_managed(sig: dict, df5: pd.DataFrame) -> ManagedResult | None:
     tp_p = tp_price_from_r(entry_p, risk, side, tp_r)
     stream = sig["stream"]
 
-    if stream == "S4":
+    if stream == "S1":
+        # Lever 1: trailing lock at 3.5R → +1R (same mechanism as S4).
+        res = replay_trade_5m(
+            df5, sig["ts"], side, entry_p, stop_p, tp_p,
+            risk, FEE_BPS,
+            be_trigger_r=S1["trig_r"], be_offset_r=S1["lock_r"],
+            skip_entry_bucket_hours=0.0,
+        )
+    elif stream == "S4":
         res = replay_trade_5m(
             df5, sig["ts"], side, entry_p, stop_p, tp_p,
             risk, FEE_BPS,
             be_trigger_r=S4["trig_r"], be_offset_r=S4["lock_r"],
             skip_entry_bucket_hours=0.0,
         )
-    else:  # S1, S2, S3, S5 — fixed SL/TP, no stop management
+    else:  # S2, S3, S5 — fixed SL/TP, no stop management
         res = replay_trade_5m(
             df5, sig["ts"], side, entry_p, stop_p, tp_p,
             risk, FEE_BPS, be_trigger_r=None, be_offset_r=0.0,
@@ -818,7 +866,9 @@ def _print_table(df: pd.DataFrame, title: str) -> None:
 def main(db_path: str, out_root: str,
          symbols_override: list[str] | None = None) -> None:
     db_path = str(Path(db_path).resolve())
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    # Apply symbol override — allows single-asset runs without touching locked config
+    run_syms = tuple(s.upper() for s in symbols_override) if symbols_override else SX_SYMS
+    stamp  = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_id = f"run_all_streams_{stamp}"
     run_dir = Path(out_root) / run_id
     (run_dir / "trades").mkdir(parents=True, exist_ok=True)
@@ -830,14 +880,16 @@ def main(db_path: str, out_root: str,
     print(f"  db:       {db_path}")
     print(f"  start:    {START_UTC}")
     print(f"  out:      {run_dir}")
-    print(f"  symbols:  {', '.join(SX_SYMS)}")
+    print(f"  symbols:  {', '.join(run_syms)}")
+    if run_syms != SX_SYMS:
+        print(f"  (override — default is {', '.join(SX_SYMS)})")
     print(f"  fee_bps:  {FEE_BPS}")
 
     # ── Data load ───────────────────────────────────────────────────────
-    print(f"\n  Loading 5m/1h data for {len(SX_SYMS)} symbols…")
+    print(f"\n  Loading 5m/1h data for {len(run_syms)} symbols…")
     sym_df5: dict[str, pd.DataFrame] = {}
     sym_df1h: dict[str, pd.DataFrame] = {}
-    for sym in SX_SYMS:
+    for sym in run_syms:
         df5, df1h = prepare_sym(db_path, sym, START_UTC)
         sym_df5[sym] = df5
         sym_df1h[sym] = df1h
@@ -847,7 +899,7 @@ def main(db_path: str, out_root: str,
     print(f"\n  Collecting signals…")
     all_sigs: list[dict] = []
     per_stream_counts: dict[str, int] = defaultdict(int)
-    for sym in SX_SYMS:
+    for sym in run_syms:
         s1 = _collect_s1(sym_df1h[sym], sym)
         s2 = _collect_s2(sym_df1h[sym], sym)
         s3 = _collect_s3(sym_df1h[sym], sym)

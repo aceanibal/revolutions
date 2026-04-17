@@ -4,42 +4,42 @@ description: Confirmed live portfolio streams with their configs, stats, and reg
 type: project
 originSessionId: ec260109-55dd-42c6-882c-a908d1ac26ca
 ---
-# Confirmed Live Streams (as of 2026-04-16)
+# Confirmed Live Streams (as of 2026-04-17)
 
 All streams use 1h bars for signal detection, 5m bars for trade management.
 Backtested 2022-01-01 → present (~4.3 years). Symbols: BTC, ETH, SOL, LINK, DOGE, XRP.
 
 ---
 
-## Stream 1 — IMBAL+HIGH Long (bullish momentum continuation) ⚠️ CORRECTED 2026-04-16
+## Stream 1 — IMBAL+HIGH Long (bullish momentum continuation) ✅ OVERHAULED 2026-04-17
 
-**Previous (wrong) definition was "4h RSI crossover long, TP=13R, 3-stage MFE ladder".**
-That configuration underperformed drastically under the current simulator (same-bar
-stop activation). Investigation confirmed the live S1 reference is the long side of
-`collect_imbalanced_signals` (IMBAL_LONG) with a fixed ATR stop.
+**Choice B applied:** EMA(200) regime filter + 3.5R→+1R trailing lock.
+Full analysis: `memory/report_s1_overhaul_20260417.md`. Authoritative spec: `strategy/S1_imbal_high_long.md`.
 
 **Regime:** structure=IMBALANCED, vol_q=HIGH
 **Signal:** 1h bullish candle with strong body (`body_pct > 0.55`), close near high
 (`close_pct > 1 - 0.15 = 0.85`), above-average volume (`vol_ratio > 1.8`).
+**Lever 2 — EMA filter:** signal bar close must be above EMA(200) on 1h. Suppresses
+bear-regime entries (2022 bear, 2026 risk-off).
 Entry at next-bar open.
-**Stop:** fixed `ATR×2.0` below entry. No MFE ladder, no lock.
-**TP:** 12R (fat-tail trend capture — edge is in outlier winners, not hit rate).
-**Universe:** full 6 symbols (BTC, ETH, SOL, LINK, DOGE, XRP).
-**Stats (verified 2026-04-16 via `_investigate_imbal_long`):**
-- n = 778 signals (~180/yr)
-- win% = 12.08 (low by design — fat-tail, not mean-reversion)
-- total_R = +433  |  ann_R ≈ 101/yr  |  avg_R = 0.56
-- maxDD_R ≈ 70-80 (2022 drawdown dominates)
-- Exit mix: 684 SL / 94 TP
-- Year breakdown: 2022 −59 / 2023 +265 / 2024 +213 / 2025 +44 / 2026 YTD −31
-- Per-asset total_R: BTC +176, SOL +101, ETH +84, DOGE +42, LINK +42, XRP −11
-**Why this works:** IMBAL+HIGH bullish bars mark a regime transition where the
-crowd is committed. A single ATR×2 stop makes losers small and 12R TPs let the
-rare runners pay for everything.
-**Signal collector:** `lab/study_imbalanced_trend.py::collect_imbalanced_signals` (side=+1)
-**Replay:** `lab/study_imbalanced_trend.py::replay_trend` (atr_mult=2.0, tp_r=12.0, fixed)
-**Master runner:** `lab/run_all_streams.py` (S1 config)
-**Investigation log:** `deprecated/reports/RESEARCH_REPORT_2026-04-15.md`
+**Stop:** ATR×2.0 below entry.
+**Lever 1 — Trailing lock:** when MFE reaches 3.5R, stop moves to entry+1R (same-bar activation).
+**TP:** 12R (fat-tail target — do not reduce).
+**Universe:** BTC, ETH, SOL, LINK, DOGE, XRP. ONDO excluded (structural failure, 2.4% TP rate).
+**Stats (confirmed run `run_all_streams_20260417T231541Z`):**
+- n = 671 replayed (~157/yr after EMA filter)
+- win% = 28.9% (lock converts SL→BE exits; baseline win% without lock = 13%)
+- total_R = +411  |  baseline (no lock) = +450  |  ann_R ≈ 96/yr
+- **maxDD_R = 37.78** (↓ from 70.27 — 46% reduction)
+- **MCL = 20** (↓ from 63 — 68% reduction)
+- Exit mix: 477 SL / 130 BE / 64 TP
+- Year breakdown: 2022 −13 / 2023 +159 / 2024 +207 / 2025 +50 / 2026 YTD +7
+- Per-asset: BTC +156, ETH +106, SOL +76, LINK +67, DOGE +23, XRP −16
+**Risk sizing:** maxDD_R = 37.78 → risk_pct = 35/37.78 = 0.926% (updated in runner)
+**Signal collector:** `lab/run_all_streams.py::_collect_s1` (EMA filter applied here)
+**Replay:** `lab/run_all_streams.py::_replay_managed` (S1 branch, lock params)
+**Master runner:** `lab/run_all_streams.py` (S1 block)
+**Overhaul study:** `lab/study_s1_overhaul.py` / `cache/s1_overhaul_comparison.csv`
 
 ---
 

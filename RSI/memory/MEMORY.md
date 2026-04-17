@@ -8,3 +8,4 @@
 - [Swing Low Strategy Research](project_swing_low_research.md) — BAL+HIGH liquidity grab findings, what worked/failed, key configs
 - [Strategy Research Preferences](feedback_strategy_research.md) — aggressive configs, BAL+MED is a drag, wick stop not for BAL+HIGH
 - [Run Definition](run_definition.md) — canonical run contract (single TP per run, immutable outputs, required fields)
+- [S1 Overhaul Report 2026-04-17](report_s1_overhaul_20260417.md) — EMA200 filter + 3.5R lock applied; maxDD 70→37, MCL 63→20, confirmed run T231541Z

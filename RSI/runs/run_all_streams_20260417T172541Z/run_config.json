@@ -1,0 +1,106 @@
+{
+  "run_id": "run_all_streams_20260417T172541Z",
+  "generated_utc": "2026-04-17T17:29:16.133823+00:00",
+  "db": "/Users/anibalperez/revolutions/RSI/data/backtest.sqlite",
+  "script": "lab/run_all_streams.py",
+  "locked_config": {
+    "start_utc": "2022-01-01",
+    "fee_bps": 3.0,
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "LINKUSDT",
+      "DOGEUSDT",
+      "XRPUSDT"
+    ],
+    "s1": {
+      "regime": "IMBALANCED+HIGH long, bullish momentum continuation",
+      "vol_ratio_min": 1.8,
+      "body_pct_min": 0.55,
+      "close_pct_max": 0.15,
+      "atr_mult": 2.0,
+      "tp_r": 12.0
+    },
+    "s2": {
+      "regime": "BALANCED+HIGH short, momentum (no FVG)",
+      "vol_ratio_min": 1.5,
+      "body_pct_min": 0.55,
+      "close_pct_max": 0.2,
+      "atr_mult": 1.5,
+      "tp_r": 3.0
+    },
+    "s3": {
+      "regime": "BALANCED+HIGH short, FVG filter + FVG-LOW stop",
+      "vol_ratio_min": 1.8,
+      "body_pct_min": 0.55,
+      "close_pct_max": 0.15,
+      "atr_mult": 2.0,
+      "buf_mult": 0.15,
+      "tp_r": 4.25
+    },
+    "s4": {
+      "regime": "BALANCED+HIGH long, equal-lows sweep",
+      "lookback": 50,
+      "tolerance": 0.005,
+      "min_swing": 5,
+      "rejection_min": 0.9,
+      "atr_mult": 2.0,
+      "trig_r": 3.5,
+      "lock_r": 1.0,
+      "tp_r": 19.5
+    },
+    "s5": {
+      "regime": "IMBALANCED+HIGH short, bearish momentum continuation",
+      "vol_ratio_min": 1.8,
+      "body_pct_min": 0.55,
+      "close_pct_max": 0.15,
+      "atr_mult": 2.0,
+      "tp_r": 5.0
+    }
+  },
+  "portfolio_simulation": {
+    "start_balance": 10000.0,
+    "target_dd_pct": 35.0,
+    "stream_maxdd_r": {
+      "S1": 70.27,
+      "S2": 12.7,
+      "S3": 10.3,
+      "S4": 21.67,
+      "S5": 67.1
+    },
+    "stream_risk_pct": {
+      "S1": 0.4981,
+      "S2": 1.378,
+      "S3": 3.3981,
+      "S4": 1.6151,
+      "S5": 0.5216
+    },
+    "mitigations": {
+      "M1_daily_loss_cap": {
+        "active": true,
+        "cap_pct": -5.0,
+        "trades_skipped": 444,
+        "description": "Skip new entries on a day once cumulative intraday P&L falls below -5.0% of day-open balance. Prevents S2 cluster blow-ups in a single session."
+      },
+      "M3_s2_risk_halved": {
+        "active": true,
+        "s2_base_risk_pct": 2.7559,
+        "s2_applied_risk_pct": 1.378,
+        "description": "S2 risk% halved from 2.7559% to 1.3780%. Reduces S2 dollar impact; confirmed best efficiency ratio in lab/analyze_mitigations.py (1.8x DD reduction per return unit)."
+      }
+    }
+  },
+  "data_window": {
+    "start_utc": "2022-01-01",
+    "end_utc": "2026-04-16 23:55:00+00:00"
+  },
+  "signal_counts": {
+    "S1": 1162,
+    "S2": 2636,
+    "S3": 311,
+    "S4": 393,
+    "S5": 856
+  },
+  "trade_count": 5350
+}
